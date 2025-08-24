@@ -37,6 +37,7 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 import torch.nn.functional as F
+from torch.nn.utils import weight_norm
 from einops import rearrange, repeat
 from torch import nn
 
@@ -45,6 +46,10 @@ from espnet2.gan_codec.shared.quantizer.modules.distrib import broadcast_tensors
 
 def default(val: Any, d: Any) -> Any:
     return val if val is not None else d
+
+
+def WNConv1d(*args, **kwargs):
+    return weight_norm(nn.Conv1d(*args, **kwargs))
 
 
 def ema_inplace(moving_avg, new, decay: float):
@@ -374,6 +379,121 @@ class VectorQuantization(nn.Module):
             quantize = rearrange(quantize, "b n d -> b d n")
             return quantize, embed_ind, commit_loss, quant_loss
 
+class AutoGroupVectorQuantize(nn.Module):
+    """
+    Inspirations:
+    The core ideas of our approach are derived from the following papers and concepts:
+    1.Grouped Quantization: The concept of grouping from HIFI-CODEC: GROUP-RESIDUAL VECTOR QUANTIZATION FOR HIGH FIDELITY AUDIO CODEC.
+    2.Cosine Similarity Search: The technique of performing a codebook search after dimensionality reduction and using L2 normalization to shift the distance metric from Euclidean distance to cosine similarity, as detailed in High-Fidelity Audio Compression with Improved RVQGAN.
+    3.Temporal Residual Coding: An idea from traditional codecs, where temporal residual coding is used to reduce the dynamic range of codebook representations for non-initial speech frames.
+    Key Steps:
+    The core pipeline consists of the following steps:
+    1.(Optional) Apply inter-frame residual coding to the input latents along the time dimension.
+    2.Simultaneously perform adaptive grouping and dimensionality reduction on the input latents.
+    3.Apply intra-frame residual coding to the resulting parallel data after reduction.
+    4.Perform the codebook search in parallel across all groups.
+    """
+
+    def __init__(self, input_dim: int, codebook_size: int, codebook_dim: int, frame_residual_vq=False):
+        super().__init__()
+
+        self.codebook_size_a = codebook_size
+        self.codebook_size_b = codebook_size
+        self.codebook_dim = codebook_dim
+        self.frame_residual_vq = frame_residual_vq
+        self.codebook_dim_a = codebook_dim
+        self.codebook_dim_b = codebook_dim
+
+        self.in_proj_a = WNConv1d(input_dim, self.codebook_dim_a, kernel_size=1)
+        self.out_proj_a = WNConv1d(self.codebook_dim_a, input_dim // 2, kernel_size=1)
+
+        self.in_proj_b = WNConv1d(input_dim, self.codebook_dim_b, kernel_size=1)
+        self.out_proj_b = WNConv1d(self.codebook_dim_b, input_dim // 2, kernel_size=1)
+
+        self.codebook_a = nn.Embedding(self.codebook_size_a, self.codebook_dim_a)
+        self.codebook_b = nn.Embedding(self.codebook_size_b, self.codebook_dim_b)
+
+    def forward(self, z):
+        """Quantized the input tensor using a fixed codebook and returns
+        the corresponding codebook vectors
+
+        Parameters
+        ----------
+        z : Tensor[B x D x T]
+
+        Returns
+        -------
+        Tensor[B x D x T]
+            Quantized continuous representation of input
+        Tensor[1]
+            Commitment loss to train encoder to predict vectors closer to codebook
+            entries
+        Tensor[1]
+            Codebook loss to update the codebook
+        Tensor[B x T]
+            Codebook indices (quantized discrete representation of input)
+        Tensor[B x D x T]
+            Projected latents (continuous representation of input before quantization)
+        """
+
+        # Factorized codes (ViT-VQGAN) Project input into low-dimensional space
+
+        if self.frame_residual_vq:
+            for frame in range(z.shape[-1] - 1, 0, -1):
+                z[..., frame] = z[..., frame] - z[..., frame - 1]
+
+        z_a = self.in_proj_a(z)  # z_a : (B x D x T)
+        z_b = self.in_proj_b(z)  # z_b : (B x D x T)
+
+        # z_a = z_a - z_b
+        z_aq, indices_a = self.decode_latents(z_a, self.codebook_a)
+        z_bq, indices_b = self.decode_latents(z_b, self.codebook_b)
+
+        commitment_loss = F.mse_loss(z_a, z_aq.detach(), reduction="none").mean([1, 2]) + F.mse_loss(
+            z_b, z_bq.detach(), reduction="none").mean([1, 2])
+        codebook_loss = F.mse_loss(z_aq, z_a.detach(), reduction="none").mean([1, 2]) + F.mse_loss(
+            z_bq, z_b.detach(), reduction="none").mean([1, 2])
+
+        # c
+        z_aq = (z_a + (z_aq - z_a).detach()
+               )  # noop in forward pass, straight-through gradient estimator in backward pass
+        z_bq = (z_b + (z_bq - z_b).detach()
+               )  # noop in forward pass, straight-through gradient estimator in backward pass
+
+        z_aq = self.out_proj_a(z_aq)
+        z_bq = self.out_proj_b(z_bq)
+        z_q = torch.cat((z_aq, z_bq), dim=1)
+
+        if self.frame_residual_vq:
+            for frame in range(1, 1, z_q.shape[-1]):
+                z_q[..., frame] = z_q[..., frame - 1] + z_q[..., frame]
+
+        indices = indices_a * self.codebook_size_b + indices_b  
+        latent = torch.cat((z_a, z_b), dim=1)
+
+        return z_q, commitment_loss, codebook_loss, indices, latent
+
+    def embed_code(self, embed_id, codebook):
+        return F.embedding(embed_id, codebook.weight)
+
+    def decode_code(self, embed_id, codebook):
+        return self.embed_code(embed_id, codebook).transpose(1, 2)
+
+    def decode_latents(self, latents, codebook_in):
+        encodings = rearrange(latents, "b d t -> (b t) d")
+        codebook = codebook_in.weight  # codebook: (N x D)
+
+        # L2 normalize encodings and codebook (ViT-VQGAN)
+        encodings = F.normalize(encodings)
+        codebook = F.normalize(codebook)
+
+        # Compute euclidean distance with codebook
+        dist = (encodings.pow(2).sum(1, keepdim=True) - 2 * encodings @ codebook.t() +
+                codebook.pow(2).sum(1, keepdim=True).t())
+        indices = rearrange((-dist).max(1)[1], "(b t) -> b t", b=latents.size(0))
+        z_q = self.decode_code(indices, codebook_in)
+        # z_q shape [B,dim,T]
+        return z_q, indices
 
 class ResidualVectorQuantization(nn.Module):
     """Residual vector quantization implementation.
