@@ -16,16 +16,18 @@ else
 fi
 
 
-train_set=train-clean-460
-valid_set=dev-clean
-test_sets="test-clean"
+train_set=train_all
+valid_set=dev_all
+test_sets="test_all"
 
-train_config=conf/train.yaml
+train_config=conf/tuning/train_dac.yaml
 inference_config=conf/decode.yaml
 score_config=conf/score.yaml
 
 ./codec.sh \
     --local_data_opts "--trim_all_silence false" \
+    --stage 2\
+    --stop_stage 4\
     --fs ${fs} \
     --train_config "${train_config}" \
     --inference_config "${inference_config}" \
