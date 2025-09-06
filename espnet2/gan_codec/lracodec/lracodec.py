@@ -19,8 +19,9 @@ from espnet2.gan_codec.shared.discriminator.msmpmb_discriminator import (
     MultiScaleMultiPeriodMultiBandDiscriminator,
 )
 from espnet2.gan_codec.shared.encoder.seanet import SEANetEncoder
+from espnet2.gan_codec.shared.decoder.decoder import CausalDecoder
 from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
-from espnet2.gan_codec.shared.quantizer.ag_residual_vq import AutoGroupResidualVectorQuantize
+from espnet2.gan_codec.shared.quantizer.mr_ag_rvq import MultiRateAutoGroupResidualVectorQuantize
 from espnet2.gan_tts.hifigan.loss import (
     DiscriminatorAdversarialLoss,
     FeatureMatchLoss,
@@ -37,34 +38,39 @@ class LRACodec(AbsGANCodec):
         self,
         sampling_rate: int = 24000,
         generator_params: Dict[str, Any] = {
-            "hidden_dim": 128,
+            "hidden_dim": 384,
             "encdec_channels": 1,
-            "encdec_n_filters": 32,
-            "encdec_n_residual_layers": 1,
-            "encdec_ratios": [8, 5, 4, 2],
+            "encdec_n_filters": 24,
+            "encdec_n_residual_layers": 2,
+            "encdec_ratios": [8, 8, 6, 5],
             "encdec_activation": "Snake",
-            "encdec_activation_params": {},
+            "encdec_activation_params": {"alpha": 1.0},
             "encdec_norm": "weight_norm",
             "encdec_norm_params": {},
             "encdec_kernel_size": 7,
             "encdec_residual_kernel_size": 7,
-            "encdec_last_kernel_size": 7,
+            "encdec_last_kernel_size": 3,
             "encdec_dilation_base": 2,
-            "encdec_causal": False,
+            "encdec_causal": True,
             "encdec_pad_mode": "reflect",
             "encdec_true_skip": False,
             "encdec_compress": 2,
             "encdec_lstm": 0,
-            "decoder_trim_right_ratio": 1.0,
-            "decoder_final_activation": None,
-            "decoder_final_activation_params": None,
-            "quantizer_n_q": 8,
-            "quantizer_bins": 1024,
-            "quantizer_decay": 0.99,
-            "quantizer_kmeans_init": True,
-            "quantizer_kmeans_iters": 50,
-            "quantizer_threshold_ema_dead_code": 2,
-            "quantizer_dropout": 0,
+            "semantic_dim": 1024,
+            "semantic_vocab_size": 8192,
+            "decoder_channels": 1536,
+            "decoder_lookahead_frame": 0,
+            "decoder_lstm_num": 1,
+            "quantizer_codebook_dim": 8,
+            "quantizer_n_base_codebooks": 3,
+            "quantizer_base_codebook_size": 2048, # 2^11
+            "quantizer_base_codebook_dim": 8,
+            # advancement (High Bitrate) Config
+            "quantizer_n_advance_codebooks": 14,
+            "quantizer_advance_codebook_size": 16384, # 2^14
+            "quantizer_advance_codebook_dim": 8,
+            "quantizer_dropout": 0.1, # Dropout probability for the advancement layer
+            "frame_residual_vq": False,
         },
         discriminator_params: Dict[str, Any] = {
             "scale_follow_official_norm": False,
@@ -465,34 +471,38 @@ class LRACodecGenerator(nn.Module):
     def __init__(
         self,
         sample_rate: int = 24000,
-        hidden_dim: int = 128,
-        codebook_dim: int = 8,
+        hidden_dim: int = 384,
         encdec_channels: int = 1,
-        encdec_n_filters: int = 32,
-        encdec_n_residual_layers: int = 1,
-        encdec_ratios: List[int] = [8, 5, 4, 2],
+        encdec_n_filters: int = 24,
+        encdec_n_residual_layers: int = 2,
+        encdec_ratios: List[int] = [8, 8, 6, 5],
         encdec_activation: str = "Snake",
-        encdec_activation_params: Dict[str, Any] = {},
+        encdec_activation_params: Dict[str, Any] = {"alpha": 1.0},
         encdec_norm: str = "weight_norm",
         encdec_norm_params: Dict[str, Any] = {},
         encdec_kernel_size: int = 7,
         encdec_residual_kernel_size: int = 7,
-        encdec_last_kernel_size: int = 7,
+        encdec_last_kernel_size: int = 3,
         encdec_dilation_base: int = 2,
-        encdec_causal: bool = False,
+        encdec_causal: bool = True,
         encdec_pad_mode: str = "reflect",
         encdec_true_skip: bool = False,
         encdec_compress: int = 2,
-        encdec_lstm: int = 2,
-        decoder_trim_right_ratio: float = 1.0,
-        decoder_final_activation: Optional[str] = None,
-        decoder_final_activation_params: Optional[dict] = None,
-        quantizer_n_q: int = 8,
-        quantizer_bins: int = 1024,
-        quantizer_dropout: int = 0,
-        # LRACodec specific parameters
+        encdec_lstm: int = 0,
+        decoder_channels: int = 1536,
+        decoder_lookahead_frame: int = 0,
+        decoder_lstm_num: int = 1,
+        quantizer_codebook_dim: int = 8,
+        quantizer_n_base_codebooks: int = 3,
+        quantizer_base_codebook_size: int = 2048, # 2^11
+        quantizer_base_codebook_dim: Union[int, list] = 8,
+        # advancement (High Bitrate) Config
+        quantizer_n_advance_codebooks: int = 14,
+        quantizer_advance_codebook_size: int = 16384, # 2^14
+        quantizer_advance_codebook_dim: Union[int, list] = 8,
+        quantizer_dropout: float = 0.1, # Dropout probability for the advancement layer
         frame_residual_vq: bool = False,
-        semantic_dim: int = 1280,
+        semantic_dim: int = 1024,
         semantic_vocab_size: int = 8192,
     ):
         """Initialize LRACodec Generator.
@@ -525,13 +535,17 @@ class LRACodecGenerator(nn.Module):
         )
 
         # Initialize quantizer - only use AutoGroupResidualVectorQuantize
-        self.quantizer = AutoGroupResidualVectorQuantize(
+        self.quantizer = MultiRateAutoGroupResidualVectorQuantize(
             input_dim=hidden_dim,
-            n_codebooks=quantizer_n_q,
-            codebook_size=quantizer_bins,
-            codebook_dim=codebook_dim,
+            n_base_codebooks=quantizer_n_base_codebooks,
+            base_codebook_size=quantizer_base_codebook_size, # 2^11
+            base_codebook_dim=quantizer_base_codebook_dim,
+            # advancement (High Bitrate) Config
+            n_advance_codebooks=quantizer_n_advance_codebooks,
+            advance_codebook_size=quantizer_advance_codebook_size, # 2^14
+            advance_codebook_dim=quantizer_advance_codebook_dim,
             quantizer_dropout=quantizer_dropout,
-            frame_residual_vq=frame_residual_vq,
+            frame_residual_vq=quantizer_frame_residual_vq
         )
         self.sample_rate = sample_rate
         self.frame_rate = math.ceil(sample_rate / np.prod(encdec_ratios))
@@ -550,28 +564,12 @@ class LRACodecGenerator(nn.Module):
         self.decoder_proj = nn.Linear(decoder_input_dim, hidden_dim)
         
         # Initialize decoder
-        self.decoder = SEANetDecoder(
-            channels=encdec_channels,
-            dimension=hidden_dim,
-            n_filters=encdec_n_filters,
-            n_residual_layers=encdec_n_residual_layers,
-            ratios=encdec_ratios,
-            activation=encdec_activation,
-            activation_params=encdec_activation_params,
-            norm=encdec_norm,
-            norm_params=encdec_norm_params,
-            kernel_size=encdec_kernel_size,
-            residual_kernel_size=encdec_residual_kernel_size,
-            last_kernel_size=encdec_last_kernel_size,
-            dilation_base=encdec_dilation_base,
-            causal=encdec_causal,
-            pad_mode=encdec_pad_mode,
-            true_skip=encdec_true_skip,
-            compress=encdec_compress,
-            lstm=encdec_lstm,
-            trim_right_ratio=decoder_trim_right_ratio,
-            final_activation=decoder_final_activation,
-            final_activation_params=decoder_final_activation_params,
+        self.decoder = CausalDecoder(
+            input_channel = semantic_dim + hidden_dim,
+            channels = decoder_channels,
+            rates = encdec_ratios,
+            lookahead_frame = decoder_lookahead_frame,
+            lstm_nums = decoder_lstm_num
         )
 
         # quantization loss
@@ -670,6 +668,7 @@ class LRACodecGenerator(nn.Module):
         self,
         x: torch.Tensor,
         return_semantic: bool = False,
+        mode: str = 'high'
     ):
         """LRACodec codec encoding.
 
@@ -683,7 +682,7 @@ class LRACodecGenerator(nn.Module):
         encoder_out = self.encoder(x)
         
         # Use AutoGroupResidualVectorQuantize encoding
-        _, codes, _, _, _ = self.quantizer(encoder_out)
+        codes = self.quantizer.encode(encoder_out)
         
         if return_semantic:
             # Get semantic codes from audio
@@ -702,7 +701,7 @@ class LRACodecGenerator(nn.Module):
             torch.Tensor: resynthesized audio.
         """
         # Use AutoGroupResidualVectorQuantize decoding
-        quantized, _, _ = self.quantizer.from_codes(codes)
+        quantized = self.quantizer.decode(codes)
         
         # Handle semantic codes - semantic is mandatory for LRACodec
         if semantic_codes is None:
