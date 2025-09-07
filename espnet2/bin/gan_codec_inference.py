@@ -39,7 +39,7 @@ class AudioCoding:
         self,
         train_config: Union[Path, str, None] = None,
         model_file: Union[Path, str, None] = None,
-        target_bandwidth: Union[Path, str, None] = None,
+        target_bandwidth: float = None,
         dtype: str = "float32",
         device: Union[str, torch.device] = "cpu",
         seed: int = 777,
@@ -54,7 +54,13 @@ class AudioCoding:
         model.to(dtype=getattr(torch, dtype)).eval()
         self.device = device
         self.dtype = dtype
+        
+        # In case of a codec with enhancement capability
+        # we do not want to add noise to test data
+        train_args.validation_rir_scp = None
+        train_args.validation_noise_scp = None
         self.train_args = train_args
+        
         self.model = model
         self.codec = model.codec
         self.preprocess_fn = GANCodecTask.build_preprocess_fn(train_args, False)
@@ -255,7 +261,7 @@ def inference(
             output_dict = audio_coding(**batch)
 
             key = keys[0]
-            insize = next(iter(batch.values())).size(0) + 1
+            insize = next(iter(batch.values())).size(0)
             if output_dict.get("resyn_audio") is not None:
                 wav = output_dict["resyn_audio"]
                 # Note(jiatong): Assume the wav is single channel here
@@ -265,9 +271,13 @@ def inference(
                     )
                 )
                 logging.info(f"{key} (size:{insize}->{wav.size(0)})")
+                if wav.size(0) > insize:
+                    wav = wav[:insize]
+                    logging.info(f"{key} output cropped to size:{insize})")
+
                 sf.write(
                     f"{output_dir_path}/wav/{key}.wav",
-                    output_dict["resyn_audio"].cpu().numpy(),
+                    wav.cpu().numpy(),
                     audio_coding.fs,
                     "PCM_16",
                 )

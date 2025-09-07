@@ -3,7 +3,7 @@
 
 """Frequency-Related Loss"""
 
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 import torch
@@ -36,7 +36,7 @@ class MultiScaleMelSpectrogramLoss(torch.nn.Module):
         range_start: int = 6,
         range_end: int = 11,
         window: str = "hann",
-        n_mels: int = 80,
+        n_mels: List[int] = None,
         fmin: Optional[int] = 0,
         fmax: Optional[int] = None,
         center: bool = True,
@@ -51,7 +51,10 @@ class MultiScaleMelSpectrogramLoss(torch.nn.Module):
         self.total = 0
         self.normalized = normalized
         assert range_end > range_start, "error in index"
-        for i in range(range_start, range_end):
+        if n_mels is None:
+            n_mels = [80 for i in range(range_start, range_end)]
+
+        for index, i in enumerate(range(range_start, range_end)):
             assert range_start > 2, "range start should be more than 2 for hop_length"
             mel_loss.append(
                 MelSpectrogramLoss(
@@ -60,7 +63,7 @@ class MultiScaleMelSpectrogramLoss(torch.nn.Module):
                     hop_length=2 ** (i - 2),
                     win_length=2**i,
                     window=window,
-                    n_mels=n_mels,
+                    n_mels=n_mels[index],
                     fmin=fmin,
                     fmax=fmax,
                     center=center,

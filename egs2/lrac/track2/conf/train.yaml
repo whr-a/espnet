@@ -1,0 +1,230 @@
+##########################################################
+#                  CODEC MODEL SETTING                   #
+##########################################################
+codec: lrac
+codec_conf:
+    sampling_rate: 24000
+    apply_enhancement: true
+
+    # encoder related
+    encoder_params:
+        input_channels: 1
+        enable_output_layer: false
+        output_dimension: 320
+        n_filters: [8, 16, 32, 64, 128, 320]
+        strides: [2, 2, 3, 4, 5]
+        activation: ELU
+        activation_params:
+            alpha: 1.0
+        norm: weight_norm
+        input_kernel_size: 7
+        input_layer_causal: true
+        downsampling_kernel_sizes: [4, 4, 6, 8, 10]
+        residual_kernel_sizes: [[[7,3], [7,3], [7,3], [7,3]], 
+                                [[7,3], [7,3], [7, 3], [5,3]], 
+                                [[7,3], [7,3], [7,3]], 
+                                [[7,3], [7,3], [7,3]],
+                                [[7,3], [7,3], [7,3]]]
+        residual_dilations: [[[3, 1], [9, 1], [27, 1], [81, 1]], 
+                             [[3, 1], [9, 1], [27, 1], [81, 1]], 
+                             [[3, 1], [9, 1], [27, 1]], 
+                             [[3, 1], [9, 1], [27, 1]],
+                             [[3, 1], [9, 1], [27, 1]]]
+        residual_causality_modes: [[[true, true], [true, true], [true, true],[true, true]], 
+                                   [[true, true], [true, true], [true, true],[true, true]], 
+                                   [[true, true], [true, true], [true, true]],
+                                   [[false, true], [false, true], [true, true]], 
+                                   [[true, false], [true, true], [true, true]]]
+        downsampling_causality_modes: [true, true, true, true, true]
+        pad_mode: constant
+        true_skip: true
+        compress: 1
+        lstm: 0
+
+    # decoder related
+    decoder_params:
+        output_dimension: 1
+        input_dimension: 320
+        enable_input_layer: false
+        n_filters: [320, 96, 48, 24, 12, 8]
+        strides: [5, 4, 3, 2, 2]
+        activation: ELU
+        activation_params: 
+            alpha: 1.0
+        final_activation: Tanh
+        final_activation_params: null
+        norm: weight_norm
+        output_kernel_size: 21
+        output_layer_causal: true
+        upsampling_kernel_sizes: [5, 4, 3, 2, 2]
+        residual_kernel_sizes: [[[3, 1], [3, 1], [5, 1]],
+                                [[3, 1], [5, 1], [5, 1]],
+                                [[5, 1], [5, 1], [5, 1]], 
+                                [[3, 1], [5, 1], [5, 1]], 
+                                [[5, 1], [5, 1], [5, 1]]]
+        residual_dilations: [[[5, 1], [5, 1], [25, 1]], 
+                             [[4, 1], [5, 1], [25, 1]], 
+                             [[3, 1], [5, 1], [25, 1]], 
+                             [[2, 1], [5, 1], [25, 1]],
+                             [[2, 1], [5, 1], [25, 1]]]
+        residual_causality_modes: [[[false, true], [false, true], [true, true]], 
+                                   [[true, true], [true, true], [true, true]], 
+                                   [[true, true], [true, true], [true, true]], 
+                                   [[true, true], [true, true], [true, true]],
+                                   [[true, true], [true, true], [true, true]]]
+        upsampling_causality_modes: [true, true, true, true, true]
+        pad_mode: constant
+        true_skip: true
+        compress: 1
+        lstm: 0
+        trim_right_ratio: 1
+
+    # quantizer_params
+    quantizer_params:
+        quantizer_codebook_dim: 24
+        quantizer_n_q: 6
+        quantizer_bins: 1024
+        quantizer_decay: 0.99
+        quantizer_kmeans_init: true
+        quantizer_kmeans_iters: 50
+        quantizer_threshold_ema_dead_code: 2
+        quantizer_target_bandwidth: [1, 6]
+
+    # discriminator related
+    discriminator_params:
+        msstft_discriminator_params:
+            filters: 16
+            in_channels: 1
+            out_channels: 1
+            sep_channels: false
+            norm: weight_norm
+            n_ffts: [128, 256, 512, 1024, 2048]
+            hop_lengths: [32, 64, 128, 256, 512]
+            win_lengths: [128, 256, 512, 1024, 2048]
+            activation: LeakyReLU
+            activation_params:
+                negative_slope: 0.1
+
+    # loss function related
+    generator_adv_loss_params:
+        average_by_discriminators: true  # whether to average loss value by #discriminators
+        loss_type: hinge                 # loss type, "mse" or "hinge"
+    discriminator_adv_loss_params:
+        average_by_discriminators: true  # whether to average loss value by #discriminators
+        loss_type: hinge                 # loss type, "mse" or "hinge"
+    use_feat_match_loss: true            # whether to use feat match loss
+    feat_match_loss_params:
+        average_by_discriminators: true  # whether to average loss value by #discriminators
+        average_by_layers: false         # whether to average loss value by #layers of each discriminator
+        include_final_outputs: true      # whether to include final outputs for loss calculation
+    use_dual_decoder: false
+    use_mel_loss: true     # whether to use mel-spectrogram loss
+    mel_loss_params:
+        range_start: 6
+        range_end: 11
+        window: hann        # window type
+        n_mels: [10, 20, 40, 80, 160, 320]          # number of Mel basis
+        fmin: 0             # minimum frequency for Mel basis
+        fmax: null          # maximum frequency for Mel basis
+        log_base: null      # null represent natural log
+    use_semantic_loss: false
+    semantic_loss_params:
+        sample_rate: 24000
+        model_name: WAVLM_LARGE
+    lambda_quantization: 0.0       # loss scaling coefficient for codec quantization loss
+    lambda_commit: 10.0      # loss scaling coefficient for codec commitment loss
+    lambda_reconstruct: 0 # loss scaling coefficient for speech reconstruction loss
+    lambda_adv: 1.0         # loss scaling coefficient for adversarial loss
+    lambda_mel: 5.0        # loss scaling coefficient for Mel loss
+    lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
+    lambda_semantic: 0 # loss scaling coefficient for semantic loss
+
+    # others
+    cache_generator_outputs: true # whether to cache generator outputs in the training
+    use_loss_balancer: false
+
+##########################################################
+#            OPTIMIZER & SCHEDULER SETTING               #
+##########################################################
+# optimizer setting for generator
+optim: radam
+optim_conf:
+    lr: 3.0e-4
+    betas: [0.9, 0.999]
+    eps: 1.0e-9
+    weight_decay: 0.0
+scheduler: exponentiallr
+scheduler_conf:
+    gamma: 0.998
+# optimizer setting for discriminator
+optim2: radam
+optim2_conf:
+    lr: 3.0e-4
+    betas: [0.9, 0.999]
+    eps: 1.0e-9
+    weight_decay: 0.0
+scheduler2: exponentiallr
+scheduler2_conf:
+    gamma: 0.998
+generator_first: true # whether to start updating generator first
+skip_discriminator_prob: 0
+
+##########################################################
+#            PREPROCESSOR SETTINGS               #
+##########################################################
+rir_scp: data/rirs.scp
+rir_apply_prob: 0.5
+noise_scp: data/noise.scp
+noise_apply_prob: 0.8
+validation_rir_scp: data/rirs_val.scp
+validation_noise_scp: data/noise_val.scp
+noise_db_range: "-5_30"
+short_noise_thres: 0.5
+sample_rate: 24000
+use_reverberant_ref: false
+num_spk: 1
+flexible_numspk: false
+num_noise_type: 1
+force_single_channel: true
+avoid_allzero_segment: true
+
+##########################################################
+#                OTHER TRAINING SETTING                  #
+##########################################################
+num_iters_per_epoch: 10000 # number of iterations per epoch
+max_epoch: 1200            # number of epochs
+accum_grad: 1             # gradient accumulation
+batch_size: 384            # batch size, this will be splitted among gpus
+batch_type: unsorted      # how to make batch
+
+
+iterator_type: chunk
+chunk_length: 62400
+num_cache_chunks: 12000
+
+grad_clip: -1             # gradient clipping norm
+grad_noise: false         # whether to use gradient noise injection
+sort_in_batch: descending # how to sort data in making batch
+sort_batch: descending    # how to sort created batches
+num_workers: 2            # number of workers of data loader
+use_amp: false            # whether to use pytorch amp
+log_interval: 50          # log interval in iterations
+keep_nbest_models: 5      # number of models to keep
+num_att_plot: 0           # number of attention figures to be saved in every check
+seed: 777                 # random seed number
+patience: null            # patience for early stopping
+unused_parameters: true   # needed for multi gpu case
+best_model_criterion:     # criterion to save the best models
+-   - valid
+    - mel_loss
+    - min
+-   - train
+    - mel_loss
+    - min
+-   - train
+    - total_count
+    - max
+cudnn_deterministic: false # setting to false accelerates the training speed but makes it non-deterministic
+                           # in the case of GAN-TTS training, we strongly recommend setting to false
+cudnn_benchmark: true     # setting to true might acdelerate the training speed but sometimes decrease it
+                           # therefore, we set to false as a default (recommend trying both cases)

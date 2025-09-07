@@ -20,6 +20,7 @@ from espnet2.gan_codec.shared.discriminator.stft_discriminator import (
 )
 from espnet2.gan_codec.shared.encoder.seanet import SEANetEncoder
 from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
+from espnet2.gan_codec.shared.loss.semantic_loss import HubertLoss
 from espnet2.gan_codec.shared.loss.loss_balancer import Balancer
 from espnet2.gan_codec.shared.quantizer.residual_vq import ResidualVectorQuantizer
 from espnet2.gan_tts.hifigan.hifigan import HiFiGANMultiScaleDiscriminator
@@ -37,6 +38,7 @@ class SoundStream(AbsGANCodec):
     @typechecked
     def __init__(
         self,
+        apply_enhancement: bool = False,
         sampling_rate: int = 24000,
         generator_params: Dict[str, Any] = {
             "hidden_dim": 128,
@@ -60,6 +62,7 @@ class SoundStream(AbsGANCodec):
             "decoder_trim_right_ratio": 1.0,
             "decoder_final_activation": None,
             "decoder_final_activation_params": None,
+            "quantizer_codebook_dim": 128,
             "quantizer_n_q": 8,
             "quantizer_bins": 1024,
             "quantizer_decay": 0.99,
@@ -122,11 +125,13 @@ class SoundStream(AbsGANCodec):
             "range_start": 6,
             "range_end": 11,
             "window": "hann",
-            "n_mels": 80,
+            "n_mels": None,
             "fmin": 0,
             "fmax": None,
             "log_base": None,
         },
+        use_semantic_loss: bool = False,
+        semantic_loss_params: Dict[str, Any] = None,
         use_dual_decoder: bool = True,
         lambda_quantization: float = 1.0,
         lambda_reconstruct: float = 1.0,
@@ -134,6 +139,7 @@ class SoundStream(AbsGANCodec):
         lambda_adv: float = 1.0,
         lambda_feat_match: float = 2.0,
         lambda_mel: float = 45.0,
+        lambda_semantic: float = 1,
         cache_generator_outputs: bool = False,
         use_loss_balancer: bool = False,
         balance_ema_decay: float = 0.99,
@@ -145,6 +151,9 @@ class SoundStream(AbsGANCodec):
         """
         super().__init__()
 
+        # Whether the codec applies speech enhancement such as
+        # denoising and dereverb or not
+        self.apply_enhancement = apply_enhancement
         # define modules
         generator_params.update(sample_rate=sampling_rate)
         self.generator = SoundStreamGenerator(**generator_params)
@@ -170,6 +179,16 @@ class SoundStream(AbsGANCodec):
         self.use_dual_decoder = use_dual_decoder
         if self.use_dual_decoder:
             assert self.use_mel_loss, "only use dual decoder with Mel loss"
+        
+        self.use_semantic_loss = use_semantic_loss
+        if self.use_semantic_loss:
+            semantic_loss_params = semantic_loss_params or {
+                "sample_rate": 24000,
+                "model_name": "WAVLM_LARGE",
+                "feature_ids": None
+            }
+            self.semantic_loss = HubertLoss(
+                **semantic_loss_params)
 
         # coefficients
         self.lambda_quantization = lambda_quantization
@@ -180,6 +199,8 @@ class SoundStream(AbsGANCodec):
             self.lambda_feat_match = lambda_feat_match
         if self.use_mel_loss:
             self.lambda_mel = lambda_mel
+        if self.use_semantic_loss:
+            self.lambda_semantic = lambda_semantic
 
         # cache
         self.cache_generator_outputs = cache_generator_outputs
@@ -267,6 +288,12 @@ class SoundStream(AbsGANCodec):
 
         # TODO(jiatong): double check the multi-channel input
         audio = audio.unsqueeze(1)
+        if self.apply_enhancement:
+            ref_audio = kwargs['speech_ref1'].unsqueeze(1)
+            assert audio.shape == ref_audio.shape, \
+                'Length mismatch between input and reference audio'
+        else:
+            ref_audio = audio
 
         # calculate generator outputs
         reuse_cache = True
@@ -293,7 +320,7 @@ class SoundStream(AbsGANCodec):
         p_hat = self.discriminator(audio_hat)
         with torch.no_grad():
             # do not store discriminator gradient in generator turn
-            p = self.discriminator(audio)
+            p = self.discriminator(ref_audio)
 
         # calculate losses
         adv_loss = self.generator_adv_loss(p_hat)
@@ -301,7 +328,7 @@ class SoundStream(AbsGANCodec):
         codec_commit_loss = codec_commit_loss * self.lambda_commit
         codec_quantization_loss = quantization_loss * self.lambda_quantization
         reconstruct_loss = (
-            self.generator_reconstruct_loss(audio, audio_hat) * self.lambda_reconstruct
+            self.generator_reconstruct_loss(ref_audio, audio_hat) * self.lambda_reconstruct
         )
         codec_loss = codec_commit_loss + codec_quantization_loss
         loss = adv_loss + codec_loss + reconstruct_loss
@@ -318,15 +345,20 @@ class SoundStream(AbsGANCodec):
             loss = loss + feat_match_loss
             stats.update(feat_match_loss=feat_match_loss.item())
         if self.use_mel_loss:
-            mel_loss = self.mel_loss(audio_hat, audio)
+            mel_loss = self.mel_loss(audio_hat, ref_audio)
             mel_loss = self.lambda_mel * mel_loss
             loss = loss + mel_loss
             stats.update(mel_loss=mel_loss.item())
             if self.use_dual_decoder:
-                mel_loss_real = self.mel_loss(audio_hat_real, audio)
+                mel_loss_real = self.mel_loss(audio_hat_real, ref_audio)
                 mel_loss_real = self.lambda_mel * mel_loss_real
                 loss = loss + mel_loss_real
                 stats.update(mel_loss_real=mel_loss_real.item())
+        if self.use_semantic_loss:
+            semantic_loss = self.semantic_loss(audio_hat, ref_audio)
+            semantic_loss = self.lambda_semantic * semantic_loss
+            loss = loss + semantic_loss
+            stats.update(semantic_loss=semantic_loss.item())
 
         stats.update(loss=loss.item())
 
@@ -340,6 +372,8 @@ class SoundStream(AbsGANCodec):
                 balanced_losses.update(feat_match=feat_match_loss)
             if self.use_mel_loss:
                 balanced_losses.update(mel=mel_loss)
+            if self.use_semantic_loss:
+                balanced_losses.update(semantic=semantic_loss)
 
             balanced_loss, norm_stats = self.loss_balancer(balanced_losses, audio_hat)
             stats.update(norm_stats)
@@ -384,6 +418,13 @@ class SoundStream(AbsGANCodec):
         batch_size = audio.size(0)
         audio = audio.unsqueeze(1)
 
+        if self.apply_enhancement:
+            ref_audio = kwargs['speech_ref1'].unsqueeze(1)
+            assert audio.shape == ref_audio.shape, \
+                'Length mismatch between input and reference audio'
+        else:
+            ref_audio = audio
+
         # calculate generator outputs
         reuse_cache = True
         if not self.cache_generator_outputs or self._cache is None:
@@ -410,7 +451,7 @@ class SoundStream(AbsGANCodec):
 
         # calculate discriminator outputs
         p_hat = self.discriminator(audio_hat.detach())
-        p = self.discriminator(audio)
+        p = self.discriminator(ref_audio)
 
         # calculate losses
         real_loss, fake_loss = self.discriminator_adv_loss(p_hat, p)
@@ -450,7 +491,7 @@ class SoundStream(AbsGANCodec):
                 * codec (Tensor): Generated neural codec (T_code, N_stream).
 
         """
-        codec = self.generator.encode(x)
+        codec = self.generator.encode(x, **kwargs)
         wav = self.generator.decode(codec)
 
         return {"wav": wav, "codec": codec}
@@ -469,7 +510,8 @@ class SoundStream(AbsGANCodec):
             Tensor: Generated codes (T_code, N_stream).
 
         """
-        return self.generator.encode(x)
+        target_bw = kwargs.get('target_bw', None)
+        return self.generator.encode(x, target_bw=target_bw)
 
     def decode(
         self,
@@ -516,6 +558,7 @@ class SoundStreamGenerator(nn.Module):
         decoder_trim_right_ratio: float = 1.0,
         decoder_final_activation: Optional[str] = None,
         decoder_final_activation_params: Optional[dict] = None,
+        quantizer_codebook_dim: Optional[int] = None,
         quantizer_n_q: int = 8,
         quantizer_bins: int = 1024,
         quantizer_decay: float = 0.99,
@@ -552,10 +595,16 @@ class SoundStreamGenerator(nn.Module):
             compress=encdec_compress,
             lstm=encdec_lstm,
         )
-
+        
+        # codebook_dim in ResidualVectorQuantizer has a default value
+        # of 512. If not provided it will always take that value
+        # irrespective of hidden_dim
+        quantizer_codebook_dim = quantizer_codebook_dim if quantizer_codebook_dim is not None else hidden_dim
+        
         # Initialize quantizer
         self.quantizer = ResidualVectorQuantizer(
             dimension=hidden_dim,
+            codebook_dim=quantizer_codebook_dim,
             n_q=quantizer_n_q,
             bins=quantizer_bins,
             decay=quantizer_decay,
@@ -641,7 +690,6 @@ class SoundStreamGenerator(nn.Module):
         Returns:
             torch.Tensor: neural codecs in shape ().
         """
-
         encoder_out = self.encoder(x)
         if target_bw is None:
             bw = self.target_bandwidths[-1]

@@ -70,7 +70,9 @@ class ESPnetGANCodecModel(AbsGANESPnetModel):
             audio=audio,
             forward_generator=forward_generator,
         )
-
+        if 'speech_ref1' in kwargs:
+            batch['speech_ref1'] = kwargs['speech_ref1']
+            
         return self.codec(**batch)
 
     def encode(self, audio: torch.Tensor, **kwargs):

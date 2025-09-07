@@ -20,6 +20,7 @@ class Encodec(SoundStream):
 
     def __init__(
         self,
+        apply_enhancement: bool = False,
         sampling_rate: int = 24000,
         generator_params: Dict[str, Any] = {
             "hidden_dim": 128,
@@ -52,16 +53,19 @@ class Encodec(SoundStream):
             "quantizer_target_bandwidth": [7.5, 15],
         },
         discriminator_params: Dict[str, Any] = {
-            "filters": 32,
-            "in_channels": 1,
-            "out_channels": 1,
-            "sep_channels": False,
-            "norm": "weight_norm",
-            "n_ffts": [1024, 2048, 512, 256, 128],
-            "hop_lengths": [256, 512, 128, 64, 32],
-            "win_lengths": [1024, 2048, 512, 256, 128],
-            "activation": "LeakyReLU",
-            "activation_params": {"negative_slope": 0.3},
+            # BUG Fix: The init function of EncodecDiscriminator takes a single dictionary argument.
+            "msstft_discriminator_params": {
+                "filters": 32,
+                "in_channels": 1,
+                "out_channels": 1,
+                "sep_channels": False,
+                "norm": "weight_norm",
+                "n_ffts": [1024, 2048, 512, 256, 128],
+                "hop_lengths": [256, 512, 128, 64, 32],
+                "win_lengths": [1024, 2048, 512, 256, 128],
+                "activation": "LeakyReLU",
+                "activation_params": {"negative_slope": 0.3}
+            }
         },
         # loss related
         generator_adv_loss_params: Dict[str, Any] = {
@@ -84,11 +88,13 @@ class Encodec(SoundStream):
             "range_start": 6,
             "range_end": 11,
             "window": "hann",
-            "n_mels": 80,
+            "n_mels": None,
             "fmin": 0,
             "fmax": None,
             "log_base": None,
         },
+        use_semantic_loss: bool = False,
+        semantic_loss_params: Dict[str, Any] = None,
         use_dual_decoder: bool = True,
         lambda_quantization: float = 1.0,
         lambda_reconstruct: float = 1.0,
@@ -96,6 +102,7 @@ class Encodec(SoundStream):
         lambda_adv: float = 1.0,
         lambda_feat_match: float = 2.0,
         lambda_mel: float = 45.0,
+        lambda_semantic: float = 1,
         cache_generator_outputs: bool = False,
         use_loss_balancer: bool = False,
         balance_ema_decay: float = 0.99,
@@ -103,6 +110,7 @@ class Encodec(SoundStream):
         # Note(Jinchuan): re-apply everything except the discriminator config.
         # Init discriminator from default config and then override it.
         super(Encodec, self).__init__(
+            apply_enhancement=apply_enhancement,
             sampling_rate=sampling_rate,
             generator_params=generator_params,
             generator_adv_loss_params=generator_adv_loss_params,
@@ -111,6 +119,8 @@ class Encodec(SoundStream):
             feat_match_loss_params=feat_match_loss_params,
             use_mel_loss=use_mel_loss,
             mel_loss_params=mel_loss_params,
+            use_semantic_loss=use_semantic_loss,
+            semantic_loss_params=semantic_loss_params,
             use_dual_decoder=use_dual_decoder,
             lambda_quantization=lambda_quantization,
             lambda_reconstruct=lambda_reconstruct,
@@ -118,13 +128,13 @@ class Encodec(SoundStream):
             lambda_adv=lambda_adv,
             lambda_feat_match=lambda_feat_match,
             lambda_mel=lambda_mel,
+            lambda_semantic=lambda_semantic,
             cache_generator_outputs=cache_generator_outputs,
             use_loss_balancer=use_loss_balancer,
             balance_ema_decay=balance_ema_decay,
         )
 
         self.discriminator = EncodecDiscriminator(**discriminator_params)
-
 
 class EncodecDiscriminator(torch.nn.Module):
     """Encodec Discriminator with only Multi-Scale STFT discriminator module"""
@@ -140,7 +150,8 @@ class EncodecDiscriminator(torch.nn.Module):
             "hop_lengths": [256, 512, 128, 64, 32],
             "win_lengths": [1024, 2048, 512, 256, 128],
             "activation": "LeakyReLU",
-            "activation_params": {"negative_slope: 0.3"},
+            # "activation_params": {"negative_slope: 0.3"},
+            "activation_params": {"negative_slope": 0.3}, # Bug fix. the above commented code is fixed!!
         },
     ):
         """Initialize Encodec Discriminator module.

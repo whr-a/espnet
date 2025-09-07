@@ -1,0 +1,47 @@
+# codec example yaml config
+
+# signal related metrics
+# -- sir: signal to interference ratio
+# -- sar: signal to artifact ratio
+# -- sdr: signal to distortion ratio
+# -- ci-sdr: scale-invariant signal to distortion ratio
+# -- si-snri: scale-invariant signal to noise ratio improvement
+# - name: signal_metric
+
+# pesq related metrics
+# -- pesq: perceptual evaluation of speech quality
+- name: pesq
+
+# stoi related metrics
+# -- stoi: short-time objective intelligibility
+# - name: stoi
+
+# pseudo subjective metrics
+# -- utmos: UT-MOS score
+# -- dnsmos: DNS-MOS score
+# -- plcmos: PLC-MOS score
+# -- aecmos: AEC-MOS score
+- name: pseudo_mos
+  predictor_types: ["utmos"]
+  predictor_args:
+    utmos:
+      fs: 16000
+
+# Audiobox Aesthetics (Unified automatic quality assessment for speech, music, and sound.)
+# Check https://github.com/facebookresearch/audiobox-aesthetics.git for original release.
+# We use our own interface at https://github.com/ftshijt/audiobox-aesthetics.git
+- name: audiobox_aesthetics
+  batch_size: 1
+  cache_dir: versa_cache/audiobox
+
+# scoreq (reference-based) metric
+# -- scoreq_ref: scoreq reference-based model
+#            data_domain: "synthetic" or "natural" (default: "synthetic")
+- name: scoreq_ref
+  data_domain: natural
+  model_cache: versa_cache/scoreq_pt-models
+
+# An overall model on MOS-bench from Sheet toolkit
+# More info in https://github.com/unilight/sheet/tree/main
+# --sheet_ssqa: the mos prediction from sheet_ssqa
+- name: sheet_ssqa
