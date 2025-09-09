@@ -18,7 +18,7 @@ from typing import List, Tuple
 
 import numpy as np
 from tqdm import tqdm
-
+import pdb
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -123,16 +123,8 @@ def encode_batch(encoder, signals_24k, lengths, device: str):
     encoded, out_lens = encoder(input_signal=sig, length=lens)
     return encoded, out_lens
 
-
-def slice_to_time_feat_per_item(feat_b, out_len_i: int):
-    if feat_b.ndim == 2:
-        if feat_b.shape[0] >= feat_b.shape[1]:
-            x = feat_b[:out_len_i, :]
-        else:
-            x = feat_b[:, :out_len_i].transpose(0, 1)
-    else:
-        x = feat_b.reshape(-1, feat_b.shape[-1])
-    return x.detach().cpu().numpy()
+def truncate_feat(feat_b, out_len_i: int):
+    return feat_b[:, :out_len_i].detach().cpu().numpy()
 
 
 # -----------------------------
@@ -144,11 +136,11 @@ def main():
     parser.add_argument("--wav_scp", type=str, required=True)
     parser.add_argument("--out_dir", type=str, required=True)
     parser.add_argument("--n_clusters", type=int, default=8192)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--feature_save_dir", type=str,
-                        default="/work/hdd/bbjs/bsu5/lrac/canary_embedding",
+                        default="/work/nvme/bbjs/bsu5/lrac_espnet/espnet/egs_lrac/lrac/codec1/canary_embedding",
                         help="Directory to save per-utterance features")
     args = parser.parse_args()
 
@@ -163,10 +155,10 @@ def main():
                     shuffle=False, num_workers=args.num_workers,
                     collate_fn=collate_pad)
 
-    encoder = load_semantic_encoder(device)
+    # encoder = load_semantic_encoder(device)
 
     # Extract and save features + collect for kmeans
-    # all_feats = []
+    all_feats = []
     pbar = tqdm(dl, desc="Extracting + saving features")
 
     for utt_ids, signals_24k, lengths in pbar:
@@ -177,7 +169,8 @@ def main():
             out_path = os.path.join(args.feature_save_dir, f"{utt}.npy")
             if os.path.exists(out_path):
                 feat_i = np.load(out_path)
-                # all_feats.append(feat_i)
+                all_feats.append(feat_i)
+                continue
             else:
                 feats_to_compute.append((i, utt, out_path))
                 idx_to_compute.append(i)
@@ -187,37 +180,37 @@ def main():
             continue
 
         # Encode only the batch items that need computation
-        feats_b, out_lens = encode_batch(encoder, signals_24k, lengths, device)
+        # feats_b, out_lens = encode_batch(encoder, signals_24k, lengths, device)
 
-        for i, utt, out_path in feats_to_compute:
-            out_len_i = int(out_lens[i].item())
-            feat_i = slice_to_time_feat_per_item(feats_b[i], out_len_i)
-            if feat_i.size == 0:
-                continue
-            np.save(out_path, feat_i.astype(np.float32))
-    #         all_feats.append(feat_i)
+        # for i, utt, out_path in feats_to_compute:
+        #     out_len_i = int(out_lens[i].item())
+        #     feat_i = truncate_feat(feats_b[i], out_len_i)
+        #     if feat_i.size == 0:
+        #         continue
+        #     np.save(out_path, feat_i.astype(np.float32))
+        #     all_feats.append(feat_i)
+    # Train KMeans
+    print("Stacking all features for KMeans...")
+    X = np.concatenate(all_feats, axis=1)
+    X = X.T
+    kmeans = MiniBatchKMeans(n_clusters=args.n_clusters,
+                             random_state=0,
+                             batch_size=4096,
+                             n_init="auto")
+    kmeans.fit(X)
+    np.save(os.path.join(args.out_dir, "centroids.npy"),
+            kmeans.cluster_centers_.astype(np.float32))
 
-    # # Train KMeans
-    # print("Stacking all features for KMeans...")
-    # X = np.concatenate(all_feats, axis=0)
-    # kmeans = MiniBatchKMeans(n_clusters=args.n_clusters,
-    #                          random_state=0,
-    #                          batch_size=4096,
-    #                          n_init="auto")
-    # kmeans.fit(X)
-    # np.save(os.path.join(args.out_dir, "centroids.npy"),
-    #         kmeans.cluster_centers_.astype(np.float32))
+    # Assign labels from saved features
+    labels_path = os.path.join(args.out_dir, "labels.txt")
+    with open(labels_path, "w", encoding="utf-8") as f:
+        for utt_id, _ in ds.items:
+            feat = np.load(os.path.join(args.feature_save_dir, f"{utt_id}.npy"))
+            ids = kmeans.predict(feat.T)
+            ids_str = " ".join(str(int(v)) for v in ids.tolist())
+            f.write(f"{utt_id} {ids_str}\n")
 
-    # # Assign labels from saved features
-    # labels_path = os.path.join(args.out_dir, "labels.txt")
-    # with open(labels_path, "w", encoding="utf-8") as f:
-    #     for utt_id, _ in ds.items:
-    #         feat = np.load(os.path.join(args.feature_save_dir, f"{utt_id}.npy"))
-    #         ids = kmeans.predict(feat)
-    #         ids_str = " ".join(str(int(v)) for v in ids.tolist())
-    #         f.write(f"{utt_id} {ids_str}\n")
-
-    # print("Done. Features saved in", args.feature_save_dir)
+    print("Done. Features saved in", args.feature_save_dir)
 
 
 if __name__ == "__main__":

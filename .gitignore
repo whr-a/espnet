@@ -1,4 +1,9 @@
 # general
+egs_lrac/lrac/codec1/logs
+egs_lrac/lrac/codec1/canary_embedding
+egs_lrac/lrac/codec1/labels.txt
+egs_lrac/lrac/codec1/run_gpu_job.sh
+egs_lrac/lrac/codec1/run_cpu_job.sh
 *~
 *.pyc
 \#*\#

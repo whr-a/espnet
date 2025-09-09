@@ -1,0 +1,43 @@
+preprocessor:
+  _target_: nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor
+  sample_rate: 16000
+  normalize: per_feature
+  window_size: 0.025
+  window_stride: 0.01
+  window: hann
+  features: 128
+  n_fft: 512
+  log: true
+  frame_splicing: 1
+  dither: 1.0e-05
+  pad_to: 0
+  pad_value: 0.0
+encoder:
+  _target_: nemo.collections.asr.modules.ConformerEncoder
+  feat_in: 128
+  feat_out: -1
+  n_layers: 20
+  d_model: 448
+  subsampling: dw_striding
+  subsampling_factor: 8
+  subsampling_conv_channels: 128
+  causal_downsampling: false
+  reduction: null
+  reduction_position: null
+  reduction_factor: 1
+  ff_expansion_factor: 3
+  self_attention_model: rel_pos
+  n_heads: 8
+  att_context_size:
+  - -1
+  - -1
+  xscaling: false
+  untie_biases: true
+  pos_emb_max_len: 5000
+  conv_kernel_size: 15
+  conv_norm_type: batch_norm
+  conv_context_size: null
+  dropout: 0.1
+  dropout_pre_encoder: 0.1
+  dropout_emb: 0.0
+  dropout_att: 0.1
