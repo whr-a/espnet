@@ -179,7 +179,7 @@ noise_apply_prob: 0.8
 validation_rir_scp: data/rirs_val.scp
 validation_noise_scp: data/noise_val.scp
 noise_db_range: "-5_30"
-short_noise_thres: 0.5
+short_noise_thres: 0.01
 sample_rate: 24000
 use_reverberant_ref: false
 num_spk: 1
@@ -194,7 +194,8 @@ avoid_allzero_segment: true
 num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1200            # number of epochs
 accum_grad: 1             # gradient accumulation
-batch_size: 384            # batch size, this will be splitted among gpus
+# batch_size: 384            # batch size, this will be splitted among gpus
+batch_size: 64
 batch_type: unsorted      # how to make batch
 
 

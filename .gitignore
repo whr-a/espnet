@@ -51,6 +51,8 @@ egs*/*/*/data*
 egs*/*/*/db
 egs*/*/*/downloads
 egs*/*/*/dump
+egs*/*/*/dump_old
+egs*/*/*/versa_cache
 egs*/*/*/enhan
 egs*/*/*/exp
 egs*/*/*/fbank

@@ -173,7 +173,8 @@ skip_discriminator_prob: 0
 num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
-batch_size: 384            # batch size, this will be splitted among gpus
+# batch_size: 384            # batch size, this will be splitted among gpus
+batch_size: 160
 batch_type: unsorted      # how to make batch
 
 

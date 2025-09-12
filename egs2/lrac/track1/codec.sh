@@ -260,7 +260,7 @@ if ! "${skip_data_prep}"; then
         # i.e. the input file format and rate is same as the output.
 
         log "Stage 2: Format wav.scp: data/ -> ${data_feats}/"
-        for dset in "${train_set}" "${valid_set}" ${test_sets}; do
+        for dset in ${test_sets}; do
             if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${valid_set}" ]; then
                 _suf="/org"
             else
@@ -510,6 +510,7 @@ if ! "${skip_eval}"; then
 
                 # 3. Submit jobs
                 log "Evaluation started... log: '${_logdir}/codec_evaluate.*.log'"
+                conda activate versa
                 # shellcheck disable=SC2046,SC2086
                 ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/codec_evaluate.JOB.log \
                     ${python} -m versa.bin.scorer \
