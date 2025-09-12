@@ -374,45 +374,62 @@ def train(args):
         teacher_dim=args.teacher_dim
     ).to(device)
 
+    accum_steps = 4
+
     # Optim
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda" and args.amp))
 
     best_val = float("inf")
     global_step = 0
+    accum_steps = max(1, accum_steps)
+    # for logging smoothness across accumulation
+    running = {"loss": 0.0, "mse": 0.0, "cos": 0.0}
+    logged_updates = 0
 
     for epoch in range(1, args.epochs + 1):
         model.train()
         running = {"loss": 0.0, "mse": 0.0, "cos": 0.0}
         pbar = tqdm(dl_train, desc=f"Epoch {epoch}/{args.epochs}", dynamic_ncols=True)
 
-        for batch in pbar:
+        optimizer.zero_grad(set_to_none=True)
+        for ibatch, batch in enumerate(pbar):
             wav = batch["wav"].squeeze(1).to(device)         # [B, 1, T]
             wav_len = batch["wav_len"].to(device) # [B]
             targs = batch["targs"]
+            print('Max length of targs:', max(wav_len))
 
-            optimizer.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=(device.type == "cuda" and args.amp)):
                 y, y_len = model(wav, wav_len)    # [B, D, T'], [B]
                 loss, stats = distill_loss(y.transpose(1, 2), targs, y_len, mse_w=args.mse_w, cos_w=args.cos_w)
 
-            scaler.scale(loss).backward()
-            if args.grad_clip > 0.0:
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-            scaler.step(optimizer)
-            scaler.update()
+            # scale by accumulation steps
+            loss_to_backprop = loss / accum_steps
+            scaler.scale(loss_to_backprop).backward()
 
-            global_step += 1
-            running["loss"] += loss.item()
-            running["mse"] += stats["mse"]
-            running["cos"] += stats["cos"]
+            # step only on accumulation boundary
+            step_boundary = ((ibatch + 1) % accum_steps == 0)
+            if step_boundary:
+                if args.grad_clip > 0.0:
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
 
-            pbar.set_postfix({
-                "loss": f"{running['loss']/global_step:.4f}",
-                "mse": f"{running['mse']/global_step:.4f}",
-                "cos": f"{running['cos']/global_step:.4f}"
-            })
+                # logging once per optimizer update
+                running["loss"] += loss.item()
+                running["mse"]  += stats["mse"]
+                running["cos"]  += stats["cos"]
+                logged_updates  += 1
+
+                pbar.set_postfix({
+                    "loss": f"{running['loss']/max(1,logged_updates):.4f}",
+                    "mse":  f"{running['mse']/max(1,logged_updates):.4f}",
+                    "cos":  f"{running['cos']/max(1,logged_updates):.4f}",
+                    "gs":   global_step
+                })
 
         # Save per-epoch
         ckpt_path = save_ckpt({
