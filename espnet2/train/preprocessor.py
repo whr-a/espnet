@@ -293,6 +293,9 @@ class CommonPreprocessor(AbsPreprocessor):
                 rir = librosa.resample(
                     rir, orig_sr=fs, target_sr=tgt_fs, res_type="kaiser_fast"
                 )
+            if rir.shape[1] == 0:
+                logging.warning(f"RIR file at {rir_path} is empty or invalid. Skipping convolution.")
+                return speech, rir
 
             # speech: (Nmic, Time)
             speech = speech[:1]

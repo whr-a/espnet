@@ -25,7 +25,7 @@ score_config=conf/score.yaml
     --scoring_config "${score_config}" \
     --stage 5 \
     --stop_stage 5\
-    --ngpu 1 \
+    --ngpu 2 \
     --nj 12 \
     --train_set "${train_set}" \
     --valid_set "${valid_set}" \

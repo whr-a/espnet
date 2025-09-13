@@ -17,6 +17,7 @@ from espnet2.gan_codec.encodec.encodec import Encodec
 from espnet2.gan_codec.espnet_model import ESPnetGANCodecModel
 from espnet2.gan_codec.funcodec.funcodec import FunCodec
 from espnet2.gan_codec.soundstream.soundstream import SoundStream
+from espnet2.gan_codec.lrac_rewrite.lrac_rewrite import Lrac
 from espnet2.tasks.abs_task import AbsTask, optim_classes
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
@@ -25,7 +26,6 @@ from espnet2.train.preprocessor import CommonPreprocessor, EnhPreprocessor
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 from espnet2.utils.nested_dict_action import NestedDictAction
 from espnet2.utils.types import int_or_none, str2bool, str_or_none  # noqa
-
 codec_choices = ClassChoices(
     "codec",
     classes=dict(
@@ -33,7 +33,8 @@ codec_choices = ClassChoices(
         encodec=Encodec,
         dac=DAC,
         funcodec=FunCodec,
-        lrac=LRACConvBaseline
+        lrac=LRACConvBaseline,
+        lrac_rewrite=Lrac,
     ),
     default="soundstream",
 )
