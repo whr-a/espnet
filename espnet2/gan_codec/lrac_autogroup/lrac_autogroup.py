@@ -19,10 +19,7 @@ from espnet2.gan_codec.shared.decoder.generic_seanet import GenericSEANetDecoder
 from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
 from espnet2.gan_codec.shared.loss.semantic_loss import HubertLoss
 from espnet2.gan_codec.shared.loss.loss_balancer import Balancer
-from espnet2.gan_codec.shared.quantizer.residual_vq import ResidualVectorQuantizer
-from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
-    MultiScaleSTFTDiscriminator,
-)
+from espnet2.gan_codec.shared.quantizer.ag_residual_vq import AutoGroupResidualVectorQuantize
 from espnet2.gan_codec.shared.discriminator.msmpmb_discriminator import (
     MultiScaleMultiPeriodMultiBandDiscriminator,
 )
@@ -34,7 +31,7 @@ from espnet2.gan_tts.hifigan.loss import (
 from espnet2.torch_utils.device_funcs import force_gatherable
 
 
-class Lrac_rewrite(AbsGANCodec):
+class Lrac_autogroup(AbsGANCodec):
     """Lrac model."""
 
     @typechecked
@@ -79,13 +76,13 @@ class Lrac_rewrite(AbsGANCodec):
         self.apply_enhancement = apply_enhancement
         # define modules
 
-        self.generator = Lrac_rewriteGenerator(
+        self.generator = Lrac_autogroupGenerator(
             sample_rate=sampling_rate,
             encoder_params=encoder_params,
             decoder_params=decoder_params,
             quantizer_params=quantizer_params,
         )
-        self.discriminator = Lrac_rewriteDiscriminator(**discriminator_params)
+        self.discriminator = Lrac_autogroupDiscriminator(**discriminator_params)
         self.generator_adv_loss = GeneratorAdversarialLoss(
             **generator_adv_loss_params,
         )
@@ -137,12 +134,12 @@ class Lrac_rewrite(AbsGANCodec):
         # store sampling rate for saving wav file
         # (not used for the training)
         self.fs = sampling_rate
-        self.num_streams = quantizer_params["n_q"]
+        self.num_streams = quantizer_params["n_codebooks"]
         self.frame_shift = functools.reduce(
             lambda x, y: x * y, encoder_params["strides"]
         )
         self.code_size_per_stream = [
-            quantizer_params["bins"]
+            quantizer_params["codebook_size"] * quantizer_params["codebook_size"]
         ] * self.num_streams
 
         # loss balancer
@@ -188,7 +185,7 @@ class Lrac_rewrite(AbsGANCodec):
                 **kwargs,
             )
         else:
-            return self._forward_discrminator(
+            return self._forward_discriminator(
                 audio=audio,
                 **kwargs,
             )
@@ -323,7 +320,7 @@ class Lrac_rewrite(AbsGANCodec):
             "optim_idx": 0,  # needed for trainer
         }
 
-    def _forward_discrminator(
+    def _forward_discriminator(
         self,
         audio: torch.Tensor,
         **kwargs,
@@ -458,7 +455,7 @@ class Lrac_rewrite(AbsGANCodec):
         return self.generator.decode(x)
 
 
-class Lrac_rewriteGenerator(nn.Module):
+class Lrac_autogroupGenerator(nn.Module):
     """SoundStream generator module."""
 
     @typechecked
@@ -484,8 +481,8 @@ class Lrac_rewriteGenerator(nn.Module):
         self.encoder = GenericSEANetEncoder(**encoder_params)
         self.decoder = GenericSEANetDecoder(**decoder_params)
         self.target_bandwidths = quantizer_params.pop("target_bandwidth", None)
-        self.quantizer = ResidualVectorQuantizer(
-            dimension=encoder_params['output_dimension'],
+        self.quantizer = AutoGroupResidualVectorQuantize(
+            input_dim=encoder_params['output_dimension'],
             **quantizer_params
         )
         self.sample_rate = sample_rate
@@ -501,14 +498,11 @@ class Lrac_rewriteGenerator(nn.Module):
             "encoder_params": GenericSEANetEncoder.get_default_init_params(),
             "decoder_params": GenericSEANetDecoder.get_default_init_params(),
             "quantizer_params": {
-                "codebook_dim": 128,
-                "n_q": 6,
-                "bins": 1024,
-                "decay": 0.99,
-                "kmeans_init": True,
-                "kmeans_iters": 50,
-                "threshold_ema_dead_code": 2,
-                "quantizer_target_bandwidth": [1, 6]
+                "n_codebooks": 6,
+                "codebook_size": 32,
+                "codebook_dim": 8,
+                "target_n_q": [1, 6],
+                "frame_residual_vq": False,
             }
         }
         return init_params
@@ -526,17 +520,9 @@ class Lrac_rewriteGenerator(nn.Module):
             torch.Tensor: resynthesized audio from encoder.
         """
         encoder_out = self.encoder(x)
-        max_idx = len(self.target_bandwidths) - 1
-
-        # randomly pick up one bandwidth
-        bw = self.target_bandwidths[random.randint(0, max_idx)]
 
         # Forward quantizer
-        quantized, _, _, commit_loss = self.quantizer(encoder_out, self.frame_rate, bw)
-
-        quantization_loss = self.l1_quantization_loss(
-            encoder_out, quantized.detach()
-        ) + self.l2_quantization_loss(encoder_out, quantized.detach())
+        quantized, _, _, commit_loss, codebook_loss = self.quantizer(encoder_out)
 
         resyn_audio = self.decoder(quantized)
 
@@ -544,12 +530,12 @@ class Lrac_rewriteGenerator(nn.Module):
             resyn_audio_real = self.decoder(encoder_out)
         else:
             resyn_audio_real = None
-        return resyn_audio, commit_loss, quantization_loss, resyn_audio_real
+        return resyn_audio, commit_loss, codebook_loss, resyn_audio_real
 
     def encode(
         self,
         x: torch.Tensor,
-        target_bw: Optional[float] = None,
+        n_quantizers: int,
     ):
         """Soundstream codec encoding.
 
@@ -559,44 +545,28 @@ class Lrac_rewriteGenerator(nn.Module):
             torch.Tensor: neural codecs in shape ().
         """
         encoder_out = self.encoder(x)
-        if target_bw is None:
-            bw = self.target_bandwidths[-1]
-        else:
-            bw = target_bw
-        codes = self.quantizer.encode(encoder_out, self.frame_rate, bw)
+
+        _, codes, _, _, _ = self.quantizer(encoder_out, n_quantizers)
         return codes
 
     def decode(self, codes: torch.Tensor):
         """Soundstream codec decoding.
 
         Args:
-            codecs (torch.Tensor): neural codecs in shape ().
+            codes (torch.Tensor): neural codecs in shape (B, N, T).
         Returns:
             torch.Tensor: resynthesized audio.
         """
-        quantized = self.quantizer.decode(codes)
+        quantized, _, _ = self.quantizer.from_codes(codes)
         resyn_audio = self.decoder(quantized)
         return resyn_audio
 
 
-class Lrac_rewriteDiscriminator(torch.nn.Module):
+class Lrac_autogroupDiscriminator(torch.nn.Module):
     """Lrac Discriminator with only Multi-Scale STFT discriminator module"""
 
     def __init__(
         self,
-        choose: str="msstft",
-        msstft_discriminator_params: Dict[str, Any] = {
-            "in_channels": 1,
-            "out_channels": 1,
-            "filters": 32,
-            "norm": "weight_norm",
-            "n_fft": [1024, 2048, 512, 256, 128],
-            "hop_lengths": [256, 512, 128, 64, 32],
-            "win_lengths": [1024, 2048, 512, 256, 128],
-            "activation": "LeakyReLU",
-            # "activation_params": {"negative_slope: 0.3"},
-            "activation_params": {"negative_slope": 0.3}, # Bug fix. the above commented code is fixed!!
-        },
         msmpmb_discriminator_params: Dict[str, Any] = {
             "rates": [],
             "fft_sizes": [2048, 1024, 512],
@@ -631,7 +601,7 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
     ):
         """Initialize Encodec Discriminator module.
 
-        Args: msstft_discriminator_params (Dict[str, Any]) with following arguments:
+        Args: msmpmb_discriminator_params (Dict[str, Any]) with following arguments:
             in_channels (int): Number of input channels.
             out_channels (int): Number of output channels.
             filters (int): Number of filters in convolutions.
@@ -645,11 +615,8 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
         """
 
         super().__init__()
-        self.choose = choose
-        if choose == "msstft":
-            self.msstft = MultiScaleSTFTDiscriminator(**msstft_discriminator_params)
-        elif choose == "msmpmb":
-            self.msmpmb = MultiScaleMultiPeriodMultiBandDiscriminator(**msmpmb_discriminator_params)
+
+        self.msmpmb_discriminator = MultiScaleMultiPeriodMultiBandDiscriminator(**msmpmb_discriminator_params)
 
     def forward(self, x: torch.Tensor) -> List[List[torch.Tensor]]:
         """Calculate forward propagation.
@@ -663,8 +630,7 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
                 discriminator here, but still make it as List of List for
                 consistency.
         """
-        if self.choose == "msstft":
-            out = self.msstft(x)
-        elif self.choose == "msmpmb":
-            out = self.msmpmb(x)
-        return out
+
+        msmpmb_outs = self.msmpmb_discriminator(x)
+
+        return msmpmb_outs

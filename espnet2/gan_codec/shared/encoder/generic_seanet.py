@@ -66,7 +66,7 @@ class GenericSEANetResnetBlock(nn.Module):
         kernel_sizes = kernel_sizes or [3, 1]
         dilations = dilations or [1] * len(kernel_sizes)
         causality_modes = causality_modes or [True] * len(kernel_sizes)
-        activation_params = activation_params or {"alpha": 1.0}
+        # activation_params = activation_params or {"alpha": 1.0}
         norm_params = norm_params or {}
 
         assert len(kernel_sizes) == len(dilations), \

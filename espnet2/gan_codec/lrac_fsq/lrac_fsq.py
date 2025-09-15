@@ -19,12 +19,12 @@ from espnet2.gan_codec.shared.decoder.generic_seanet import GenericSEANetDecoder
 from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
 from espnet2.gan_codec.shared.loss.semantic_loss import HubertLoss
 from espnet2.gan_codec.shared.loss.loss_balancer import Balancer
-from espnet2.gan_codec.shared.quantizer.residual_vq import ResidualVectorQuantizer
-from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
-    MultiScaleSTFTDiscriminator,
-)
+from espnet2.gan_codec.shared.quantizer.fsq import LayeredFSQ
 from espnet2.gan_codec.shared.discriminator.msmpmb_discriminator import (
     MultiScaleMultiPeriodMultiBandDiscriminator,
+)
+from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
+    MultiScaleSTFTDiscriminator,
 )
 from espnet2.gan_tts.hifigan.loss import (
     DiscriminatorAdversarialLoss,
@@ -34,7 +34,7 @@ from espnet2.gan_tts.hifigan.loss import (
 from espnet2.torch_utils.device_funcs import force_gatherable
 
 
-class Lrac_rewrite(AbsGANCodec):
+class Lrac_fsq(AbsGANCodec):
     """Lrac model."""
 
     @typechecked
@@ -56,8 +56,6 @@ class Lrac_rewrite(AbsGANCodec):
         use_semantic_loss: bool = False,
         semantic_loss_params: Dict[str, Any] = None,
         use_dual_decoder: bool = True,
-        lambda_quantization: float = 1.0,
-        lambda_commit: float = 1.0,
         lambda_reconstruct: float = 1.0,
         lambda_adv: float = 1.0,
         lambda_mel: float = 45.0,
@@ -79,13 +77,13 @@ class Lrac_rewrite(AbsGANCodec):
         self.apply_enhancement = apply_enhancement
         # define modules
 
-        self.generator = Lrac_rewriteGenerator(
+        self.generator = Lrac_fsqGenerator(
             sample_rate=sampling_rate,
             encoder_params=encoder_params,
             decoder_params=decoder_params,
             quantizer_params=quantizer_params,
         )
-        self.discriminator = Lrac_rewriteDiscriminator(**discriminator_params)
+        self.discriminator = Lrac_fsqDiscriminator(**discriminator_params)
         self.generator_adv_loss = GeneratorAdversarialLoss(
             **generator_adv_loss_params,
         )
@@ -119,9 +117,7 @@ class Lrac_rewrite(AbsGANCodec):
                 **semantic_loss_params)
 
         # coefficients
-        self.lambda_quantization = lambda_quantization
         self.lambda_reconstruct = lambda_reconstruct
-        self.lambda_commit = lambda_commit
         self.lambda_adv = lambda_adv
         if self.use_feat_match_loss:
             self.lambda_feat_match = lambda_feat_match
@@ -137,12 +133,12 @@ class Lrac_rewrite(AbsGANCodec):
         # store sampling rate for saving wav file
         # (not used for the training)
         self.fs = sampling_rate
-        self.num_streams = quantizer_params["n_q"]
+        self.num_streams = 6
         self.frame_shift = functools.reduce(
             lambda x, y: x * y, encoder_params["strides"]
         )
         self.code_size_per_stream = [
-            quantizer_params["bins"]
+            1000
         ] * self.num_streams
 
         # loss balancer
@@ -188,7 +184,7 @@ class Lrac_rewrite(AbsGANCodec):
                 **kwargs,
             )
         else:
-            return self._forward_discrminator(
+            return self._forward_discriminator(
                 audio=audio,
                 **kwargs,
             )
@@ -227,56 +223,66 @@ class Lrac_rewrite(AbsGANCodec):
         reuse_cache = True
         if not self.cache_generator_outputs or self._cache is None:
             reuse_cache = False
-            audio_hat, codec_commit_loss, quantization_loss, audio_hat_real = (
+            audio_hat1, audio_hat2, audio_hat_real = (
                 self.generator(audio, use_dual_decoder=self.use_dual_decoder)
             )
         else:
-            audio_hat, codec_commit_loss, quantization_loss, audio_hat_real = (
+            audio_hat1, audio_hat2, audio_hat_real = (
                 self._cache
             )
 
         # store cache
         if self.training and self.cache_generator_outputs and not reuse_cache:
             self._cache = (
-                audio_hat,
-                codec_commit_loss,
-                quantization_loss,
+                audio_hat1,
+                audio_hat2,
                 audio_hat_real,
             )
 
         # calculate discriminator outputs
-        p_hat = self.discriminator(audio_hat)
+        p_hat1 = self.discriminator(audio_hat1)
+        p_hat2 = self.discriminator(audio_hat2)
         with torch.no_grad():
             # do not store discriminator gradient in generator turn
             p = self.discriminator(ref_audio)
 
         # calculate losses
-        adv_loss = self.generator_adv_loss(p_hat)
-        adv_loss = adv_loss * self.lambda_adv
-        codec_commit_loss = codec_commit_loss * self.lambda_commit
-        codec_quantization_loss = quantization_loss * self.lambda_quantization
-        reconstruct_loss = (
-            self.generator_reconstruct_loss(ref_audio, audio_hat) * self.lambda_reconstruct
+        adv_loss1 = self.generator_adv_loss(p_hat1) * self.lambda_adv
+        adv_loss2 = self.generator_adv_loss(p_hat2) * self.lambda_adv
+
+        adv_loss = (adv_loss1 + adv_loss2) * 0.5
+        reconstruct_loss1 = (
+            self.generator_reconstruct_loss(ref_audio, audio_hat1) * self.lambda_reconstruct
         )
-        codec_loss = codec_commit_loss + codec_quantization_loss
-        loss = adv_loss + codec_loss + reconstruct_loss
+        reconstruct_loss2 = (
+            self.generator_reconstruct_loss(ref_audio, audio_hat2) * self.lambda_reconstruct
+        )
+        reconstruct_loss = (reconstruct_loss1 + reconstruct_loss2) * 0.5
+        loss = adv_loss + reconstruct_loss
         stats = dict(
+            adv_loss1=adv_loss1.item(),
+            adv_loss2=adv_loss2.item(),
             adv_loss=adv_loss.item(),
-            codec_loss=codec_loss.item(),
-            codec_commit_loss=codec_commit_loss.item(),
-            codec_quantization_loss=codec_quantization_loss.item(),
+            reconstruct_loss1=reconstruct_loss1.item(),
+            reconstruct_loss2=reconstruct_loss2.item(),
             reconstruct_loss=reconstruct_loss.item(),
         )
         if self.use_feat_match_loss:
-            feat_match_loss = self.feat_match_loss(p_hat, p)
-            feat_match_loss = feat_match_loss * self.lambda_feat_match
+            feat_match_loss1 = self.feat_match_loss(p_hat1, p) * self.lambda_feat_match
+            feat_match_loss2 = self.feat_match_loss(p_hat2, p) * self.lambda_feat_match
+            feat_match_loss = (feat_match_loss1 + feat_match_loss2) * 0.5
             loss = loss + feat_match_loss
             stats.update(feat_match_loss=feat_match_loss.item())
         if self.use_mel_loss:
-            mel_loss = self.mel_loss(audio_hat, ref_audio)
-            mel_loss = self.lambda_mel * mel_loss
+            mel_loss1 = self.mel_loss(audio_hat1, ref_audio) * self.lambda_mel
+            mel_loss2 = self.mel_loss(audio_hat2, ref_audio) * self.lambda_mel
+            mel_loss =  (mel_loss1 + mel_loss2) * 0.5
             loss = loss + mel_loss
-            stats.update(mel_loss=mel_loss.item())
+            stats.update(
+                mel_loss1=mel_loss1.item(),
+                mel_loss2=mel_loss2.item(),
+                mel_loss=mel_loss.item(),
+            )
             if self.use_dual_decoder:
                 mel_loss_real = self.mel_loss(audio_hat_real, ref_audio)
                 mel_loss_real = self.lambda_mel * mel_loss_real
@@ -323,7 +329,7 @@ class Lrac_rewrite(AbsGANCodec):
             "optim_idx": 0,  # needed for trainer
         }
 
-    def _forward_discrminator(
+    def _forward_discriminator(
         self,
         audio: torch.Tensor,
         **kwargs,
@@ -357,37 +363,41 @@ class Lrac_rewrite(AbsGANCodec):
         reuse_cache = True
         if not self.cache_generator_outputs or self._cache is None:
             reuse_cache = False
-            audio_hat, codec_commit_loss, codec_quantization_loss, audio_hat_real = (
-                self.generator(
-                    audio,
-                    use_dual_decoder=self.use_dual_decoder,
-                )
+            audio_hat1, audio_hat2, audio_hat_real = (
+                self.generator(audio, use_dual_decoder=self.use_dual_decoder)
             )
         else:
-            audio_hat, codec_commit_loss, codec_quantization_loss, audio_hat_real = (
+            audio_hat1, audio_hat2, audio_hat_real = (
                 self._cache
             )
 
         # store cache
         if self.cache_generator_outputs and not reuse_cache:
             self._cache = (
-                audio_hat,
-                codec_commit_loss,
-                codec_quantization_loss,
+                audio_hat1,
+                audio_hat2,
                 audio_hat_real,
             )
 
         # calculate discriminator outputs
-        p_hat = self.discriminator(audio_hat.detach())
+        p_hat1 = self.discriminator(audio_hat1.detach())
+        p_hat2 = self.discriminator(audio_hat2.detach())
         p = self.discriminator(ref_audio)
 
         # calculate losses
-        real_loss, fake_loss = self.discriminator_adv_loss(p_hat, p)
+        real_loss1, fake_loss1 = self.discriminator_adv_loss(p_hat1, p)
+        real_loss2, fake_loss2 = self.discriminator_adv_loss(p_hat2, p)
+        real_loss = (real_loss1 + real_loss2) * 0.5
+        fake_loss = (fake_loss1 + fake_loss2) * 0.5
         loss = real_loss + fake_loss
 
         stats = dict(
             discriminator_loss=loss.item(),
+            real_loss1=real_loss1.item(),
+            real_loss2=real_loss2.item(),
             real_loss=real_loss.item(),
+            fake_loss1=fake_loss1.item(),
+            fake_loss2=fake_loss2.item(),
             fake_loss=fake_loss.item(),
         )
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
@@ -458,7 +468,7 @@ class Lrac_rewrite(AbsGANCodec):
         return self.generator.decode(x)
 
 
-class Lrac_rewriteGenerator(nn.Module):
+class Lrac_fsqGenerator(nn.Module):
     """SoundStream generator module."""
 
     @typechecked
@@ -484,8 +494,8 @@ class Lrac_rewriteGenerator(nn.Module):
         self.encoder = GenericSEANetEncoder(**encoder_params)
         self.decoder = GenericSEANetDecoder(**decoder_params)
         self.target_bandwidths = quantizer_params.pop("target_bandwidth", None)
-        self.quantizer = ResidualVectorQuantizer(
-            dimension=encoder_params['output_dimension'],
+        self.quantizer = LayeredFSQ(
+            dim=encoder_params['output_dimension'],
             **quantizer_params
         )
         self.sample_rate = sample_rate
@@ -501,14 +511,11 @@ class Lrac_rewriteGenerator(nn.Module):
             "encoder_params": GenericSEANetEncoder.get_default_init_params(),
             "decoder_params": GenericSEANetDecoder.get_default_init_params(),
             "quantizer_params": {
-                "codebook_dim": 128,
-                "n_q": 6,
-                "bins": 1024,
-                "decay": 0.99,
-                "kmeans_init": True,
-                "kmeans_iters": 50,
-                "threshold_ema_dead_code": 2,
-                "quantizer_target_bandwidth": [1, 6]
+                "n_codebooks": 6,
+                "codebook_size": 32,
+                "codebook_dim": 8,
+                "target_n_q": [1, 6],
+                "frame_residual_vq": False,
             }
         }
         return init_params
@@ -526,30 +533,23 @@ class Lrac_rewriteGenerator(nn.Module):
             torch.Tensor: resynthesized audio from encoder.
         """
         encoder_out = self.encoder(x)
-        max_idx = len(self.target_bandwidths) - 1
-
-        # randomly pick up one bandwidth
-        bw = self.target_bandwidths[random.randint(0, max_idx)]
-
         # Forward quantizer
-        quantized, _, _, commit_loss = self.quantizer(encoder_out, self.frame_rate, bw)
-
-        quantization_loss = self.l1_quantization_loss(
-            encoder_out, quantized.detach()
-        ) + self.l2_quantization_loss(encoder_out, quantized.detach())
-
-        resyn_audio = self.decoder(quantized)
+        output_low_rate, output_high_rate, _ = self.quantizer(encoder_out.transpose(-1, -2))
+        output_low_rate = output_low_rate.transpose(-1, -2)
+        output_high_rate = output_high_rate.transpose(-1, -2)
+        resyn_audio_low = self.decoder(output_low_rate)
+        resyn_audio_high = self.decoder(output_high_rate)
 
         if use_dual_decoder:
             resyn_audio_real = self.decoder(encoder_out)
         else:
             resyn_audio_real = None
-        return resyn_audio, commit_loss, quantization_loss, resyn_audio_real
+        return resyn_audio_low, resyn_audio_high, resyn_audio_real
 
     def encode(
         self,
         x: torch.Tensor,
-        target_bw: Optional[float] = None,
+        mode: str,
     ):
         """Soundstream codec encoding.
 
@@ -559,18 +559,15 @@ class Lrac_rewriteGenerator(nn.Module):
             torch.Tensor: neural codecs in shape ().
         """
         encoder_out = self.encoder(x)
-        if target_bw is None:
-            bw = self.target_bandwidths[-1]
-        else:
-            bw = target_bw
-        codes = self.quantizer.encode(encoder_out, self.frame_rate, bw)
+
+        _, _, codes = self.quantizer(encoder_out, mode)
         return codes
 
     def decode(self, codes: torch.Tensor):
         """Soundstream codec decoding.
 
         Args:
-            codecs (torch.Tensor): neural codecs in shape ().
+            codes (torch.Tensor): neural codecs in shape (B, N, T).
         Returns:
             torch.Tensor: resynthesized audio.
         """
@@ -579,7 +576,7 @@ class Lrac_rewriteGenerator(nn.Module):
         return resyn_audio
 
 
-class Lrac_rewriteDiscriminator(torch.nn.Module):
+class Lrac_fsqDiscriminator(torch.nn.Module):
     """Lrac Discriminator with only Multi-Scale STFT discriminator module"""
 
     def __init__(
@@ -668,3 +665,4 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
         elif self.choose == "msmpmb":
             out = self.msmpmb(x)
         return out
+

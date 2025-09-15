@@ -1,3 +1,4 @@
+import random
 from typing import Union
 import numpy as np
 import torch
@@ -14,11 +15,11 @@ class AutoGroupResidualVectorQuantize(nn.Module):
 
     def __init__(
         self,
-        input_dim: int = 512,
-        n_codebooks: int = 9,
-        codebook_size: int = 1024,
+        input_dim: int = 160,
+        n_codebooks: int = 6,
+        codebook_size: int = 32,
         codebook_dim: Union[int, list] = 8,
-        quantizer_dropout: float = 0.0,
+        target_n_q: list = [1, 6],
         frame_residual_vq: bool = False,
     ):
         super().__init__()
@@ -33,7 +34,7 @@ class AutoGroupResidualVectorQuantize(nn.Module):
             AutoGroupVectorQuantize(input_dim, codebook_size, codebook_dim[i], frame_residual_vq=frame_residual_vq)
             for i in range(n_codebooks)
         ])
-        self.quantizer_dropout = quantizer_dropout
+        self.target_n_q = target_n_q
 
     def forward(self, z, n_quantizers: int = None):
         """Quantized the input tensor using a fixed set of `n` codebooks and returns
@@ -75,11 +76,12 @@ class AutoGroupResidualVectorQuantize(nn.Module):
         if n_quantizers is None:
             n_quantizers = self.n_codebooks
         if self.training:
-            n_quantizers = torch.ones((z.shape[0],)) * self.n_codebooks + 1
-            dropout = torch.randint(1, self.n_codebooks + 1, (z.shape[0],))
-            n_dropout = int(z.shape[0] * self.quantizer_dropout)
-            n_quantizers[:n_dropout] = dropout[:n_dropout]
-            n_quantizers = n_quantizers.to(z.device)
+            # n_quantizers = torch.ones((z.shape[0],)) * self.n_codebooks + 1
+            # dropout = torch.randint(1, self.n_codebooks + 1, (z.shape[0],))
+            # n_dropout = int(z.shape[0] * self.quantizer_dropout)
+            # n_quantizers[:n_dropout] = dropout[:n_dropout]
+            # n_quantizers = n_quantizers.to(z.device)
+            n_quantizers = random.choice(self.target_n_q)
 
         for i, quantizer in enumerate(self.quantizers):
             if self.training is False and i >= n_quantizers:
