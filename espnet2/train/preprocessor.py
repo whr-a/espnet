@@ -5,7 +5,7 @@ import random
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Collection, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Collection, Dict, Iterable, List, Optional, Tuple, Union, Any
 
 import librosa
 import numpy as np
