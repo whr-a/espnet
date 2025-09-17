@@ -5,6 +5,7 @@
 import functools
 import math
 import random
+import logging
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -42,6 +43,9 @@ class Lrac_rewrite(AbsGANCodec):
         self,
         apply_enhancement: bool = False,
         sampling_rate: int = 24000,
+        preload: bool = False,
+        preload_path: str = "",
+        fix_gen: bool = False,
         encoder_params: Dict[str, Any] = None,
         decoder_params: Dict[str, Any] = None,
         quantizer_params: Dict[str, Any] = None,
@@ -81,6 +85,9 @@ class Lrac_rewrite(AbsGANCodec):
 
         self.generator = Lrac_rewriteGenerator(
             sample_rate=sampling_rate,
+            preload=preload,
+            preload_path=preload_path,
+            fix=fix_gen,
             encoder_params=encoder_params,
             decoder_params=decoder_params,
             quantizer_params=quantizer_params,
@@ -467,7 +474,10 @@ class Lrac_rewriteGenerator(nn.Module):
         sample_rate: int = 24000,
         encoder_params: Dict[str, Any] = None,
         decoder_params: Dict[str, Any] = None,
-        quantizer_params: Dict[str, Any] = None
+        quantizer_params: Dict[str, Any] = None,
+        preload: bool = False,
+        preload_path: str = "",
+        fix: bool = False,
     ):
         """Initialize SoundStream Generator.
 
@@ -494,6 +504,48 @@ class Lrac_rewriteGenerator(nn.Module):
         # quantization loss
         self.l1_quantization_loss = torch.nn.L1Loss(reduction="mean")
         self.l2_quantization_loss = torch.nn.MSELoss(reduction="mean")
+
+        if preload:
+            logging.info(f"Attempting to preload generator weights from {preload_path}")
+            try:
+                checkpoint = torch.load(preload_path, map_location="cpu")
+                
+                full_state_dict = checkpoint.get('state_dict', checkpoint)
+
+                prefix = 'codec.generator.'
+                
+                generator_state_dict = {
+                    k.replace(prefix, ''): v 
+                    for k, v in full_state_dict.items() 
+                    if k.startswith(prefix)
+                }
+
+                if not generator_state_dict:
+                    raise KeyError(
+                        f"Could not find any keys with the prefix '{prefix}' in the checkpoint at '{preload_path}'. "
+                        "Please verify the checkpoint structure."
+                    )
+
+                missing_keys, unexpected_keys = self.load_state_dict(generator_state_dict, strict=True)
+
+                if unexpected_keys:
+                    logging.warning(f"Unexpected keys in checkpoint not loaded: {unexpected_keys}")
+                if missing_keys:
+                    logging.warning(f"Missing keys in model not initialized: {missing_keys}")
+                
+                logging.info(f"Successfully preloaded generator from {preload_path}")
+
+            except FileNotFoundError:
+                logging.error(f"Preload checkpoint file not found: {preload_path}")
+                raise
+            except Exception as e:
+                logging.error(f"An error occurred while preloading the model: {e}")
+                raise
+        if fix:
+            for param in self.parameters():
+                param.requires_grad = False
+            logging.info("All generator parameters have been frozen. They will not be updated during training.")
+
 
     @staticmethod
     def get_default_init_params():
@@ -585,6 +637,9 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
     def __init__(
         self,
         choose: str="msstft",
+        preload: bool = False,
+        preload_path: str = "",
+        fix: bool = False,
         msstft_discriminator_params: Dict[str, Any] = {
             "in_channels": 1,
             "out_channels": 1,
@@ -650,6 +705,52 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
             self.msstft = MultiScaleSTFTDiscriminator(**msstft_discriminator_params)
         elif choose == "msmpmb":
             self.msmpmb = MultiScaleMultiPeriodMultiBandDiscriminator(**msmpmb_discriminator_params)
+        if preload:
+            logging.info(f"Attempting to preload discriminator weights from {preload_path}")
+            try:
+                checkpoint = torch.load(preload_path, map_location="cpu")
+                
+                full_state_dict = checkpoint.get('state_dict', checkpoint)
+                if choose == "msstft":
+                    prefix = 'codec.discriminator.msstft.'
+                elif choose == "msmpmb":
+                    prefix = 'codec.discriminator.msmpmb_discriminator.'
+                
+                discriminator_state_dict = {
+                    k.replace(prefix, ''): v 
+                    for k, v in full_state_dict.items() 
+                    if k.startswith(prefix)
+                }
+
+                if not discriminator_state_dict:
+                    raise KeyError(
+                        f"Could not find any keys with the prefix '{prefix}' in the checkpoint at '{preload_path}'. "
+                        "Please verify the checkpoint structure."
+                    )
+
+                if choose == "msstft":
+                    missing_keys, unexpected_keys = self.msstft.load_state_dict(discriminator_state_dict, strict=True)
+                elif choose == "msmpmb":
+                    missing_keys, unexpected_keys = self.msmpmb.load_state_dict(discriminator_state_dict, strict=True)
+                
+
+                if unexpected_keys:
+                    logging.warning(f"Unexpected keys in checkpoint not loaded: {unexpected_keys}")
+                if missing_keys:
+                    logging.warning(f"Missing keys in model not initialized: {missing_keys}")
+                
+                logging.info(f"Successfully preloaded discriminator from {preload_path}")
+
+            except FileNotFoundError:
+                logging.error(f"Preload checkpoint file not found: {preload_path}")
+                raise
+            except Exception as e:
+                logging.error(f"An error occurred while preloading the model: {e}")
+                raise
+        if fix:
+            for param in self.parameters():
+                param.requires_grad = False
+            logging.info("All generator parameters have been frozen. They will not be updated during training.")
 
     def forward(self, x: torch.Tensor) -> List[List[torch.Tensor]]:
         """Calculate forward propagation.

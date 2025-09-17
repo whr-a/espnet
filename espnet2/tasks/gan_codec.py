@@ -20,6 +20,8 @@ from espnet2.gan_codec.soundstream.soundstream import SoundStream
 from espnet2.gan_codec.lrac_rewrite.lrac_rewrite import Lrac_rewrite
 from espnet2.gan_codec.lrac_autogroup.lrac_autogroup import Lrac_autogroup
 from espnet2.gan_codec.lrac_fsq.lrac_fsq import Lrac_fsq
+from espnet2.gan_codec.lrac_onefsq.lrac_onefsq import Lrac_onefsq
+from espnet2.gan_codec.lrac_rfsq.lrac_rfsq import Lrac_rfsq
 from espnet2.tasks.abs_task import AbsTask, optim_classes
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
@@ -39,6 +41,8 @@ codec_choices = ClassChoices(
         lrac_rewrite=Lrac_rewrite,
         lrac_autogroup=Lrac_autogroup,
         lrac_fsq=Lrac_fsq,
+        lrac_onefsq=Lrac_onefsq,
+        lrac_rfsq=Lrac_rfsq,
     ),
     default="soundstream",
 )

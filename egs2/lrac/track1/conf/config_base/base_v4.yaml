@@ -93,7 +93,7 @@ codec_conf:
         # multi scale multi band multi resolution discriminator related
         msmpmb_discriminator_params:
             rates: []
-            sample_rate: 24000
+            sample_rate: 48000
             fft_sizes: [2048, 1024, 512]
             periods: [2, 3, 5, 7, 11]
             period_discriminator_params:
@@ -111,7 +111,7 @@ codec_conf:
                 use_spectral_norm: False
             band_discriminator_params:
                 hop_factor: 0.25
-                sample_rate: 24000
+                sample_rate: 48000
                 bands:
                     - [0.0, 0.1]
                     - [0.1, 0.25]
@@ -170,7 +170,7 @@ optim_conf:
     weight_decay: 0.0
 scheduler: exponentiallr
 scheduler_conf:
-    gamma: 0.998
+    gamma: 0.992
 # optimizer setting for discriminator
 optim2: radam
 optim2_conf:
@@ -180,7 +180,7 @@ optim2_conf:
     weight_decay: 0.0
 scheduler2: exponentiallr
 scheduler2_conf:
-    gamma: 0.998
+    gamma: 0.992
 generator_first: true # whether to start updating generator first
 skip_discriminator_prob: 0
 
@@ -189,7 +189,7 @@ skip_discriminator_prob: 0
 #                OTHER TRAINING SETTING                  #
 ##########################################################
 num_iters_per_epoch: 10000 # number of iterations per epoch
-max_epoch: 1150            # number of epochs
+max_epoch: 300            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
 batch_size: 84

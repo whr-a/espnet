@@ -10,10 +10,10 @@ fs=24000
 opts="--audio_format wav "
 
 train_set=speech
-valid_set=speech_validation
+valid_set=dev_small
 test_sets="open_testset_track1_clean open_testset_track1_noisy open_testset_track1_reverb"
 
-train_config=conf/config_base/base_v3_1.yaml
+train_config=conf/config_base/base_v4.yaml
 inference_config=conf/decode.yaml
 score_config=conf/score.yaml
 
@@ -25,7 +25,7 @@ score_config=conf/score.yaml
     --scoring_config "${score_config}" \
     --stage 5 \
     --stop_stage 5\
-    --ngpu 1 \
+    --ngpu 2 \
     --nj 12 \
     --train_set "${train_set}" \
     --valid_set "${valid_set}" \

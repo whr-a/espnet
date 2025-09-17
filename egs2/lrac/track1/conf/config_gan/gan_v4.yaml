@@ -1,10 +1,13 @@
 ##########################################################
 #                  CODEC MODEL SETTING                   #
 ##########################################################
+# train gen with fixed discriminator
 codec: lrac_rewrite
 codec_conf:
     sampling_rate: 24000
-
+    preload: true
+    preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/codec_train_raw_fs24000/baseline_model.pth"
+    fix_gen: false
     # encoder related
     encoder_params:
         input_channels: 1
@@ -90,6 +93,9 @@ codec_conf:
     # discriminator related
     discriminator_params:
         choose: msmpmb
+        preload: false
+        preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/dac/dac_360epoch.pth"
+        fix: false
         # multi scale multi band multi resolution discriminator related
         msmpmb_discriminator_params:
             rates: []
@@ -151,7 +157,7 @@ codec_conf:
     lambda_reconstruct: 0 # loss scaling coefficient for speech reconstruction loss
     lambda_adv: 1.0         # loss scaling coefficient for adversarial loss
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
-    lambda_feat_match: 0.3 # loss scaling coefficient for feat match loss
+    lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
 
     # others
@@ -192,7 +198,7 @@ num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 84
+batch_size: 40
 batch_type: unsorted      # how to make batch
 
 

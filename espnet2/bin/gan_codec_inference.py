@@ -68,10 +68,10 @@ class AudioCoding:
         self.always_fix_seed = always_fix_seed
 
         decode_conf = {}
-        if isinstance(self.codec, SoundStream) or isinstance(self.codec, DAC):
-            decode_conf.update(
-                target_bw=target_bandwidth,
-            )
+        # if isinstance(self.codec, SoundStream) or isinstance(self.codec, DAC) or :
+        decode_conf.update(
+            target_bw=target_bandwidth,
+        )
         self.decode_conf = decode_conf
 
     @torch.no_grad()

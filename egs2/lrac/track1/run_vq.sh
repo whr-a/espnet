@@ -10,10 +10,10 @@ fs=24000
 opts="--audio_format wav "
 
 train_set=speech
-valid_set=speech_validation
+valid_set=dev_small
 test_sets="open_testset_track1_clean open_testset_track1_noisy open_testset_track1_reverb"
 
-train_config=conf/config_autogroupvq/vq_v1.yaml
+train_config=conf/config_autogroupvq/vq_v5.yaml
 inference_config=conf/decode.yaml
 score_config=conf/score.yaml
 

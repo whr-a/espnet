@@ -306,7 +306,7 @@ class LayeredFSQ(Module):
             num_codebooks = num_codebooks_enhancement
         )
 
-    def forward(self, z, mode = 'high'):
+    def forward(self, z, mode = 6):
         z_projected = self.project_in(z)
 
         if self.skip_fsq:
@@ -322,7 +322,7 @@ class LayeredFSQ(Module):
 
             return output_low_rate, output_high_rate, None
 
-        z_base, z_enhancement = z.split([self.fsq_base.dim, self.fsq_enhancement.dim], dim = -1)
+        z_base, z_enhancement = z_projected.split([self.fsq_base.dim, self.fsq_enhancement.dim], dim = -1)
 
         q_base, indices_base = self.fsq_base(z_base)
         q_enhancement, indices_enhancement = self.fsq_enhancement(z_enhancement)
@@ -334,9 +334,9 @@ class LayeredFSQ(Module):
         q_high_rate_24d = torch.cat([q_base, q_enhancement], dim = -1)
         output_high_rate = self.project_out(q_high_rate_24d)
 
-        if mode == 'low':
+        if mode == 1:
             indices = indices_base
-        elif mode == 'high':
+        elif mode == 6:
             indices = torch.cat([indices_base.unsqueeze(-1), indices_enhancement], dim = -1)
         else:
             indices = None

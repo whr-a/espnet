@@ -1,7 +1,10 @@
 ##########################################################
 #                  CODEC MODEL SETTING                   #
 ##########################################################
-codec: lrac_rewrite
+
+# what changed?
+# change the vq type to fsq
+codec: lrac_onefsq
 codec_conf:
     sampling_rate: 24000
 
@@ -13,8 +16,6 @@ codec_conf:
         n_filters: [8, 16, 32, 64, 160]
         strides: [3, 4, 4, 5]
         activation: ELU
-        activation_params:
-            alpha: 1.0
         norm: weight_norm
         input_kernel_size: 7
         output_kernel_size: 7
@@ -78,47 +79,23 @@ codec_conf:
 
     # quantizer_params
     quantizer_params:
-        codebook_dim: 12
-        n_q: 6
-        bins: 1024
-        decay: 0.99
-        kmeans_init: true
-        kmeans_iters: 50
-        threshold_ema_dead_code: 2
-        target_bandwidth: [1, 6]
+        levels: [8, 5, 5, 5]
+        num_codebooks: 1
 
     # discriminator related
     discriminator_params:
-        choose: msmpmb
-        # multi scale multi band multi resolution discriminator related
-        msmpmb_discriminator_params:
-            rates: []
-            sample_rate: 24000
-            fft_sizes: [2048, 1024, 512]
-            periods: [2, 3, 5, 7, 11]
-            period_discriminator_params:
-                in_channels: 1
-                out_channels: 1
-                kernel_sizes: [5, 3]
-                channels: 32
-                downsample_scales: [3, 3, 3, 3, 1]
-                max_downsample_channels: 1024
-                bias: True
-                nonlinear_activation: "LeakyReLU"
-                nonlinear_activation_params:
-                    negative_slope: 0.1
-                use_weight_norm: True
-                use_spectral_norm: False
-            band_discriminator_params:
-                hop_factor: 0.25
-                sample_rate: 24000
-                bands:
-                    - [0.0, 0.1]
-                    - [0.1, 0.25]
-                    - [0.25, 0.5]
-                    - [0.5, 0.75]
-                    - [0.75, 1.0]
-                channel: 32
+        msstft_discriminator_params:
+            filters: 16
+            in_channels: 1
+            out_channels: 1
+            sep_channels: false
+            norm: weight_norm
+            n_ffts: [128, 256, 512, 1024, 2048]
+            hop_lengths: [32, 64, 128, 256, 512]
+            win_lengths: [128, 256, 512, 1024, 2048]
+            activation: LeakyReLU
+            activation_params:
+                negative_slope: 0.1
 
     # loss function related
     generator_adv_loss_params:
@@ -146,12 +123,10 @@ codec_conf:
     semantic_loss_params:
         sample_rate: 24000
         model_name: WAVLM_LARGE
-    lambda_quantization: 0.0       # loss scaling coefficient for codec quantization loss
-    lambda_commit: 10.0      # loss scaling coefficient for codec commitment loss
     lambda_reconstruct: 0 # loss scaling coefficient for speech reconstruction loss
     lambda_adv: 1.0         # loss scaling coefficient for adversarial loss
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
-    lambda_feat_match: 0.3 # loss scaling coefficient for feat match loss
+    lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
 
     # others
@@ -192,7 +167,7 @@ num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 84
+batch_size: 80
 batch_type: unsorted      # how to make batch
 
 
