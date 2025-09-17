@@ -20,6 +20,7 @@ from espnet2.gan_codec.shared.decoder.generic_seanet import GenericSEANetDecoder
 from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
 from espnet2.gan_codec.shared.loss.semantic_loss import HubertLoss
 from espnet2.gan_codec.shared.loss.loss_balancer import Balancer
+from espnet2.gan_codec.shared.loss.arecho_loss import ArechoLoss
 from espnet2.gan_codec.shared.quantizer.residual_vq import ResidualVectorQuantizer
 from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
     MultiScaleSTFTDiscriminator,
@@ -124,6 +125,25 @@ class Lrac_rewrite(AbsGANCodec):
             }
             self.semantic_loss = HubertLoss(
                 **semantic_loss_params)
+        if self.use_arecho_loss:
+            arecho_loss_params = arecho_loss_params or {
+                "target_metrics": ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU'],
+                "loss_type": "mae",
+                "model_tag": None,
+                "train_config": "/work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml",
+                "model_file": "/work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth",
+                "dtype": "float32",
+                "seed": 777,
+                "always_fix_seed": False,
+                "beam_size": 1,
+                "skip_meta_label_score": False,
+                "save_token_seq": False,
+                "use_fixed_order": False,
+                "fixed_metric_name_order": "",
+                "device": "gpu",
+            }
+            self.arecho_loss = ArechoLoss(
+                **arecho_loss_params)
 
         # coefficients
         self.lambda_quantization = lambda_quantization
@@ -294,6 +314,11 @@ class Lrac_rewrite(AbsGANCodec):
             semantic_loss = self.lambda_semantic * semantic_loss
             loss = loss + semantic_loss
             stats.update(semantic_loss=semantic_loss.item())
+        if self.use_arecho_loss:
+            arecho_loss = self.arecho_loss(audio_hat, ref_audio)
+            arecho_loss = self.lambda_arecho * arecho_loss
+            loss = loss + arecho_loss
+            stats.update(arecho_loss=arecho_loss.item())
 
         stats.update(loss=loss.item())
 
