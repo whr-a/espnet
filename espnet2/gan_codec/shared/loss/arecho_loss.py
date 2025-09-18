@@ -152,7 +152,7 @@ class ArechoLoss(nn.Module):
                  target_metrics: List[str] = [],
                  loss_type: str = "mae",
                  model_tag: Optional[str] = None,
-                 train_config: Optional[str] = None,
+                 arecho_train_config: Optional[str] = None,
                  model_file: Optional[str] = None,
                  dtype: str = "float32",
                  seed: int = 777,
@@ -162,12 +162,12 @@ class ArechoLoss(nn.Module):
                  save_token_seq: bool = False,
                  use_fixed_order: bool = False,
                  fixed_metric_name_order: str = "",
-                 device: str = "cpu",
+                 device: str = "cuda",
     ):
         super().__init__()
         self.universa_inference = UniversaInference.from_pretrained(
             model_tag=model_tag,
-            train_config=train_config,
+            train_config=arecho_train_config,
             model_file=model_file,
             dtype=dtype,
             seed=seed,
@@ -179,20 +179,24 @@ class ArechoLoss(nn.Module):
             fixed_metric_name_order=fixed_metric_name_order,
             device=device,
         )
+        print(self.universa_inference)
         self.target_metrics = target_metrics
         self.loss_type = loss_type
     def forward(self, audio, ref_audio):
-        audio_len = audio.shape[1]
-        ref_audio_len = ref_audio.shape[1]
-        results = self.universa_inference(audio, audio_len)
-        ref_results = self.universa_inference(ref_audio, ref_audio_len)
-        loss = 0
-        for target_metric in self.target_metrics:
-            if self.loss_type == "mae":
-                loss += nn.functional.l1_loss(results[target_metric], ref_results[target_metric])
-            elif self.loss_type == "mse":
-                loss += nn.functional.mse_loss(results[target_metric], ref_results[target_metric])
-            else:
-                raise ValueError(f"Unsupported loss type: {self.loss_type}")
-        loss = loss / len(self.target_metrics)
+        batch_size, _, audio_length = audio.shape
+        audio_len = torch.tensor([audio_length])
+        empty_audio = torch.zeros((1, 8000))
+        ref_audio_len = torch.tensor([ref_audio.shape[2]])
+        loss = 0#0.5 empty audio
+        for i in range(batch_size):
+            results = self.universa_inference(audio[i, 0, :].unsqueeze(0), audio_len, empty_audio, torch.tensor([8000]))
+            ref_results = self.universa_inference(ref_audio[i, 0, :].unsqueeze(0), ref_audio_len, empty_audio, torch.tensor([8000]))
+            for target_metric in self.target_metrics:
+                if self.loss_type == "mae":
+                    loss += nn.functional.l1_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
+                elif self.loss_type == "mse":
+                    loss += nn.functional.mse_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
+                else:
+                    raise ValueError(f"Unsupported loss type: {self.loss_type}")
+        loss = loss / len(self.target_metrics) / batch_size
         return loss

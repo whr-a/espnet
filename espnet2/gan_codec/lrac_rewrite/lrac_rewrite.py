@@ -59,6 +59,8 @@ class Lrac_rewrite(AbsGANCodec):
         use_mel_loss: bool = True,
         mel_loss_params: Dict[str, Any] = None,
         use_semantic_loss: bool = False,
+        use_arecho_loss: bool = False,
+        arecho_loss_params: Dict[str, Any] = None,
         semantic_loss_params: Dict[str, Any] = None,
         use_dual_decoder: bool = True,
         lambda_quantization: float = 1.0,
@@ -68,6 +70,7 @@ class Lrac_rewrite(AbsGANCodec):
         lambda_mel: float = 45.0,
         lambda_feat_match: float = 2.0,
         lambda_semantic: float = 0.0,
+        lambda_arecho: float = 0.0,
         cache_generator_outputs: bool = False,
         use_loss_balancer: bool = False,
         balance_ema_decay: float = 0.99,
@@ -125,12 +128,13 @@ class Lrac_rewrite(AbsGANCodec):
             }
             self.semantic_loss = HubertLoss(
                 **semantic_loss_params)
+        self.use_arecho_loss = use_arecho_loss
         if self.use_arecho_loss:
             arecho_loss_params = arecho_loss_params or {
                 "target_metrics": ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU'],
                 "loss_type": "mae",
                 "model_tag": None,
-                "train_config": "/work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml",
+                "arecho_train_config": "/work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml",
                 "model_file": "/work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth",
                 "dtype": "float32",
                 "seed": 777,
@@ -140,7 +144,7 @@ class Lrac_rewrite(AbsGANCodec):
                 "save_token_seq": False,
                 "use_fixed_order": False,
                 "fixed_metric_name_order": "",
-                "device": "gpu",
+                "device": "cuda",
             }
             self.arecho_loss = ArechoLoss(
                 **arecho_loss_params)
@@ -156,7 +160,8 @@ class Lrac_rewrite(AbsGANCodec):
             self.lambda_mel = lambda_mel
         if self.use_semantic_loss:
             self.lambda_semantic = lambda_semantic
-
+        if self.use_arecho_loss:
+            self.lambda_arecho = lambda_arecho
         # cache
         self.cache_generator_outputs = cache_generator_outputs
         self._cache = None
@@ -334,14 +339,14 @@ class Lrac_rewrite(AbsGANCodec):
                 balanced_losses.update(mel=mel_loss)
             if self.use_semantic_loss:
                 balanced_losses.update(semantic=semantic_loss)
-
+            if self.use_arecho_loss:
+                balanced_losses.update(arecho=arecho_loss)
             balanced_loss, norm_stats = self.loss_balancer(balanced_losses, audio_hat)
             stats.update(norm_stats)
 
             loss = sum(balanced_loss.values()) + codec_loss
             if self.use_mel_loss and self.use_dual_decoder:
                 loss = loss + mel_loss_real
-
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
 
         # reset cache
