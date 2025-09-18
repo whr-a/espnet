@@ -9,6 +9,7 @@ import torch.nn as nn
 
 import numpy as np
 import torch
+import torchaudio.transforms as T
 from typeguard import typechecked
 
 from espnet2.tasks.universa import UniversaTask
@@ -182,15 +183,28 @@ class ArechoLoss(nn.Module):
         print(self.universa_inference)
         self.target_metrics = target_metrics
         self.loss_type = loss_type
+        
+        # Initialize resampler for downsampling from 24kHz to 16kHz
+        self.resampler = T.Resample(orig_freq=24000, new_freq=16000)
     def forward(self, audio, ref_audio):
         batch_size, _, audio_length = audio.shape
-        audio_len = torch.tensor([audio_length])
+        
+        # Downsample audio from 24kHz to 16kHz
+        audio_downsampled = self.resampler(audio)
+        ref_audio_downsampled = self.resampler(ref_audio)
+        
+        # Update audio length after downsampling (24kHz -> 16kHz = 2/3 of original length)
+        audio_length_downsampled = audio_downsampled.shape[2]
+        audio_len = torch.tensor([audio_length_downsampled])
+        ref_audio_len = torch.tensor([ref_audio_downsampled.shape[2]])
+        
+        # Update empty_audio to match the new sampling rate (16kHz)
         empty_audio = torch.zeros((1, 8000))
-        ref_audio_len = torch.tensor([ref_audio.shape[2]])
+        
         loss = 0#0.5 empty audio
         for i in range(batch_size):
-            results = self.universa_inference(audio[i, 0, :].unsqueeze(0), audio_len, empty_audio, torch.tensor([8000]))
-            ref_results = self.universa_inference(ref_audio[i, 0, :].unsqueeze(0), ref_audio_len, empty_audio, torch.tensor([8000]))
+            results = self.universa_inference(audio_downsampled[i, 0, :].unsqueeze(0), audio_len, empty_audio, torch.tensor([8000]))
+            ref_results = self.universa_inference(ref_audio_downsampled[i, 0, :].unsqueeze(0), ref_audio_len, empty_audio, torch.tensor([8000]))
             for target_metric in self.target_metrics:
                 if self.loss_type == "mae":
                     loss += nn.functional.l1_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
