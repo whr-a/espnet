@@ -323,6 +323,9 @@ class Lrac_rewrite(AbsGANCodec):
             arecho_loss = self.arecho_loss(audio_hat, ref_audio)
             arecho_loss = self.lambda_arecho * arecho_loss
             loss = loss + arecho_loss
+            # logging.info("-"*100)
+            # logging.info(arecho_loss.grad_fn)
+            # logging.info("-"*100)
             stats.update(arecho_loss=arecho_loss.item())
 
         stats.update(loss=loss.item())
