@@ -150,7 +150,7 @@ codec_conf:
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
-    lambda_arecho: 1 # loss scaling coefficient for arecho loss
+    lambda_arecho: 10 # loss scaling coefficient for arecho loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -190,7 +190,7 @@ num_iters_per_epoch: 500 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 120
+batch_size: 48
 batch_type: unsorted      # how to make batch
 
 

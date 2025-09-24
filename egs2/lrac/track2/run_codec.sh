@@ -13,7 +13,7 @@ train_set=speech
 valid_set=dev_small
 # test_sets="open_testset_track2_clean open_testset_track2_noisy open_testset_track2_reverb"
 test_sets="test_all"
-train_config=conf/codec_back/train_v3.yaml
+train_config=conf/codec_back/train_v4.yaml
 inference_config=conf/decode.yaml
 score_config=conf/score.yaml
 

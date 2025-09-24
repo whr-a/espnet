@@ -72,7 +72,6 @@ class UniversaInference:
         logging.info(f"Frontend: {model.frontend}")
         logging.info(f"Universa: {model.universa}")
 
-    @torch.no_grad()
     @typechecked
     def __call__(
         self,
@@ -82,6 +81,7 @@ class UniversaInference:
         ref_audio_lengths: Optional[Union[np.ndarray, torch.Tensor]] = None,
         ref_text: Optional[Union[np.ndarray, torch.Tensor, str]] = None,
         ref_text_lengths: Optional[Union[np.ndarray, torch.Tensor]] = None,
+        preserve_gradients: bool = False,
         **kwargs,
     ) -> Dict[str, Union[np.array, torch.Tensor]]:
         "Run universa."
@@ -114,10 +114,15 @@ class UniversaInference:
         if self.always_fix_seed:
             set_all_random_seed(self.seed)
 
-        output_dict = self.model.inference(**batch, **kwargs)
+        if preserve_gradients:
+            # Use a gradient-preserving inference method
+            output_dict = self.model.inference_with_gradients(**batch, **kwargs)
+        else:
+            with torch.no_grad():
+                output_dict = self.model.inference(**batch, **kwargs)
 
-        output_dict.pop("use_tokenizer_metrics")
-        output_dict.pop("sequential_metrics")
+        output_dict.pop("use_tokenizer_metrics", None)
+        output_dict.pop("sequential_metrics", None)
         return output_dict
 
     @property
