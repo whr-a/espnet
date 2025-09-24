@@ -36,7 +36,7 @@ from espnet2.gan_tts.hifigan.loss import (
 from espnet2.torch_utils.device_funcs import force_gatherable
 
 
-class Lrac_rewrite(AbsGANCodec):
+class Lrac_rewrite_enh(AbsGANCodec):
     """Lrac model."""
 
     @typechecked
@@ -87,7 +87,7 @@ class Lrac_rewrite(AbsGANCodec):
         self.apply_enhancement = apply_enhancement
         # define modules
 
-        self.generator = Lrac_rewriteGenerator(
+        self.generator = Lrac_rewrite_enhGenerator(
             sample_rate=sampling_rate,
             preload=preload,
             preload_path=preload_path,
@@ -96,7 +96,7 @@ class Lrac_rewrite(AbsGANCodec):
             decoder_params=decoder_params,
             quantizer_params=quantizer_params,
         )
-        self.discriminator = Lrac_rewriteDiscriminator(**discriminator_params)
+        self.discriminator = Lrac_rewrite_enhDiscriminator(**discriminator_params)
         self.generator_adv_loss = GeneratorAdversarialLoss(
             **generator_adv_loss_params,
         )
@@ -248,12 +248,12 @@ class Lrac_rewrite(AbsGANCodec):
 
         # TODO(jiatong): double check the multi-channel input
         audio = audio.unsqueeze(1)
-        if self.apply_enhancement:
-            ref_audio = kwargs['speech_ref1'].unsqueeze(1)
-            assert audio.shape == ref_audio.shape, \
-                'Length mismatch between input and reference audio'
-        else:
-            ref_audio = audio
+        # if self.apply_enhancement:
+        #     ref_audio = kwargs['speech_ref1'].unsqueeze(1)
+        #     assert audio.shape == ref_audio.shape, \
+        #         'Length mismatch between input and reference audio'
+        # else:
+        ref_audio = audio
 
         # calculate generator outputs
         reuse_cache = True
@@ -323,9 +323,6 @@ class Lrac_rewrite(AbsGANCodec):
             arecho_loss = self.arecho_loss(audio_hat, ref_audio)
             arecho_loss = self.lambda_arecho * arecho_loss
             loss = loss + arecho_loss
-            # logging.info("-"*100)
-            # logging.info(arecho_loss.grad_fn)
-            # logging.info("-"*100)
             stats.update(arecho_loss=arecho_loss.item())
 
         stats.update(loss=loss.item())
@@ -386,12 +383,12 @@ class Lrac_rewrite(AbsGANCodec):
         batch_size = audio.size(0)
         audio = audio.unsqueeze(1)
 
-        if self.apply_enhancement:
-            ref_audio = kwargs['speech_ref1'].unsqueeze(1)
-            assert audio.shape == ref_audio.shape, \
-                'Length mismatch between input and reference audio'
-        else:
-            ref_audio = audio
+        # if self.apply_enhancement:
+        #     ref_audio = kwargs['speech_ref1'].unsqueeze(1)
+        #     assert audio.shape == ref_audio.shape, \
+        #         'Length mismatch between input and reference audio'
+        # else:
+        ref_audio = audio
 
         # calculate generator outputs
         reuse_cache = True
@@ -498,7 +495,7 @@ class Lrac_rewrite(AbsGANCodec):
         return self.generator.decode(x)
 
 
-class Lrac_rewriteGenerator(nn.Module):
+class Lrac_rewrite_enhGenerator(nn.Module):
     """SoundStream generator module."""
 
     @typechecked
@@ -664,7 +661,7 @@ class Lrac_rewriteGenerator(nn.Module):
         return resyn_audio
 
 
-class Lrac_rewriteDiscriminator(torch.nn.Module):
+class Lrac_rewrite_enhDiscriminator(torch.nn.Module):
     """Lrac Discriminator with only Multi-Scale STFT discriminator module"""
 
     def __init__(

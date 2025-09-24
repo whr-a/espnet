@@ -11,16 +11,10 @@ opts="--audio_format wav "
 
 train_set=speech
 valid_set=speech_validation
-test_sets="open_testset_track1_clean open_testset_track1_noisy open_testset_track1_reverb"
+test_sets="real_noise"
 # test_sets="test_all"
 
-train_config=conf/config_arecho/arecho_v1.yaml
-# train_config=conf/config_base/base_v3_1.yaml
-# train_config=conf/config_autogroupvq/vq_v3.yaml
-# train_config=conf/config_gan/gan_v1.yaml
-# train_config=conf/config_semantic/semantic_v2.yaml
-# train_config=conf/train.yaml
-# train_config=conf/config_data/data_v1.yaml
+train_config=conf/train.yaml
 inference_config=conf/decode.yaml
 score_config=conf/score.yaml
 
@@ -31,8 +25,8 @@ score_config=conf/score.yaml
     --inference_config "${inference_config}" \
     --scoring_config "${score_config}" \
     --gpu_inference true\
-    --target_bandwidths 1\
-    --inference_model 14epoch.pth\
+    --target_bandwidths 6\
+    --inference_model 67epoch.pth\
     --stage 6 \
     --stop_stage 6\
     --ngpu 1 \

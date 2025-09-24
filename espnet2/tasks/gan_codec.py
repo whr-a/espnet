@@ -18,6 +18,8 @@ from espnet2.gan_codec.espnet_model import ESPnetGANCodecModel
 from espnet2.gan_codec.funcodec.funcodec import FunCodec
 from espnet2.gan_codec.soundstream.soundstream import SoundStream
 from espnet2.gan_codec.lrac_rewrite.lrac_rewrite import Lrac_rewrite
+from espnet2.gan_codec.lrac_rewrite_enh.lrac_rewrite_enh import Lrac_rewrite_enh
+from espnet2.gan_codec.lrac_deepfilter.lrac_deepfilter import Lrac_deepfilter
 from espnet2.gan_codec.lrac_autogroup.lrac_autogroup import Lrac_autogroup
 from espnet2.gan_codec.lrac_fsq.lrac_fsq import Lrac_fsq
 from espnet2.gan_codec.lrac_onefsq.lrac_onefsq import Lrac_onefsq
@@ -39,6 +41,8 @@ codec_choices = ClassChoices(
         funcodec=FunCodec,
         lrac=LRACConvBaseline,
         lrac_rewrite=Lrac_rewrite,
+        lrac_rewrite_enh=Lrac_rewrite_enh,
+        lrac_deepfilter=Lrac_deepfilter,
         lrac_autogroup=Lrac_autogroup,
         lrac_fsq=Lrac_fsq,
         lrac_onefsq=Lrac_onefsq,

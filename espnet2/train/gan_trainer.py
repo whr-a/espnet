@@ -10,6 +10,7 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import warnings
 import torch
 from packaging.version import parse as V
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -170,7 +171,7 @@ class GANTrainer(Trainer):
                         else:
                             raise RuntimeError("cannot get model for cache cleaning")
                         continue
-
+                warnings.filterwarnings('ignore', category=FutureWarning)
                 with autocast(scaler is not None):
                     with reporter.measure_time(f"{turn}_forward_time"):
                         retval = model(forward_generator=turn == "generator", **batch)

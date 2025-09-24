@@ -1,13 +1,10 @@
 ##########################################################
 #                  CODEC MODEL SETTING                   #
 ##########################################################
-# non fix gen and discriminator
-codec: lrac_rewrite
+codec: lrac
 codec_conf:
     sampling_rate: 24000
-    preload: true
-    preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/codec_train_raw_fs24000/baseline_model.pth"
-    fix_gen: False
+
     # encoder related
     encoder_params:
         input_channels: 1
@@ -81,21 +78,17 @@ codec_conf:
 
     # quantizer_params
     quantizer_params:
-        codebook_dim: 12
-        n_q: 6
-        bins: 1024
-        decay: 0.99
-        kmeans_init: true
-        kmeans_iters: 50
-        threshold_ema_dead_code: 2
-        target_bandwidth: [1, 6]
+        quantizer_codebook_dim: 12
+        quantizer_n_q: 6
+        quantizer_bins: 1024
+        quantizer_decay: 0.99
+        quantizer_kmeans_init: true
+        quantizer_kmeans_iters: 50
+        quantizer_threshold_ema_dead_code: 2
+        quantizer_target_bandwidth: [1, 6]
 
     # discriminator related
     discriminator_params:
-        choose: msstft
-        preload: true
-        preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/codec_train_raw_fs24000/baseline_model.pth"
-        # multi scale multi band multi resolution discriminator related
         msstft_discriminator_params:
             filters: 16
             in_channels: 1
@@ -132,14 +125,6 @@ codec_conf:
         fmax: null          # maximum frequency for Mel basis
         log_base: null      # null represent natural log
     use_semantic_loss: false
-    use_arecho_loss: true
-    arecho_loss_params:
-        # target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
-        target_metrics: ['scoreq_ref']
-        loss_type: mae
-        model_tag: null
-        arecho_train_config: /work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml
-        model_file: /work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth
     semantic_loss_params:
         sample_rate: 24000
         model_name: WAVLM_LARGE
@@ -150,7 +135,6 @@ codec_conf:
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
-    lambda_arecho: 10 # loss scaling coefficient for arecho loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -162,7 +146,7 @@ codec_conf:
 # optimizer setting for generator
 optim: radam
 optim_conf:
-    lr: 3.0e-5
+    lr: 3.0e-4
     betas: [0.9, 0.999]
     eps: 1.0e-9
     weight_decay: 0.0
@@ -172,7 +156,7 @@ scheduler_conf:
 # optimizer setting for discriminator
 optim2: radam
 optim2_conf:
-    lr: 3.0e-5
+    lr: 3.0e-4
     betas: [0.9, 0.999]
     eps: 1.0e-9
     weight_decay: 0.0
@@ -186,11 +170,11 @@ skip_discriminator_prob: 0
 ##########################################################
 #                OTHER TRAINING SETTING                  #
 ##########################################################
-num_iters_per_epoch: 500 # number of iterations per epoch
+num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 48
+batch_size: 80
 batch_type: unsorted      # how to make batch
 
 
@@ -204,7 +188,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 1          # log interval in iterations
+log_interval: 50          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number

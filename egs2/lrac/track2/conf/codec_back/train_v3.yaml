@@ -1,42 +1,40 @@
 ##########################################################
 #                  CODEC MODEL SETTING                   #
 ##########################################################
-# non fix gen and discriminator
-codec: lrac_rewrite
+codec: lrac_deepfilter
 codec_conf:
     sampling_rate: 24000
-    preload: true
-    preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/codec_train_raw_fs24000/baseline_model.pth"
-    fix_gen: False
+    apply_enhancement: True
     # encoder related
     encoder_params:
         input_channels: 1
         enable_output_layer: false
-        output_dimension: 160
-        n_filters: [8, 16, 32, 64, 160]
-        strides: [3, 4, 4, 5]
+        output_dimension: 320
+        n_filters: [8, 15, 24, 48, 96, 320]
+        strides: [2, 2, 3, 4, 5]
         activation: ELU
         activation_params:
             alpha: 1.0
         norm: weight_norm
         input_kernel_size: 7
-        output_kernel_size: 7
         input_layer_causal: true
-        output_layer_causal: true
-        downsampling_kernel_sizes: [6, 8, 8, 10]
-        residual_kernel_sizes: [[[5,1], [5,1], [5,1]], 
-                                [[5,1], [5,1], [5,1]], 
-                                [[5,1], [5,1], [5,1]], 
-                                [[5, 1], [7,3], [7,3]]]
-        residual_dilations: [[[3, 1], [9, 1], [27, 1]], 
+        downsampling_kernel_sizes: [4, 4, 6, 8, 10]
+        residual_kernel_sizes: [[[7,3], [7,3], [7,3], [7,3]], 
+                                [[7,3], [7,3], [7, 3], [5,3]], 
+                                [[7,3], [7,3], [7,3]], 
+                                [[7,3], [7,3], [7,3]],
+                                [[7,3], [7,3], [7,3]]]
+        residual_dilations: [[[3, 1], [9, 1], [27, 1], [81, 1]], 
+                             [[3, 1], [9, 1], [27, 1], [81, 1]], 
                              [[3, 1], [9, 1], [27, 1]], 
-                             [[3, 1], [7, 1], [27, 1]], 
+                             [[3, 1], [9, 1], [27, 1]],
                              [[3, 1], [9, 1], [27, 1]]]
-        residual_causality_modes: [[[true, true], [true, true], [true, true]], 
+        residual_causality_modes: [[[true, true], [true, true], [true, true],[true, true]], 
+                                   [[true, true], [true, true], [true, true],[true, true]], 
+                                   [[false, true], [false, true], [true, true]],
                                    [[true, true], [true, true], [true, true]], 
-                                   [[false, true], [false, true], [true, true]], 
-                                   [[true, true], [true, true], [true, true]]]
-        downsampling_causality_modes: [true, true, true, true]
+                                   [[true, false], [true, false], [true, true]]]
+        downsampling_causality_modes: [true, true, true, true, true]
         pad_mode: constant
         true_skip: true
         compress: 1
@@ -45,34 +43,35 @@ codec_conf:
     # decoder related
     decoder_params:
         output_dimension: 1
-        input_dimension: 160
+        input_dimension: 320
         enable_input_layer: false
-        n_filters: [160, 64, 32, 16, 8]
-        strides: [5, 4, 3, 4]
+        n_filters: [320, 96, 48, 24, 12, 8]
+        strides: [5, 4, 3, 2, 2]
         activation: ELU
         activation_params: 
             alpha: 1.0
         final_activation: Tanh
         final_activation_params: null
         norm: weight_norm
-        input_kernel_size: 7
         output_kernel_size: 21
-        input_layer_causal: true
         output_layer_causal: true
-        upsampling_kernel_sizes: [5, 4, 3, 4]
-        residual_kernel_sizes: [[[3, 1], [5, 1], [5, 3]], 
+        upsampling_kernel_sizes: [5, 4, 3, 2, 2]
+        residual_kernel_sizes: [[[3, 1], [3, 1], [5, 1]],
+                                [[3, 1], [5, 1], [5, 1]],
                                 [[5, 1], [5, 1], [5, 1]], 
-                                [[5, 1], [5, 1], [5, 1]], 
+                                [[3, 1], [5, 1], [5, 1]], 
                                 [[5, 1], [5, 1], [5, 1]]]
         residual_dilations: [[[5, 1], [5, 1], [25, 1]], 
                              [[4, 1], [5, 1], [25, 1]], 
                              [[3, 1], [5, 1], [25, 1]], 
-                             [[4, 1], [5, 1], [25, 1]]]
-        residual_causality_modes: [[[false, true], [true, true], [true, true]], 
+                             [[2, 1], [5, 1], [25, 1]],
+                             [[2, 1], [5, 1], [25, 1]]]
+        residual_causality_modes: [[[true, true], [true, true], [true, true]], 
                                    [[true, true], [true, true], [true, true]], 
                                    [[true, true], [true, true], [true, true]], 
+                                   [[true, true], [true, true], [true, true]],
                                    [[true, true], [true, true], [true, true]]]
-        upsampling_causality_modes: [true, true, true, true]
+        upsampling_causality_modes: [true, true, true, true, true]
         pad_mode: constant
         true_skip: true
         compress: 1
@@ -81,7 +80,7 @@ codec_conf:
 
     # quantizer_params
     quantizer_params:
-        codebook_dim: 12
+        codebook_dim: 24
         n_q: 6
         bins: 1024
         decay: 0.99
@@ -92,10 +91,6 @@ codec_conf:
 
     # discriminator related
     discriminator_params:
-        choose: msstft
-        preload: true
-        preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track1/exp/codec_train_raw_fs24000/baseline_model.pth"
-        # multi scale multi band multi resolution discriminator related
         msstft_discriminator_params:
             filters: 16
             in_channels: 1
@@ -132,14 +127,6 @@ codec_conf:
         fmax: null          # maximum frequency for Mel basis
         log_base: null      # null represent natural log
     use_semantic_loss: false
-    use_arecho_loss: true
-    arecho_loss_params:
-        # target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
-        target_metrics: ['scoreq_ref']
-        loss_type: mae
-        model_tag: null
-        arecho_train_config: /work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml
-        model_file: /work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth
     semantic_loss_params:
         sample_rate: 24000
         model_name: WAVLM_LARGE
@@ -150,7 +137,6 @@ codec_conf:
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
-    lambda_arecho: 10 # loss scaling coefficient for arecho loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -162,7 +148,7 @@ codec_conf:
 # optimizer setting for generator
 optim: radam
 optim_conf:
-    lr: 3.0e-5
+    lr: 3.0e-4
     betas: [0.9, 0.999]
     eps: 1.0e-9
     weight_decay: 0.0
@@ -172,7 +158,7 @@ scheduler_conf:
 # optimizer setting for discriminator
 optim2: radam
 optim2_conf:
-    lr: 3.0e-5
+    lr: 3.0e-4
     betas: [0.9, 0.999]
     eps: 1.0e-9
     weight_decay: 0.0
@@ -182,21 +168,39 @@ scheduler2_conf:
 generator_first: true # whether to start updating generator first
 skip_discriminator_prob: 0
 
+##########################################################
+#            PREPROCESSOR SETTINGS               #
+##########################################################
+rir_scp: data/rirs.scp
+rir_apply_prob: 0.5
+noise_scp: data/noise.scp
+noise_apply_prob: 0.8
+validation_rir_scp: data/rirs_val.scp
+validation_noise_scp: data/noise_val.scp
+noise_db_range: "-5_30"
+short_noise_thres: 0.01
+sample_rate: 24000
+use_reverberant_ref: false
+num_spk: 1
+flexible_numspk: false
+num_noise_type: 1
+force_single_channel: true
+avoid_allzero_segment: true
 
 ##########################################################
 #                OTHER TRAINING SETTING                  #
 ##########################################################
-num_iters_per_epoch: 500 # number of iterations per epoch
+num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 48
+batch_size: 128
 batch_type: unsorted      # how to make batch
 
 
 iterator_type: chunk
 chunk_length: 62400
-num_cache_chunks: 12000
+num_cache_chunks: 32000
 
 grad_clip: -1             # gradient clipping norm
 grad_noise: false         # whether to use gradient noise injection
@@ -204,7 +208,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 1          # log interval in iterations
+log_interval: 50          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number

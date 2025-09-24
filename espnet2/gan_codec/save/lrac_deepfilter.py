@@ -35,6 +35,20 @@ from espnet2.gan_tts.hifigan.loss import (
 )
 from espnet2.torch_utils.device_funcs import force_gatherable
 
+from df.checkpoint import load_model as load_model_cp
+from df.config import config
+from df.io import load_audio, load_audio_24k, resample, save_audio
+from df.logger import init_logger
+from df.model import ModelParams
+from df.modules import get_device
+from df.utils import as_complex, as_real, download_file, get_cache_dir, get_norm_alpha
+from df.version import version
+from libdf import DF, erb, erb_norm, unit_norm
+import warnings
+import os
+
+PRETRAINED_MODELS = ("DeepFilterNet", "DeepFilterNet2", "DeepFilterNet3")
+DEFAULT_MODEL = "DeepFilterNet2"
 
 class Lrac_rewrite(AbsGANCodec):
     """Lrac model."""
@@ -519,6 +533,9 @@ class Lrac_rewriteGenerator(nn.Module):
         """
         super().__init__()
 
+        # Initialize DeepFilterNet enhancement module
+        self.init_deepfilter_24k()
+
         encoder_params = encoder_params or self.get_default_init_params()["encoder_params"]
         decoder_params = decoder_params or self.get_default_init_params()["decoder_params"]
         quantizer_params = quantizer_params or self.get_default_init_params()["quantizer_params"]
@@ -579,6 +596,187 @@ class Lrac_rewriteGenerator(nn.Module):
                 param.requires_grad = False
             logging.info("All generator parameters have been frozen. They will not be updated during training.")
 
+    def init_deepfilter_24k(self):
+        """Initialize DeepFilterNet model with hardcoded 24k configuration."""
+        import numpy as np
+
+        # Hardcoded configuration for 24k processing
+        model_base_dir = os.path.expanduser("~/.cache/DeepFilterNet/DeepFilterNet2")
+        post_filter: bool = False,
+        log_level: str = "INFO",
+        log_file: Optional[str] = "enhance.log",
+        config_allow_defaults: bool = True,
+        epoch: Union[str, int, None] = "best",
+        default_model: str = DEFAULT_MODEL,
+        mask_only: bool = False,
+    ) -> Tuple[nn.Module, DF, str, int]:
+        """Initializes and loads config, model and deep filtering state.
+
+        Args:
+            model_base_dir (str): Path to the model directory containing checkpoint and config. If None,
+                load the pretrained DeepFilterNet2 model.
+            post_filter (bool): Enable post filter for some minor, extra noise reduction.
+            log_level (str): Control amount of logging. Defaults to `INFO`.
+            log_file (str): Optional log file name. None disables it. Defaults to `enhance.log`.
+            config_allow_defaults (bool): Whether to allow initializing new config values with defaults.
+            epoch (str): Checkpoint epoch to load. Options are `best`, `latest`, `<int>`, and `none`.
+                `none` disables checkpoint loading. Defaults to `best`.
+
+        Returns:
+            model (nn.Modules): Intialized model, moved to GPU if available.
+            df_state (DF): Deep filtering state for stft/istft/erb
+            suffix (str): Suffix based on the model name. This can be used for saving the enhanced
+                audio.
+            epoch (int): Epoch number of the loaded checkpoint.
+        """
+        try:
+            from icecream import ic, install
+
+            ic.configureOutput(includeContext=True)
+            install()
+        except ImportError:
+            pass
+        use_default_model = model_base_dir is None or model_base_dir in PRETRAINED_MODELS
+        model_base_dir = get_model_basedir(model_base_dir or default_model)
+
+        if not os.path.isdir(model_base_dir):
+            raise NotADirectoryError("Base directory not found at {}".format(model_base_dir))
+        log_file = os.path.join(model_base_dir, log_file) if log_file is not None else None
+        init_logger(file=log_file, level=log_level, model=model_base_dir)
+        if use_default_model:
+            logger.info(f"Using {default_model} model at {model_base_dir}")
+        config.load(
+            os.path.join(model_base_dir, "config.ini"),
+            config_must_exist=True,
+            allow_defaults=config_allow_defaults,
+            allow_reload=True,
+        )
+        if post_filter:
+            config.set("mask_pf", True, bool, ModelParams().section)
+            try:
+                beta = config.get("pf_beta", float, ModelParams().section)
+                beta = f"(beta: {beta})"
+            except KeyError:
+                beta = ""
+            logger.info(f"Running with post-filter {beta}")
+        p = ModelParams()
+        df_state = DF(
+            sr=p.sr,
+            fft_size=p.fft_size,
+            hop_size=p.hop_size,
+            nb_bands=p.nb_erb,
+            min_nb_erb_freqs=p.min_nb_freqs,
+        )
+        df_state_24k = DF(
+            sr=p.sr // 2,
+            fft_size=p.fft_size // 2,
+            hop_size=p.hop_size // 2,
+            nb_bands=p.nb_erb,
+            min_nb_erb_freqs=p.min_nb_freqs,
+        )
+        checkpoint_dir = os.path.join(model_base_dir, "checkpoints")
+        load_cp = epoch is not None and not (isinstance(epoch, str) and epoch.lower() == "none")
+        if not load_cp:
+            checkpoint_dir = None
+        mask_only = mask_only or config(
+            "mask_only", cast=bool, section="train", default=False, save=False
+        )
+        model, epoch = load_model_cp(checkpoint_dir, df_state, epoch=epoch, mask_only=mask_only)
+        if (epoch is None or epoch == 0) and load_cp:
+            logger.error("Could not find a checkpoint")
+            exit(1)
+        logger.debug(f"Loaded checkpoint from epoch {epoch}")
+        model = model.to(get_device())
+        # Set suffix to model name
+        suffix = os.path.basename(os.path.abspath(model_base_dir))
+        if post_filter:
+            suffix += "_pf"
+        logger.info("Running on device {}".format(get_device()))
+        logger.info("Model loaded")
+        return model, df_state, df_state_24k, suffix, epoch
+    @staticmethod
+    def init_deepfilter():
+        self.model, _, self.df_state, suffix, epoch = init_df_24k(
+            args.model_base_dir,
+            post_filter=args.pf,
+            log_level=args.log_level,
+            config_allow_defaults=True,
+            epoch=args.epoch,
+            mask_only=args.no_df_stage,
+        )
+        self.model.eval()
+        self.nb_df = 96
+        self.n_fft = 480
+        self.hop_size = 240
+    def df_features_24k(audio: Tensor, df: DF, nb_df: int, device=None) -> Tuple[Tensor, Tensor, Tensor]:
+        device = audio.device
+        spec_24k = df.analysis(audio)
+        assert spec_24k.shape[-1] == 241, "wrong 24k stft"
+        spec = F.pad(spec_24k, (0, 240), "constant", 0)
+        a = get_norm_alpha(False)
+        erb_fb = df.erb_widths()
+        if not isinstance(erb_fb, torch.Tensor):
+            erb_fb = torch.from_numpy(erb_fb).to(device)
+        elif erb_fb.device != device:
+            erb_fb = erb_fb.to(device)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            erb_output = erb_norm(erb(spec, erb_fb), a)
+            erb_feat = torch.as_tensor(erb_output, device=device).unsqueeze(1)
+
+        unit_norm_output = unit_norm(spec[..., :nb_df], a)
+        spec_feat = as_real(torch.as_tensor(unit_norm_output, device=device)).unsqueeze(1)
+
+        spec = as_real(torch.as_tensor(spec, device=device)).unsqueeze(1)
+        return spec, erb_feat, spec_feat
+    @torch.no_grad()
+    def enhance_24k(
+        model: nn.Module, df_state: DF, audio: Tensor, pad=True, atten_lim_db: Optional[float] = None
+    ):
+        """Enhance a single audio given a preloaded model and DF state.
+
+        Args:
+            model (nn.Module): A DeepFilterNet model.
+            df_state (DF): DF state for STFT/ISTFT and feature calculation.
+            audio (Tensor): Time domain audio of shape [C, T]. Sampling rate needs to match to `model` and `df_state`.
+            pad (bool): Pad the audio to compensate for delay due to STFT/ISTFT.
+            atten_lim_db (float): An optional noise attenuation limit in dB. E.g. an attenuation limit of
+                12 dB only suppresses 12 dB and keeps the remaining noise in the resulting audio.
+
+        Returns:
+            enhanced audio (Tensor): If `pad` was `False` of shape [C, T'] where T'<T slightly delayed due to STFT.
+                If `pad` was `True` it has the same shape as the input.
+        """
+        bs = audio.shape[0]
+        if hasattr(model, "reset_h0"):
+            model.reset_h0(batch_size=bs, device=audio.device())
+        orig_len = audio.shape[-1]
+        if pad:
+            audio = F.pad(audio, (0, self.n_fft))
+
+        # print(df_state.fft_size(), df_state.hop_size())
+        spec, erb_feat, spec_feat = df_features_24k(audio, df_state, nb_df, device=audio.device())
+        # print(spec.shape)
+        enhanced = model(spec.clone(), erb_feat, spec_feat)
+        enhanced = as_complex(enhanced.squeeze(1))
+        if atten_lim_db is not None and abs(atten_lim_db) > 0:
+            lim = 10 ** (-abs(atten_lim_db) / 20)
+            enhanced = as_complex(spec.squeeze(1).cpu()) * lim + enhanced * (1 - lim)
+        enhanced = enhanced[..., :241]
+        # print(enhanced.shape)
+        # print(df_state.fft_size(), df_state.hop_size())
+        audio = torch.as_tensor(df_state.synthesis(enhanced.contiguous().cpu().numpy()))
+        if pad:
+            # The frame size is equal to p.hop_size. Given a new frame, the STFT loop requires e.g.
+            # ceil((n_fft-hop)/hop). I.e. for 50% overlap, then hop=n_fft//2
+            # requires 1 additional frame lookahead; 75% requires 3 additional frames lookahead.
+            # Thus, the STFT/ISTFT loop introduces an algorithmic delay of n_fft - hop.
+            assert n_fft % hop == 0  # This is only tested for 50% and 75% overlap
+            d = n_fft - hop
+            audio = audio[:, d : orig_len + d]
+        # print(audio.shape)
+        return audio    
 
     @staticmethod
     def get_default_init_params():

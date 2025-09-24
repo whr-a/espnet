@@ -1,17 +1,19 @@
 # Copyright 2024 Jiatong Shi
 #  Apache 2.0  (http://www.apache.org/licenses/LICENSE-2.0)
 
-"""Lrac Modules."""
+"""Lrac with DeepFilterNet Enhancement Module."""
 import functools
 import math
 import random
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import warnings
+import os
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F  # noqa
+import torch.nn.functional as F
 from typeguard import typechecked
 
 from espnet2.gan_codec.abs_gan_codec import AbsGANCodec
@@ -28,6 +30,7 @@ from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
 from espnet2.gan_codec.shared.discriminator.msmpmb_discriminator import (
     MultiScaleMultiPeriodMultiBandDiscriminator,
 )
+from espnet2.gan_codec.lrac_deepfilter.lrac_deepfilter_batch_simple import LracGeneratorBatchDF
 from espnet2.gan_tts.hifigan.loss import (
     DiscriminatorAdversarialLoss,
     FeatureMatchLoss,
@@ -35,18 +38,29 @@ from espnet2.gan_tts.hifigan.loss import (
 )
 from espnet2.torch_utils.device_funcs import force_gatherable
 
+# DeepFilterNet imports
+from df.checkpoint import load_model as load_model_cp
+from df.config import config
+from df.model import ModelParams
+from df.utils import as_complex, as_real, get_norm_alpha
+from libdf import DF, erb, erb_norm, unit_norm
 
-class Lrac_rewrite(AbsGANCodec):
-    """Lrac model."""
+PRETRAINED_MODELS = ("DeepFilterNet", "DeepFilterNet2", "DeepFilterNet3")
+DEFAULT_MODEL = "DeepFilterNet2"
+
+
+class Lrac_deepfilter(AbsGANCodec):
+    """Lrac model with DeepFilterNet enhancement."""
 
     @typechecked
     def __init__(
         self,
-        apply_enhancement: bool = False,
+        apply_enhancement: bool = True,
         sampling_rate: int = 24000,
         preload: bool = False,
         preload_path: str = "",
         fix_gen: bool = False,
+        use_deepfilter: bool = True,
         encoder_params: Dict[str, Any] = None,
         decoder_params: Dict[str, Any] = None,
         quantizer_params: Dict[str, Any] = None,
@@ -75,28 +89,30 @@ class Lrac_rewrite(AbsGANCodec):
         use_loss_balancer: bool = False,
         balance_ema_decay: float = 0.99,
     ):
-        """Intialize Lrac model.
+        """Intialize Lrac model with DeepFilterNet enhancement.
 
         Args:
-             TODO(jiatong)
+            apply_enhancement: Whether to apply speech enhancement
+            use_deepfilter: Whether to use DeepFilterNet for enhancement
+            Other args: See parent class
         """
         super().__init__()
 
-        # Whether the codec applies speech enhancement such as
-        # denoising and dereverb or not
-        self.apply_enhancement = apply_enhancement
-        # define modules
+        self.apply_enhancement = apply_enhancement or use_deepfilter
 
-        self.generator = Lrac_rewriteGenerator(
+        # Initialize generator with DeepFilterNet if requested
+        self.generator = LracGeneratorBatchDF(
             sample_rate=sampling_rate,
-            preload=preload,
-            preload_path=preload_path,
-            fix=fix_gen,
             encoder_params=encoder_params,
             decoder_params=decoder_params,
             quantizer_params=quantizer_params,
+            preload=preload,
+            preload_path=preload_path,
+            fix=fix_gen,
+            use_deepfilter=use_deepfilter,
         )
-        self.discriminator = Lrac_rewriteDiscriminator(**discriminator_params)
+
+        self.discriminator = Lrac_deepfilterDiscriminator(**discriminator_params)
         self.generator_adv_loss = GeneratorAdversarialLoss(
             **generator_adv_loss_params,
         )
@@ -118,7 +134,7 @@ class Lrac_rewrite(AbsGANCodec):
         self.use_dual_decoder = use_dual_decoder
         if self.use_dual_decoder:
             assert self.use_mel_loss, "only use dual decoder with Mel loss"
-        
+
         self.use_semantic_loss = use_semantic_loss
         if self.use_semantic_loss:
             semantic_loss_params = semantic_loss_params or {
@@ -323,9 +339,6 @@ class Lrac_rewrite(AbsGANCodec):
             arecho_loss = self.arecho_loss(audio_hat, ref_audio)
             arecho_loss = self.lambda_arecho * arecho_loss
             loss = loss + arecho_loss
-            # logging.info("-"*100)
-            # logging.info(arecho_loss.grad_fn)
-            # logging.info("-"*100)
             stats.update(arecho_loss=arecho_loss.item())
 
         stats.update(loss=loss.item())
@@ -368,7 +381,7 @@ class Lrac_rewrite(AbsGANCodec):
         audio: torch.Tensor,
         **kwargs,
     ) -> Dict[str, Any]:
-        """Perform generator forward.
+        """Perform discriminator forward.
 
         Args:
             audio (Tensor): Audio waveform tensor (B, T_wav).
@@ -486,7 +499,7 @@ class Lrac_rewrite(AbsGANCodec):
         x: torch.Tensor,
         **kwargs,
     ) -> torch.Tensor:
-        """Run encoding.
+        """Run decoding.
 
         Args:
             x (Tensor): Input codes (T_code, N_stream).
@@ -498,173 +511,7 @@ class Lrac_rewrite(AbsGANCodec):
         return self.generator.decode(x)
 
 
-class Lrac_rewriteGenerator(nn.Module):
-    """SoundStream generator module."""
-
-    @typechecked
-    def __init__(
-        self,
-        sample_rate: int = 24000,
-        encoder_params: Dict[str, Any] = None,
-        decoder_params: Dict[str, Any] = None,
-        quantizer_params: Dict[str, Any] = None,
-        preload: bool = False,
-        preload_path: str = "",
-        fix: bool = False,
-    ):
-        """Initialize SoundStream Generator.
-
-        Args:
-            TODO(jiatong)
-        """
-        super().__init__()
-
-        encoder_params = encoder_params or self.get_default_init_params()["encoder_params"]
-        decoder_params = decoder_params or self.get_default_init_params()["decoder_params"]
-        quantizer_params = quantizer_params or self.get_default_init_params()["quantizer_params"]
-
-        # Initialize encoder
-        self.encoder = GenericSEANetEncoder(**encoder_params)
-        self.decoder = GenericSEANetDecoder(**decoder_params)
-        self.target_bandwidths = quantizer_params.pop("target_bandwidth", None)
-        self.quantizer = ResidualVectorQuantizer(
-            dimension=encoder_params['output_dimension'],
-            **quantizer_params
-        )
-        self.sample_rate = sample_rate
-        self.frame_rate = math.ceil(sample_rate / np.prod(encoder_params['strides']))
-
-        # quantization loss
-        self.l1_quantization_loss = torch.nn.L1Loss(reduction="mean")
-        self.l2_quantization_loss = torch.nn.MSELoss(reduction="mean")
-
-        if preload:
-            logging.info(f"Attempting to preload generator weights from {preload_path}")
-            try:
-                checkpoint = torch.load(preload_path, map_location="cpu")
-                
-                full_state_dict = checkpoint.get('state_dict', checkpoint)
-
-                prefix = 'codec.generator.'
-                
-                generator_state_dict = {
-                    k.replace(prefix, ''): v 
-                    for k, v in full_state_dict.items() 
-                    if k.startswith(prefix)
-                }
-
-                if not generator_state_dict:
-                    raise KeyError(
-                        f"Could not find any keys with the prefix '{prefix}' in the checkpoint at '{preload_path}'. "
-                        "Please verify the checkpoint structure."
-                    )
-
-                missing_keys, unexpected_keys = self.load_state_dict(generator_state_dict, strict=True)
-
-                if unexpected_keys:
-                    logging.warning(f"Unexpected keys in checkpoint not loaded: {unexpected_keys}")
-                if missing_keys:
-                    logging.warning(f"Missing keys in model not initialized: {missing_keys}")
-                
-                logging.info(f"Successfully preloaded generator from {preload_path}")
-
-            except FileNotFoundError:
-                logging.error(f"Preload checkpoint file not found: {preload_path}")
-                raise
-            except Exception as e:
-                logging.error(f"An error occurred while preloading the model: {e}")
-                raise
-        if fix:
-            for param in self.parameters():
-                param.requires_grad = False
-            logging.info("All generator parameters have been frozen. They will not be updated during training.")
-
-
-    @staticmethod
-    def get_default_init_params():
-        init_params= {
-            "encoder_params": GenericSEANetEncoder.get_default_init_params(),
-            "decoder_params": GenericSEANetDecoder.get_default_init_params(),
-            "quantizer_params": {
-                "codebook_dim": 128,
-                "n_q": 6,
-                "bins": 1024,
-                "decay": 0.99,
-                "kmeans_init": True,
-                "kmeans_iters": 50,
-                "threshold_ema_dead_code": 2,
-                "quantizer_target_bandwidth": [1, 6]
-            }
-        }
-        return init_params
-
-    def forward(self, x: torch.Tensor, use_dual_decoder: bool = False):
-        """Soundstream forward propagation.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (B, 1, T).
-            use_dual_decoder (bool): Whether to use dual decoder for encoder out
-        Returns:
-            torch.Tensor: resynthesized audio.
-            torch.Tensor: commitment loss.
-            torch.Tensor: quantization loss
-            torch.Tensor: resynthesized audio from encoder.
-        """
-        encoder_out = self.encoder(x)
-        max_idx = len(self.target_bandwidths) - 1
-
-        # randomly pick up one bandwidth
-        bw = self.target_bandwidths[random.randint(0, max_idx)]
-
-        # Forward quantizer
-        quantized, _, _, commit_loss = self.quantizer(encoder_out, self.frame_rate, bw)
-
-        quantization_loss = self.l1_quantization_loss(
-            encoder_out, quantized.detach()
-        ) + self.l2_quantization_loss(encoder_out, quantized.detach())
-
-        resyn_audio = self.decoder(quantized)
-
-        if use_dual_decoder:
-            resyn_audio_real = self.decoder(encoder_out)
-        else:
-            resyn_audio_real = None
-        return resyn_audio, commit_loss, quantization_loss, resyn_audio_real
-
-    def encode(
-        self,
-        x: torch.Tensor,
-        target_bw: Optional[float] = None,
-    ):
-        """Soundstream codec encoding.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape (B, 1, T).
-        Returns:
-            torch.Tensor: neural codecs in shape ().
-        """
-        encoder_out = self.encoder(x)
-        if target_bw is None:
-            bw = self.target_bandwidths[-1]
-        else:
-            bw = target_bw
-        codes = self.quantizer.encode(encoder_out, self.frame_rate, bw)
-        return codes
-
-    def decode(self, codes: torch.Tensor):
-        """Soundstream codec decoding.
-
-        Args:
-            codecs (torch.Tensor): neural codecs in shape ().
-        Returns:
-            torch.Tensor: resynthesized audio.
-        """
-        quantized = self.quantizer.decode(codes)
-        resyn_audio = self.decoder(quantized)
-        return resyn_audio
-
-
-class Lrac_rewriteDiscriminator(torch.nn.Module):
+class Lrac_deepfilterDiscriminator(torch.nn.Module):
     """Lrac Discriminator with only Multi-Scale STFT discriminator module"""
 
     def __init__(
@@ -682,8 +529,7 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
             "hop_lengths": [256, 512, 128, 64, 32],
             "win_lengths": [1024, 2048, 512, 256, 128],
             "activation": "LeakyReLU",
-            # "activation_params": {"negative_slope: 0.3"},
-            "activation_params": {"negative_slope": 0.3}, # Bug fix. the above commented code is fixed!!
+            "activation_params": {"negative_slope": 0.3},
         },
         msmpmb_discriminator_params: Dict[str, Any] = {
             "rates": [],
@@ -717,20 +563,7 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
             },
         },
     ):
-        """Initialize Encodec Discriminator module.
-
-        Args: msstft_discriminator_params (Dict[str, Any]) with following arguments:
-            in_channels (int): Number of input channels.
-            out_channels (int): Number of output channels.
-            filters (int): Number of filters in convolutions.
-            norm (str): normalization choice of Convolutional layers
-            n_ffts (Sequence[int]): Size of FFT for each scale.
-            hop_lengths (Sequence[int]): Length of hop between STFT windows for
-                each scale.
-            win_lengths (Sequence[int]): Window size for each scale.
-            activation (str): activation function choice of convolutional layer
-            activation_params (Dict[str, Any]): parameters for activation function)
-        """
+        """Initialize Encodec Discriminator module."""
 
         super().__init__()
         self.choose = choose
@@ -739,51 +572,11 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
         elif choose == "msmpmb":
             self.msmpmb = MultiScaleMultiPeriodMultiBandDiscriminator(**msmpmb_discriminator_params)
         if preload:
-            logging.info(f"Attempting to preload discriminator weights from {preload_path}")
-            try:
-                checkpoint = torch.load(preload_path, map_location="cpu")
-                
-                full_state_dict = checkpoint.get('state_dict', checkpoint)
-                if choose == "msstft":
-                    prefix = 'codec.discriminator.msstft.'
-                elif choose == "msmpmb":
-                    prefix = 'codec.discriminator.msmpmb_discriminator.'
-                
-                discriminator_state_dict = {
-                    k.replace(prefix, ''): v 
-                    for k, v in full_state_dict.items() 
-                    if k.startswith(prefix)
-                }
-
-                if not discriminator_state_dict:
-                    raise KeyError(
-                        f"Could not find any keys with the prefix '{prefix}' in the checkpoint at '{preload_path}'. "
-                        "Please verify the checkpoint structure."
-                    )
-
-                if choose == "msstft":
-                    missing_keys, unexpected_keys = self.msstft.load_state_dict(discriminator_state_dict, strict=True)
-                elif choose == "msmpmb":
-                    missing_keys, unexpected_keys = self.msmpmb.load_state_dict(discriminator_state_dict, strict=True)
-                
-
-                if unexpected_keys:
-                    logging.warning(f"Unexpected keys in checkpoint not loaded: {unexpected_keys}")
-                if missing_keys:
-                    logging.warning(f"Missing keys in model not initialized: {missing_keys}")
-                
-                logging.info(f"Successfully preloaded discriminator from {preload_path}")
-
-            except FileNotFoundError:
-                logging.error(f"Preload checkpoint file not found: {preload_path}")
-                raise
-            except Exception as e:
-                logging.error(f"An error occurred while preloading the model: {e}")
-                raise
+            self.load_pretrained(preload_path, choose)
         if fix:
             for param in self.parameters():
                 param.requires_grad = False
-            logging.info("All generator parameters have been frozen. They will not be updated during training.")
+            logging.info("All discriminator parameters have been frozen.")
 
     def forward(self, x: torch.Tensor) -> List[List[torch.Tensor]]:
         """Calculate forward propagation.
@@ -792,13 +585,42 @@ class Lrac_rewriteDiscriminator(torch.nn.Module):
             x (Tensor): Input noise signal (B, 1, T).
 
         Returns:
-            List[List[Tensor]]: List of list of each discriminator outputs,
-                which consists of each layer output tensors. Only one
-                discriminator here, but still make it as List of List for
-                consistency.
+            List[List[Tensor]]: List of list of each discriminator outputs.
         """
         if self.choose == "msstft":
             out = self.msstft(x)
         elif self.choose == "msmpmb":
             out = self.msmpmb(x)
         return out
+
+    def load_pretrained(self, checkpoint_path: str, choose: str):
+        """Load pretrained discriminator weights."""
+        logging.info(f"Loading discriminator weights from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        full_state_dict = checkpoint.get('state_dict', checkpoint)
+        if choose == "msstft":
+            prefix = 'codec.discriminator.msstft.'
+        elif choose == "msmpmb":
+            prefix = 'codec.discriminator.msmpmb_discriminator.'
+
+        discriminator_state_dict = {
+            k.replace(prefix, ''): v
+            for k, v in full_state_dict.items()
+            if k.startswith(prefix)
+        }
+
+        if not discriminator_state_dict:
+            raise KeyError(f"No discriminator weights found with prefix '{prefix}'")
+
+        if choose == "msstft":
+            missing_keys, unexpected_keys = self.msstft.load_state_dict(discriminator_state_dict, strict=True)
+        elif choose == "msmpmb":
+            missing_keys, unexpected_keys = self.msmpmb.load_state_dict(discriminator_state_dict, strict=True)
+
+        if unexpected_keys:
+            logging.warning(f"Unexpected keys: {unexpected_keys}")
+        if missing_keys:
+            logging.warning(f"Missing keys: {missing_keys}")
+
+        logging.info("Discriminator weights loaded successfully")
