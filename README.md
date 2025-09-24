@@ -26,7 +26,9 @@ This is for the purpose of using the Nemo library in an editable manner.
 You can check `/work/nvme/bbjs/hwang41/lrac/espnet/espnet2/gan_codec/shared/encoder/semantic_encoder/encoder_nemo.py` to get to know how to use them.
 
 ## dataset
-`/work/nvme/bbjs/hwang41/lrac/espnet/egs_lrac/lrac/codec1/dump/raw`
+- track 1: `/work/nvme/bbjs/hwang41/lrac/espnet/egs_lrac/lrac/codec1/dump/raw`
+
+- For track2: `/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track2/dump`
 
 ## code
 `/work/nvme/bbjs/hwang41/lrac/espnet/espnet2/gan_codec/shared/encoder/semantic_encoder/encoder_nemo.py` this is the code of nemo ASR encoder.
