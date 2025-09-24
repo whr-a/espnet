@@ -210,6 +210,11 @@ class ArechoLoss(nn.Module):
                     loss += nn.functional.l1_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
                 elif self.loss_type == "mse":
                     loss += nn.functional.mse_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
+                elif self.loss_type == "score_direct":
+                    if target_metric == "scoreq_ref":
+                        loss += torch.tensor(results[target_metric])
+                    else:
+                        loss += torch.tensor(results[target_metric]) * (-1)
                 else:
                     raise ValueError(f"Unsupported loss type: {self.loss_type}")
         loss = loss / len(self.target_metrics) / batch_size
