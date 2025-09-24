@@ -1,5 +1,3 @@
-from typing import Optional
-
 import torch
 
 from espnet2.spk.pooling.abs_pooling import AbsPooling
@@ -8,41 +6,33 @@ from espnet2.spk.pooling.abs_pooling import AbsPooling
 class MeanPooling(AbsPooling):
     """Average frame-level features to a single utterance-level feature.
 
-    Args:
-        input_size: Dimension of the input frame-level embeddings.
+    args:
+        input_size: dimensionality of the input frame-level embeddings.
+            Determined by encoder hyperparameter.
     """
 
-    def __init__(self, input_size: int = 1536):
+    def __init__(self, input_size: int = 1536, use_masking: bool = False):
         super().__init__()
         self._output_size = input_size
+        self.use_masking = use_masking
 
     def output_size(self):
         return self._output_size
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        feat_lengths: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """Forward pass of mean pooling.
+    def forward(self, x, task_tokens: torch.Tensor = None, mask: torch.Tensor = None):
+        """Forward.
 
         Args:
-            x: Input feature tensor of shape (batch_size, feature_dim, seq_len)
-            feat_lengths: Optional tensor of shape (batch_size,) containing
-                          the valid length of each sequence before padding
-
-        Returns:
-            x: Utterance-level embeddings of shape (batch_size, feature_dim)
+            x (torch.Tensor): Input tensor (#batch, size, time).
+            task_tokens (torch.Tensor): Task tokens (#batch, size).
+            mask (torch.Tensor): Mask tensor (#batch, time).
         """
-        if feat_lengths is not None:
-            # Pooling over unpadded frames
-            x = torch.stack(
-                [
-                    torch.mean(x[i, :, : int(l.item())], dim=-1)
-                    for i, l in enumerate(feat_lengths)
-                ],
-                dim=0,
-            )
+        if task_tokens is not None:
+            raise ValueError("MeanPooling is not adequate for task_tokens")
+        if self.use_masking and mask is not None:
+            x = x.masked_fill(mask.unsqueeze(1), 0)
+            x = torch.sum(x, dim=-1)
+            x = x / (torch.sum(~mask, dim=-1, keepdim=True) + 1e-6)
         else:
             x = torch.mean(x, dim=-1)
 

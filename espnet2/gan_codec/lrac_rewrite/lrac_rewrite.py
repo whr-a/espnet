@@ -21,6 +21,7 @@ from espnet2.gan_codec.shared.loss.freq_loss import MultiScaleMelSpectrogramLoss
 from espnet2.gan_codec.shared.loss.semantic_loss import HubertLoss
 from espnet2.gan_codec.shared.loss.loss_balancer import Balancer
 from espnet2.gan_codec.shared.loss.arecho_loss import ArechoLoss
+from espnet2.gan_codec.shared.loss.universa_loss import UniversaLoss
 from espnet2.gan_codec.shared.quantizer.residual_vq import ResidualVectorQuantizer
 from espnet2.gan_codec.shared.discriminator.msstft_discriminator import (
     MultiScaleSTFTDiscriminator,
@@ -60,6 +61,8 @@ class Lrac_rewrite(AbsGANCodec):
         mel_loss_params: Dict[str, Any] = None,
         use_semantic_loss: bool = False,
         use_arecho_loss: bool = False,
+        use_universa_loss: bool = False,
+        universa_loss_params: Dict[str, Any] = {},
         arecho_loss_params: Dict[str, Any] = {},
         semantic_loss_params: Dict[str, Any] = None,
         use_dual_decoder: bool = True,
@@ -71,6 +74,7 @@ class Lrac_rewrite(AbsGANCodec):
         lambda_feat_match: float = 2.0,
         lambda_semantic: float = 0.0,
         lambda_arecho: float = 0.0,
+        lambda_universa: float = 0.0,
         cache_generator_outputs: bool = False,
         use_loss_balancer: bool = False,
         balance_ema_decay: float = 0.99,
@@ -148,6 +152,17 @@ class Lrac_rewrite(AbsGANCodec):
             }
             self.arecho_loss = ArechoLoss(
                 **arecho_loss_params)
+        self.use_universa_loss = use_universa_loss
+        if self.use_universa_loss:
+            universa_loss_params = universa_loss_params or {
+                "target_metrics": ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU'],
+                "model_tag": None,
+                "universa_train_config": "/work/nvme/bbjs/bsu5/lrac_espnet/espnet/egs2/lrac/track1/conf/config_universa/config_universa.yaml",
+                "model_file": "/work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_flex_overall_base_no-token_baseline/valid.loss.best.pth",
+                "device": "cuda",
+            }
+            self.universa_loss = UniversaLoss(
+                **universa_loss_params)
 
         # coefficients
         self.lambda_quantization = lambda_quantization
@@ -162,6 +177,8 @@ class Lrac_rewrite(AbsGANCodec):
             self.lambda_semantic = lambda_semantic
         if self.use_arecho_loss:
             self.lambda_arecho = lambda_arecho
+        if self.use_universa_loss:
+            self.lambda_universa = lambda_universa
         # cache
         self.cache_generator_outputs = cache_generator_outputs
         self._cache = None
@@ -327,6 +344,11 @@ class Lrac_rewrite(AbsGANCodec):
             # logging.info(arecho_loss.grad_fn)
             # logging.info("-"*100)
             stats.update(arecho_loss=arecho_loss.item())
+        if self.use_universa_loss:
+            universa_loss = self.universa_loss(audio_hat, ref_audio)
+            universa_loss = self.lambda_universa * universa_loss
+            loss = loss + universa_loss
+            stats.update(universa_loss=universa_loss.item())
 
         stats.update(loss=loss.item())
 
