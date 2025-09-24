@@ -184,6 +184,24 @@ scheduler2_conf:
 generator_first: true # whether to start updating generator first
 skip_discriminator_prob: 0
 
+##########################################################
+#            PREPROCESSOR SETTINGS               #
+##########################################################
+rir_scp: data/rirs.scp
+rir_apply_prob: 0.5
+noise_scp: data/noise.scp
+noise_apply_prob: 0.8
+validation_rir_scp: data/rirs_val.scp
+validation_noise_scp: data/noise_val.scp
+noise_db_range: "-5_30"
+short_noise_thres: 0.01
+sample_rate: 24000
+use_reverberant_ref: false
+num_spk: 1
+flexible_numspk: false
+num_noise_type: 1
+force_single_channel: true
+avoid_allzero_segment: true
 
 ##########################################################
 #                OTHER TRAINING SETTING                  #
@@ -192,7 +210,7 @@ num_iters_per_epoch: 500 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 100
+batch_size: 32
 batch_type: unsorted      # how to make batch
 
 
@@ -206,7 +224,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 20          # log interval in iterations
+log_interval: 1          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number
