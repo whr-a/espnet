@@ -138,7 +138,7 @@ codec_conf:
     use_arecho_loss: true
     arecho_loss_params:
         target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
-        loss_type: mae
+        loss_type: score_direct
         model_tag: null
         arecho_train_config: /work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml
         model_file: /work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth
@@ -152,7 +152,7 @@ codec_conf:
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
-    lambda_arecho: 10 # loss scaling coefficient for arecho loss
+    lambda_arecho: 1 # loss scaling coefficient for arecho loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -192,7 +192,7 @@ num_iters_per_epoch: 500 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 48
+batch_size: 100
 batch_type: unsorted      # how to make batch
 
 
@@ -206,7 +206,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 1          # log interval in iterations
+log_interval: 20          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number
