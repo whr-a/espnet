@@ -134,9 +134,9 @@ codec_conf:
     use_semantic_loss: false
     use_arecho_loss: true
     arecho_loss_params:
-        # target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
-        target_metrics: ['scoreq_ref']
-        loss_type: mae
+        target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
+        # target_metrics: ['scoreq_ref']
+        loss_type: score_direct
         model_tag: null
         arecho_train_config: /work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml
         model_file: /work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth

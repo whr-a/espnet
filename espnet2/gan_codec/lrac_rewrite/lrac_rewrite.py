@@ -132,7 +132,7 @@ class Lrac_rewrite(AbsGANCodec):
         if self.use_arecho_loss:
             arecho_loss_params = arecho_loss_params or {
                 "target_metrics": ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU'],
-                "loss_type": "mae",
+                "loss_type": "score_direct",
                 "model_tag": None,
                 "arecho_train_config": "/work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml",
                 "model_file": "/work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth",

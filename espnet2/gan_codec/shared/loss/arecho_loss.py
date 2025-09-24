@@ -151,7 +151,7 @@ class UniversaInference:
 class ArechoLoss(nn.Module):
     def __init__(self,
                  target_metrics: List[str] = [],
-                 loss_type: str = "mae",
+                 loss_type: str = "score_direct",
                  model_tag: Optional[str] = None,
                  arecho_train_config: Optional[str] = None,
                  model_file: Optional[str] = None,
@@ -183,7 +183,7 @@ class ArechoLoss(nn.Module):
         print(self.universa_inference)
         self.target_metrics = target_metrics
         self.loss_type = loss_type
-        
+        self.device = device
         # Initialize resampler for downsampling from 24kHz to 16kHz
         self.resampler = T.Resample(orig_freq=24000, new_freq=16000)
     def forward(self, audio, ref_audio):
@@ -210,6 +210,11 @@ class ArechoLoss(nn.Module):
                     loss += nn.functional.l1_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
                 elif self.loss_type == "mse":
                     loss += nn.functional.mse_loss(torch.tensor(results[target_metric]), torch.tensor(ref_results[target_metric]))
+                elif self.loss_type == "score_direct":
+                    if target_metric == "scoreq_ref":
+                        loss += torch.tensor(results[target_metric]).to(self.device)
+                    else:
+                        loss += (torch.tensor(results[target_metric]) * (-1)).to(self.device)
                 else:
                     raise ValueError(f"Unsupported loss type: {self.loss_type}")
         loss = loss / len(self.target_metrics) / batch_size
