@@ -96,7 +96,7 @@ codec_conf:
     # discriminator related
     discriminator_params:
         choose: msstft
-        preload: true
+        preload: false
         preload_path: "/work/nvme/bbjs/hwang41/lrac/espnet/egs2/lrac/track2/exp/codec_train_raw_fs24000/LRAC2025_Track2_baseline_model.pth"
         # multi scale multi band multi resolution discriminator related
         msstft_discriminator_params:
@@ -209,7 +209,7 @@ num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 96
+batch_size: 192
 batch_type: unsorted      # how to make batch
 
 
