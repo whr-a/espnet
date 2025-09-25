@@ -2,7 +2,7 @@
 #                  CODEC MODEL SETTING                   #
 ##########################################################
 # non fix gen and discriminator
-codec: lrac_rewrite
+codec: lrac_universa
 codec_conf:
     sampling_rate: 24000
     preload: true
@@ -132,14 +132,7 @@ codec_conf:
         fmax: null          # maximum frequency for Mel basis
         log_base: null      # null represent natural log
     use_semantic_loss: false
-    use_arecho_loss: true
-    arecho_loss_params:
-        target_metrics: ['scoreq_ref', 'nomad', 'utmos', 'scoreq_nr', 'sheet_ssqa', 'audiobox_aesthetics_CE', 'audiobox_aesthetics_PQ', 'audiobox_aesthetics_CU']
-        # target_metrics: ['scoreq_ref']
-        loss_type: score_direct
-        model_tag: null
-        arecho_train_config: /work/nvme/bbjs/bsu5/universa/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm_decode_lrac/config.yaml
-        model_file: /work/nvme/bbjs/shi3/evaluation/espnet/egs2/universa_unite/uni_versa1/exp/universa_universa_ar_overall_scale_token_wavlm/latest.pth
+    use_universa_loss: true
     semantic_loss_params:
         sample_rate: 24000
         model_name: WAVLM_LARGE
@@ -150,7 +143,7 @@ codec_conf:
     lambda_mel: 5.0        # loss scaling coefficient for Mel loss
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
-    lambda_arecho: 1 # loss scaling coefficient for arecho loss
+    lambda_universa: 0.2 # loss scaling coefficient for universa loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training
@@ -186,12 +179,12 @@ skip_discriminator_prob: 0
 ##########################################################
 #                OTHER TRAINING SETTING                  #
 ##########################################################
-num_iters_per_epoch: 500 # number of iterations per epoch
+num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
 #batch_size: 32
-batch_size: 120
+batch_size: 16
 batch_type: unsorted      # how to make batch
 
 
@@ -205,7 +198,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 1          # log interval in iterations
+log_interval: 50          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number

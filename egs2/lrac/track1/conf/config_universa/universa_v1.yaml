@@ -185,11 +185,11 @@ skip_discriminator_prob: 0
 ##########################################################
 #                OTHER TRAINING SETTING                  #
 ##########################################################
-num_iters_per_epoch: 500 # number of iterations per epoch
+num_iters_per_epoch: 10000 # number of iterations per epoch
 max_epoch: 1150            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
-batch_size: 32
+batch_size: 96
 batch_type: unsorted      # how to make batch
 
 
@@ -203,7 +203,7 @@ sort_in_batch: descending # how to sort data in making batch
 sort_batch: descending    # how to sort created batches
 num_workers: 2            # number of workers of data loader
 use_amp: false            # whether to use pytorch amp
-log_interval: 1          # log interval in iterations
+log_interval: 50          # log interval in iterations
 keep_nbest_models: 20     # number of models to keep
 num_att_plot: 0           # number of attention figures to be saved in every check
 seed: 777                 # random seed number

@@ -19,6 +19,7 @@ from espnet2.gan_codec.funcodec.funcodec import FunCodec
 from espnet2.gan_codec.soundstream.soundstream import SoundStream
 from espnet2.gan_codec.lrac_rewrite.lrac_rewrite import Lrac_rewrite
 from espnet2.gan_codec.lrac_rewrite_enh.lrac_rewrite_enh import Lrac_rewrite_enh
+# from espnet2.gan_codec.lrac_universa.lrac_universa import Lrac_universa
 from espnet2.tasks.abs_task import AbsTask, optim_classes
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
@@ -361,10 +362,20 @@ class GANCodecTask(AbsTask):
                 **args.optim_conf,
             )
         else:
-            optim_g = optim_g_class(
-                model.codec.generator.parameters(),
-                **args.optim_conf,
-            )
+            if args.codec == "lrac_universa":
+                params_to_update = [
+                    p for name, p in model.codec.generator.named_parameters()
+                    if not name.startswith("universa_loss.")
+                ]
+                optim_g = optim_g_class(
+                    params_to_update,
+                    **args.optim_conf,
+                )
+            else:
+                optim_g = optim_g_class(
+                    model.codec.generator.parameters(),
+                    **args.optim_conf,
+                )
         optimizers = [optim_g]
 
         # define discriminator optimizer
