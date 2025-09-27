@@ -149,7 +149,7 @@ codec_conf:
     lambda_feat_match: 2.0 # loss scaling coefficient for feat match loss
     lambda_semantic: 0 # loss scaling coefficient for semantic loss
     lambda_arecho: 1 # loss scaling coefficient for arecho loss
-    lambda_universa: 1 # loss scaling coefficient for universa loss
+    lambda_universa: 10 # loss scaling coefficient for universa loss
 
     # others
     cache_generator_outputs: true # whether to cache generator outputs in the training

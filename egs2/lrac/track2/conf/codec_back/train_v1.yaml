@@ -86,6 +86,7 @@ codec_conf:
         quantizer_kmeans_iters: 50
         quantizer_threshold_ema_dead_code: 2
         quantizer_target_bandwidth: [1, 6]
+        quantizer_dropout_rate: 0.8
 
     # discriminator related
     discriminator_params:
@@ -174,6 +175,7 @@ max_epoch: 1200            # number of epochs
 accum_grad: 1             # gradient accumulation
 # batch_size: 384            # batch size, this will be splitted among gpus
 batch_size: 312
+# batch_size: 16
 batch_type: unsorted      # how to make batch
 
 

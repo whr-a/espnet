@@ -57,6 +57,7 @@ class ResidualVectorQuantizer(nn.Module):
         kmeans_iters: int = 50,
         threshold_ema_dead_code: int = 2,
         quantizer_dropout: bool = False,
+        quantizer_dropout_rate: float = 0.5,
     ):
         super().__init__()
         self.n_q = n_q
@@ -68,6 +69,7 @@ class ResidualVectorQuantizer(nn.Module):
         self.kmeans_iters = kmeans_iters
         self.threshold_ema_dead_code = threshold_ema_dead_code
         self.quantizer_dropout = quantizer_dropout
+        self.quantizer_dropout_rate = quantizer_dropout_rate
         self.vq = ResidualVectorQuantization(
             dim=self.dimension,
             codebook_dim=self.codebook_dim,

@@ -566,6 +566,7 @@ class SoundStreamGenerator(nn.Module):
         quantizer_kmeans_iters: int = 50,
         quantizer_threshold_ema_dead_code: int = 2,
         quantizer_target_bandwidth: List[float] = [7.5, 15],
+        quantizer_dropout_rate: float = 0.5,
     ):
         """Initialize SoundStream Generator.
 
@@ -611,8 +612,10 @@ class SoundStreamGenerator(nn.Module):
             kmeans_init=quantizer_kmeans_init,
             kmeans_iters=quantizer_kmeans_iters,
             threshold_ema_dead_code=quantizer_threshold_ema_dead_code,
+            quantizer_dropout_rate=quantizer_dropout_rate,
         )
         self.target_bandwidths = quantizer_target_bandwidth
+        self.quantizer_dropout_rate = quantizer_dropout_rate
         self.sample_rate = sample_rate
         self.frame_rate = math.ceil(sample_rate / np.prod(encdec_ratios))
 
@@ -658,11 +661,14 @@ class SoundStreamGenerator(nn.Module):
             torch.Tensor: resynthesized audio from encoder.
         """
         encoder_out = self.encoder(x)
-        max_idx = len(self.target_bandwidths) - 1
+        # max_idx = len(self.target_bandwidths) - 1
 
-        # randomly pick up one bandwidth
-        bw = self.target_bandwidths[random.randint(0, max_idx)]
-
+        # # randomly pick up one bandwidth
+        # bw = self.target_bandwidths[random.randint(0, max_idx)]
+        if random.random() < self.quantizer_dropout_rate:
+            bw = self.target_bandwidths[0]
+        else:
+            bw = self.target_bandwidths[1]
         # Forward quantizer
         quantized, _, _, commit_loss = self.quantizer(encoder_out, self.frame_rate, bw)
 
