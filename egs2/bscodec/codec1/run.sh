@@ -18,7 +18,7 @@ fi
 
 train_set=train_all
 valid_set=dev_sub
-test_sets="test_speech_small"
+test_sets="test_all"
 
 model=BSCodec_band_vq_5band
 
