@@ -1,5 +1,6 @@
 # BSCodec repo (built on ESPNet Codec)
 
+We've added a demo section! The codecs in the demo include BSCodec, DAC, Encodec, SemantiCodec, WavTokenizer, Xcodec, Mimo tokenizer. Please check `demo/` for comparisons.
 ## Installation
 
 `pip install .`
