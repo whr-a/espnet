@@ -9,14 +9,13 @@ import json
 import logging
 import random
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import torch
 import torch.multiprocessing as mp
 import yaml
+import soundfile as sf
 
 from espnet2.speechlm.dataloader.iterator import DataIteratorFactory
 from espnet2.speechlm.model import _all_job_types
@@ -143,7 +142,6 @@ def load_checkpoint(model, checkpoint_path):
     return model
 
 
-@torch.no_grad()
 def inference_worker(
     rank: int,
     world_size: int,
@@ -159,6 +157,14 @@ def inference_worker(
     # Set up logger for this worker
     logger = setup_worker_logger(rank)
     logger.info(f"Starting inference worker (rank {rank}/{world_size})")
+
+    # Set random seeds for reproducibility
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    logger.info(f"Random seed set to {seed}")
 
     torch.cuda.set_device("cuda:0")
 
@@ -179,6 +185,7 @@ def inference_worker(
     dtype = inference_config.get("dtype", "bfloat16")
     dtype = getattr(torch, dtype)
     model = model.to(device="cuda", dtype=dtype).eval()
+
     preprocessor = job_template.build_preprocessor()
 
     # Build data iterator with sharding
@@ -201,16 +208,8 @@ def inference_worker(
     logger.info("Starting inference on data shard")
 
     for idx, sample in enumerate(test_iterator):
-
         sample = to_device(sample, "cuda", dtype=dtype)
         task, data_name, example_id = sample.pop("keys")[0]
-
-        # Reset random seed for each sample for independent reproducibility
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
 
         logger.info(f"Processing sample {idx}: {task}/{data_name}/{example_id}")
         messages, _ = model.inference(inference_config, **sample)
@@ -219,9 +218,9 @@ def inference_worker(
             if modality == "audio":
                 audio, length, sample_rate = content
                 audio, length = audio[0], length[0]
-                audio = audio.cpu().float().numpy()
+                audio = audio.cpu().numpy()
 
-                content = output_dir / f"{example_id}_segment{idx + 1}.wav"
+                content = output_dir / f"{example_id}_segment{idx+1}.wav"
                 sf.write(content, audio.T, sample_rate)
 
                 messages[idx][2] = str(content)
@@ -258,9 +257,7 @@ def main():
             "--test-unregistered-specifier"
         )
 
-    specifier = args.test_registered_specifier or args.test_unregistered_specifier
-    output_dir = args.output_dir / specifier.replace(":", "_")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mp.set_start_method("spawn", force=True)
 
@@ -279,14 +276,12 @@ def main():
                 args.model_checkpoint,
                 args.test_unregistered_specifier or "",
                 args.test_registered_specifier or "",
-                output_dir,
+                args.output_dir,
                 args.seed,
             ),
         )
         p.start()
         processes.append(p)
-
-        time.sleep(60)  # Stagger process startups
 
     # Wait for all workers
     for p in processes:
