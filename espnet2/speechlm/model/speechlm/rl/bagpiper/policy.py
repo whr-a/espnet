@@ -840,6 +840,7 @@ def factory(config, device):
         model.model.gradient_checkpointing_enable()
     return NativeSpeechLMPolicy(
         model,
+        token_chunk_size=config.adapter_options.get("score_chunk_size", 32),
         inference_semantics=config.adapter_options.get("inference_semantics", "native"),
         legacy_codec_pad_embeddings=False,
         bagpiper_config=(
