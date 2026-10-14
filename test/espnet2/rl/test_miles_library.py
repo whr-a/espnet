@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 import torch
 
+from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
 from espnet2.rl.miles_library import (
     compute_grpo_outcome_advantage,
@@ -162,3 +163,50 @@ def test_trainer_rejects_native_scorer_action_identity_drift(changed_mask):
             trainer._score_chunks(Scorer(), batch)
     else:
         assert trainer._score_chunks(Scorer(), batch).shape == (2, 2)
+
+
+def test_clip_fraction_includes_all_microbatches():
+    generations = [
+        {
+            "source_id": "u",
+            "prompt_token_ids": [1],
+            "token_ids": [2],
+            "log_probs": [0.0],
+        }
+        for _ in range(2)
+    ]
+    batch = collate_rollouts([{"id": "u"}], generations, 2)
+    batch.non_tensor_batch["source"][0]["coefficient"] = 0.0
+    batch.non_tensor_batch["source"][1]["coefficient"] = np.log(1.5)
+    batch.batch.update(
+        old_log_probs=torch.zeros(2, 1),
+        ref_log_probs=torch.zeros(2, 1),
+        advantages=torch.ones(2, 1),
+    )
+
+    class Scorer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, part):
+            coefficients = torch.tensor(
+                [source["coefficient"] for source in part.non_tensor_batch["source"]],
+                dtype=torch.float32,
+            )
+            mask = part.batch["response_mask"]
+            return TokenScores(
+                (self.weight * coefficients).unsqueeze(1),
+                torch.zeros_like(mask),
+                mask,
+            )
+
+    config = ESPnetRLConfig(
+        micro_batch_size=1,
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_generate_factory="unused:generate",
+        kl_coef=0.0,
+    )
+    metrics = NativeGRPOTrainer(Scorer(), config).update_actor(batch)
+    assert metrics["actor/clip_fraction"] == pytest.approx(0.5)

@@ -233,7 +233,14 @@ class NativeGRPOTrainer:
                 metrics["actor/entropy"] += (
                     entropy.detach().item() / self.config.ppo_epochs
                 )
-                metrics.update(ppo_metrics)
+                token_weight = (
+                    mask.sum().item()
+                    * self.world_size
+                    / denominator
+                    / self.config.ppo_epochs
+                )
+                for name, value in ppo_metrics.items():
+                    metrics[name] = metrics.get(name, 0.0) + value * token_weight
             norm = torch.nn.utils.clip_grad_norm_(
                 self.policy.parameters(), self.config.max_grad_norm
             )
