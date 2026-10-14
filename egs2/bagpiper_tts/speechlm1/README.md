@@ -388,3 +388,6 @@ FP32 forward with TP=1. It records every primary and secondary action, mask,
 sampling contract and joint behavior log probability; it is not a throughput
 benchmark. Checkpoints, exports, nonzero gradients, probability agreement and
 held-out task metrics must all pass before claiming end-to-end acceptance.
+
+The small end-to-end run and its exact scope are recorded in
+[RL validation](RL_VALIDATION.md).
