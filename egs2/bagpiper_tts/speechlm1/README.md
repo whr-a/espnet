@@ -328,7 +328,7 @@ When using the foundation model, also cite the
 
 ## Optional Miles RL stage
 
-This existing recipe keeps SFT as its default. `run.sh --stage 4` selects an optional
+The existing stages remain the default. `run.sh --stage 4` selects an optional
 post-training stage using a pinned Miles library and SGLang rollout. Architecture
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
 or vendored. Set the pretrained checkpoint, original training YAML, token assets,
@@ -341,6 +341,12 @@ codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
 # Existing frozen manifests can skip preparation:
 ./run.sh --rl --stage 2 --rl-config conf/rl.yaml
 ```
+
+For a sequence that also includes supervised stages, select `--stop-stage 4`
+and pass `--rl-config`, with `--rl-data-input` or `--rl-wav-scp`/`--rl-text`.
+To reuse a prepared dataset, pass `--rl-manifest`; this skips preparation when no
+new RL data is supplied. Each RL run starts from the explicit native checkpoint
+in its YAML and writes a fresh output directory.
 
 The RL wrapper performs data preparation, configuration validation and training.
 Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also

@@ -37,6 +37,17 @@ done
 stage=1
 stop_stage=5
 
+# Explicit optional RL inputs, for a run spanning supervised and RL stages.
+rl_config=conf/rl.yaml
+rl_manifest=
+rl_data_input=
+rl_wav_scp=
+rl_text=
+rl_questions=
+rl_choices=
+rl_hf_revision=
+
+
 # Launch
 ngpu=1
 num_nodes=1
@@ -83,7 +94,9 @@ test_registered_specifier=
 inference_output_dir=
 num_workers=1
 
-help_message="Usage: $0 [--stage N] [--stop-stage N] [options]
+help_message="Optional stage 6: Miles RL via --rl-config, --rl-manifest and RL data options.
+
+Usage: $0 [--stage N] [--stop-stage N] [options]
 
   1  warmup       conf/train.yaml                 -> exp/warmup
   2  pretraining  conf/tuning/train_pretrain.yaml -> exp/pretrain
@@ -128,7 +141,7 @@ repo_root=$(cd ../../.. && pwd)
 . ../../TEMPLATE/asr1/scripts/speechlm/parse_options.sh
 
 [[ $# -eq 0 ]] || die "Unexpected positional arguments: $*"
-validate_stages "${stage}" "${stop_stage}" 5 "${node_rank}"
+validate_stages "${stage}" "${stop_stage}" 6 "${node_rank}"
 if [[ -n ${train_config} || -n ${output_dir} ]] && (( stage < 3 && stop_stage > stage )); then
     die "--train-config and --output-dir require selecting only one training stage"
 fi
@@ -287,4 +300,17 @@ if (( stage <= 5 && stop_stage >= 5 && node_rank == 0 )); then
         --output-dir "${inference_output_dir}" \
         --num-workers "${num_workers}"
     log "results: ${inference_output_dir}"
+fi
+
+if (( stage <= 6 && stop_stage >= 6 && node_rank == 0 )); then
+    log "Stage 6: Miles RL post-training with SGLang"
+    rl_args=(--rl-config "${rl_config}" --python "${python}")
+    if [[ -n ${rl_manifest} && -z ${rl_data_input} && -z ${rl_wav_scp} ]]; then
+        rl_args+=(--stage 2)
+    fi
+    for key in manifest data_input wav_scp text questions choices hf_revision; do
+        option=rl_${key}
+        [[ -z ${!option} ]] || rl_args+=(--${key//_/-} "${!option}")
+    done
+    ./rl.sh "${rl_args[@]}"
 fi
