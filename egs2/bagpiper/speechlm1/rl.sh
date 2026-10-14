@@ -50,17 +50,17 @@ if (( stage <= 1 && stop_stage >= 1 )); then
     if [[ "$reuse_manifest" == true && -z "$wav_scp" && -z "$data_input" ]]; then
         [[ -f "$manifest" ]] || { echo "Prepared manifest does not exist: $manifest" >&2; exit 2; }
     else
-    args=(--dataset "$dataset" --output "$manifest" --task qa)
-    if [[ -n "$wav_scp" ]]; then
-        args=(--dataset wav_scp --wav-scp "$wav_scp" --text "$text" --output "$manifest" --task qa)
-        [[ -z "$questions" ]] || args+=(--questions "$questions")
-        [[ -z "$choices" ]] || args+=(--choices "$choices")
-    else
-        [[ -z "$data_input" ]] || args+=(--input "$data_input")
-    fi
-    [[ -z "$hf_revision" ]] || args+=(--hf-revision "$hf_revision")
-    [[ -z "$limit" ]] || args+=(--limit "$limit")
-    "${python_cmd}" -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
+        args=(--dataset "$dataset" --output "$manifest" --task qa)
+        if [[ -n "$wav_scp" ]]; then
+            args=(--dataset wav_scp --wav-scp "$wav_scp" --text "$text" --output "$manifest" --task qa)
+            [[ -z "$questions" ]] || args+=(--questions "$questions")
+            [[ -z "$choices" ]] || args+=(--choices "$choices")
+        else
+            [[ -z "$data_input" ]] || args+=(--input "$data_input")
+        fi
+        [[ -z "$hf_revision" ]] || args+=(--hf-revision "$hf_revision")
+        [[ -z "$limit" ]] || args+=(--limit "$limit")
+        "${python_cmd}" -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
     fi
 fi
 if (( stage <= 2 && stop_stage >= 2 )); then
