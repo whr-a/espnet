@@ -4,7 +4,7 @@ set -euo pipefail
 python_cmd=${PYTHON:-python}
 source_dir=${MILES_SOURCE:-$(pwd)/miles-rl-library}
 revision=a22fd824191c64ba7c5d6c531f125406e4ce9cc6
-if [[ ! -d ${source_dir}/.git ]]; then
+if ! git -C "${source_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git clone --filter=blob:none --no-checkout https://github.com/radixark/miles.git "${source_dir}"
     git -C "${source_dir}" checkout --detach "${revision}"
 fi
