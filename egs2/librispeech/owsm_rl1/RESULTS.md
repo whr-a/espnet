@@ -7,6 +7,8 @@ pinned Miles library and the SGLang execution bridge. All evidence is under
 - Native checkpoint: `espnet/owsm_v4_base_102M`, original ESPnet weights.
 - Input: LibriSpeech `train.clean.100`, four raw utterances from speaker 374,
   passed as `wav.scp` and `text`; the stage generated its own audited manifest.
+  `data/librispeech/train/source_audit.json` records the Hugging Face
+  `openslr/librispeech_asr` source, config `all`, rows 0--3 and audio hashes.
 - Fixed Miles: `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`.
 - SGLang fork base: `4ad990ba7d75bb9f948f5f6bd8d79a66b5d3fd63`, with
   `sglang.srt.models.espnet_owsm` importing the ESPnet implementation.
@@ -32,12 +34,21 @@ previous actor version, and every native checkpoint against its model wrapper.
 Both optimizer states contain nonzero first moments. Checkpoints are
 `recipe/train/step-000001{.pt,.native.pth}` and
 `recipe/train/step-000002{.pt,.native.pth}`. Training exited 0.
+The exact two-update command is retained in `launch.sh`; it invokes
+`egs2/owsm_v4/s2t1/run.sh --stage 18 --steps 2`. `source_hashes.json` records
+the executed architecture and recipe files. A complete ESPnet Git HEAD was
+not explicitly frozen for this historical run; the later integration pin below
+identifies the additional checks, not this training's whole source tree.
 
 Heldout evaluation used four disjoint `validation.clean` utterances from
 speaker 2277, 67 reference words, with native ESPnet greedy decoding. Before
 and after both had 7 word errors: **10.4478% corpus WER**. This small engineering
 run establishes end-to-end correctness; it does not demonstrate a heldout
-quality improvement. Heldout logs and full hypotheses are under
+quality improvement or a full-corpus result. The heldout source audit is
+`data/librispeech/heldout/source_audit.json` (config `all`, rows 0--3).
+Training and heldout IDs and speakers are disjoint in this local sample;
+this run does not establish isolation from every registered evaluation set or
+from the released model's pretraining data. Heldout logs and full hypotheses are under
 `runs/owsm_heldout_001/{before.json,after.json}`; evaluation exited 0.
 
 Earlier failed development runs remain intact: `owsm_sglang_smoke_001`

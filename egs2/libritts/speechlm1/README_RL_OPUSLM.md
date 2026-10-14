@@ -109,3 +109,34 @@ was 0.3996628225, each with four distinct audio prompts times two completions.
 Native/SGLang heldout logprob errors were at most 2.0504e-05. These small runs
 verify the engineering loop and numerical contract, not quality improvement;
 they do not establish full-corpus accuracy or full codec-output TTS support.
+
+The successful two-update runs used four LibriSpeech `train.clean.100`
+utterances from speaker 374 and four `validation.clean` (dev-clean) utterances
+from speaker 2277. They used `opuslm_assets/train_v2.jsonl` and
+`opuslm_assets/heldout_v2.jsonl`, built from
+`data/librispeech/{train,heldout}/{wav.scp,text}`. The adjacent
+`source_audit.json` files record `openslr/librispeech_asr`, config `all`,
+rows 0--3 for each split and audio hashes. Training and heldout IDs and
+speakers are disjoint in this sample; this does not establish isolation from
+every registered evaluation set or the released model's pretraining data.
+The complete-split commands above are reusable examples, not commands that
+produced these small-run scores.
+
+Historical evidence lives under
+`/mnt/project/haoran/terminal_docs/espnet_miles_rl_20261014/`:
+
+| Architecture | Successful run directory | Frozen ESPnet commit | Frozen SGLang commit |
+| --- | --- | --- | --- |
+| Plain | `runs/opuslm_modern_sglang_miles_001` | `2e739523ff2cfef77eedba0960d70f03121fdb38` | `df3495c60d51f3f64029527643699f1276d64061` |
+| Dialogue | `runs/opuslm_dialogue_integration_sglang_miles_001` | `c2595666dd0192397a0550a3ce53cacacca85f52` | `e1c0658c4bff816f72588699549d854093601682` |
+
+Both `status.json` files report `Succeeded`, exit 0 and two completed updates.
+Each directory retains `protocol.json` (source and manifest hashes),
+`frozen_config.json`, `metrics.jsonl`, `acceptance.json`, the step-2 native
+checkpoint, and raw heldout rollout records. Plain's
+`integration_verification.json` additionally checks the saved final state and
+existing responses using ESPnet `c2595666dd0192397a0550a3ce53cacacca85f52`,
+without rerunning training. These historical pins differ from the reviewed
+optional SGLang library pin recommended above. The earlier
+`opuslm_dialogue_modern_sglang_miles_001` was superseded before execution and
+is not the successful Dialogue run.
