@@ -13,5 +13,28 @@ fi
 }
 "${python_cmd}" -m pip install numpy PyYAML soundfile scipy safetensors 'ray[default]' msgpack pybase64
 "${python_cmd}" -m pip install --no-deps --no-build-isolation -e "${source_dir}"
-"${python_cmd}" -c 'from miles.backends.training_utils.loss.hub.math_utils import compute_policy_loss; from miles.ray.rollout.train_data_conversion import _normalize_rewards_by_rollout; print("Miles native RL library ready")'
+"${python_cmd}" - "${source_dir}" "${revision}" <<'PYCODE'
+import hashlib
+import subprocess
+import sys
+from pathlib import Path
+from miles.backends.training_utils.loss.hub import math_utils
+from miles.ray.rollout import train_data_conversion
+
+root = Path(sys.argv[1]).resolve()
+revision = sys.argv[2]
+for module, relative in (
+    (math_utils, "miles/backends/training_utils/loss/hub/math_utils.py"),
+    (train_data_conversion, "miles/ray/rollout/train_data_conversion.py"),
+):
+    actual = Path(module.__file__).resolve()
+    expected = root / relative
+    if actual != expected:
+        raise RuntimeError(f"Miles import is shadowed: {actual}, expected {expected}")
+    original = subprocess.check_output(["git", "-C", str(root), "show", f"{revision}:{relative}"])
+    if original != actual.read_bytes():
+        raise RuntimeError(f"Pinned Miles algorithm changed: {actual}")
+    print(relative, hashlib.sha256(original).hexdigest())
+print("Miles native RL library ready", root, revision)
+PYCODE
 
