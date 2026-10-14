@@ -446,8 +446,11 @@ sampled rollout. The learner executes the native model on those same features.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
-QA training follows WEST default GRPO: exact answer and answer-format rewards
-with equal weights. MMAU uses the official token-set match. MMAU evaluation must
+QA training uses WEST's exact-answer and full-match answer-format functions,
+with equal normalized weights: `0.5 * (accuracy + format)`. WEST's default
+implementation adds the two scores with weights of one; this recipe's reward
+range is 0 to 1, rather than 0 to 2. It uses Miles' normalized GRPO advantages
+and KL objective. MMAU uses the official token-set match. MMAU evaluation must
 freeze its own held-out manifest and retains raw generations before scoring.
 
 For engineering validation, prepare MMAU separately with an immutable dataset
