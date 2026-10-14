@@ -152,5 +152,33 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
 Stage 18 adds WER GRPO post-training to an existing OWSM checkpoint:
 `./run.sh --stage 18 --wav-scp /path/wav.scp --text /path/text
 --train-config /path/config.yaml --checkpoint /path/model.pth`.
+The same standalone stage also accepts `--rl-` prefixes, and
+`--stop_stage` or `--stop-stage` may limit the selected stage range.
+
+To append RL after the existing supervised stages succeed, explicitly include
+stage 18 and supply separate RL inputs:
+
+```bash
+./run.sh --stage 1 --stop_stage 18 \
+    --rl-wav-scp /path/librispeech/wav.scp --rl-text /path/librispeech/text \
+    --rl-train-config /path/owsm/config.yaml --rl-checkpoint /path/owsm/model.pth \
+    --rl-config conf/rl_miles_wer.yaml --rl-work-dir exp/rl_miles_wer
+```
+
+The four RL data/model inputs are required. Other supported combined-run options
+are `--rl-steps`, `--rl-device`, `--rl-reference-device`, `--rl-rollout-gpus`,
+`--rl-rollout-python`, `--rl-sglang-source`, `--rl-miles-source`, and
+`--rl-language`. Each maps to the existing `rl.sh` option without the `rl-`
+prefix. Ordinary S2T options are forwarded unchanged, and RL options are kept
+out of `s2t.sh`. The RL checkpoint and model configuration must be supplied
+explicitly; they may refer to files produced by the preceding supervised run.
+
+Without RL options, the ordinary recipe retains its default behavior even when
+its default `stop_stage=10000` includes 18. Combined RL requires an explicit
+stop stage; a range excluding 18 reports that RL was skipped. Missing required
+inputs, unknown RL options, and unreadable RL config files fail before the
+supervised stages start. Config contents retain the existing RL validation.
+If supervised stages fail, RL is not started.
+
 The [LibriSpeech RL recipe](../../librispeech/owsm_rl1/README.md) documents
 optional SGLang installation, devices, audited data and current limitations.
