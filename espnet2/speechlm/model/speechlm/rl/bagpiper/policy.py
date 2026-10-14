@@ -205,34 +205,63 @@ class NativeSpeechLMPolicy(nn.Module):
             return offsets[stream] * 0
         return offsets[stream]
 
-    def _score_frames(self, hidden, labels, stream_mask, source, return_streams=False, _recomputed=False):
+    def _score_frames(
+        self,
+        hidden,
+        labels,
+        stream_mask,
+        source,
+        return_streams=False,
+        _recomputed=False,
+    ):
         b, t, q = labels.shape
         if self.score_checkpointing and torch.is_grad_enabled() and not _recomputed:
             rows, entropies, streams = [], [], []
             phase = source.get("sampling_extra_args", {}).get("phase", "text")
-            mode = source.get("mode", source.get("sampling_extra_args", {}).get("mode", "text_only"))
+            mode = source.get(
+                "mode", source.get("sampling_extra_args", {}).get("mode", "text_only")
+            )
             for start in range(0, t, self.token_chunk_size):
                 end = min(t, start + self.token_chunk_size)
                 part = dict(source)
                 if source.get("sampling_contracts") is not None:
                     part["sampling_contracts"] = source["sampling_contracts"][start:end]
-                part["sampling_extra_args"] = {**source.get("sampling_extra_args", {}), "phase": phase}
+                part["sampling_extra_args"] = {
+                    **source.get("sampling_extra_args", {}),
+                    "phase": phase,
+                }
                 target, active = labels[:, start:end], stream_mask[:, start:end]
 
                 def recompute(value, _target=target, _active=active, _source=part):
-                    return self._score_frames(value, _target, _active, _source, True, True)
+                    return self._score_frames(
+                        value, _target, _active, _source, True, True
+                    )
 
-                logp, entropy, per_stream = checkpoint(recompute, hidden[:, start:end], use_reentrant=False)
-                rows.append(logp); entropies.append(entropy); streams.append(per_stream)
+                logp, entropy, per_stream = checkpoint(
+                    recompute, hidden[:, start:end], use_reentrant=False
+                )
+                rows.append(logp)
+                entropies.append(entropy)
+                streams.append(per_stream)
                 if self.bagpiper_config is not None and mode == "text_audio":
                     for token in target[0, :, 0].tolist():
-                        if phase == "text" and token == self.bagpiper_config["eot_token_id"]:
+                        if (
+                            phase == "text"
+                            and token == self.bagpiper_config["eot_token_id"]
+                        ):
                             phase = "transition"
                         elif phase == "transition":
                             phase = "audio"
-                        elif phase == "audio" and token == self.bagpiper_config["eot_token_id"]:
+                        elif (
+                            phase == "audio"
+                            and token == self.bagpiper_config["eot_token_id"]
+                        ):
                             phase = "audio_stop"
-            outputs = (torch.cat(rows, 1), torch.cat(entropies, 1), torch.cat(streams, 1))
+            outputs = (
+                torch.cat(rows, 1),
+                torch.cat(entropies, 1),
+                torch.cat(streams, 1),
+            )
             return outputs if return_streams else outputs[:2]
         frame_logp = hidden.new_zeros((b, t), dtype=torch.float32)
         frame_entropy = hidden.new_zeros((b, t), dtype=torch.float32)
@@ -818,7 +847,9 @@ def factory(config, device):
             if getattr(config, "family", None) == "bagpiper"
             else None
         ),
-        activation_checkpointing=recipe.get("model", {}).get("activation_checkpointing", False),
+        activation_checkpointing=recipe.get("model", {}).get(
+            "activation_checkpointing", False
+        ),
         score_checkpointing=config.adapter_options.get("score_checkpointing", True),
     )
 
