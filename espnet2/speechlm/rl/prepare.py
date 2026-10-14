@@ -172,6 +172,11 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--limit", type=int)
     args = parser.parse_args()
+    output = Path(args.output)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite frozen Opus manifest {output}")
+    if args.limit is not None and args.limit < 1:
+        raise ValueError("--limit must be positive")
     import soundfile
     import torchaudio
 
@@ -196,6 +201,11 @@ def main():
             raise ValueError(
                 "Materialize wav.scp pipe entries before freezing Opus RL audio"
             )
+        audio = (
+            str((Path(args.wav_scp).resolve().parent / audio).resolve())
+            if not Path(audio).is_absolute()
+            else audio
+        )
         source = {
             "id": key,
             "audio": str(Path(audio).resolve()),

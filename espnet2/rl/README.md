@@ -39,3 +39,18 @@ trade throughput for exact native semantics; they are not optimized KV-cache
 implementations. Two successful updates establish an engineering loop, not a
 claim of general training quality. Held-out evaluation must retain its own
 manifest, raw responses and explicit denominator.
+
+To install the inference fork in its dedicated environment, run the installer
+with that environment's Python (the Makefile otherwise uses active ESPnet Python):
+
+```bash
+SGLANG_SOURCE=/path/to/sglang SGLANG_REVISION=EXACT_REVIEWED_COMMIT \
+  PYTHON=/path/to/sglang-env/bin/python bash tools/installers/install_sglang_rl.sh
+```
+
+The editable installation checks the actual imported module and frozen API/model
+files. Record the SGLang source pin alongside each recipe config; model registration
+bridges import their implementations from the corresponding `espnet2` RL directory.
+`--manifest`, `--checkpoint`, `--train-config` and `--output-dir` on `rl_train`
+can select prepared inputs without rewriting the template YAML. Relative template
+paths are resolved from the recipe working directory.

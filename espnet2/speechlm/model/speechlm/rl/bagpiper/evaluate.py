@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.data import read_manifest
 from espnet2.rl.utils import resolve_callable
 
 
@@ -31,11 +32,9 @@ def main():
     (directory / "frozen_config.json").write_text(
         json.dumps(cfg.to_dict(), indent=2) + "\n"
     )
-    requests = [
-        json.loads(row)
-        for row in Path(cfg.eval_manifest).read_text().splitlines()
-        if row.strip()
-    ]
+    if not cfg.eval_manifest:
+        raise ValueError("Set a separate held-out eval_manifest before evaluation")
+    requests = read_manifest(cfg.eval_manifest)
     (directory / "requests.json").write_text(json.dumps(requests, indent=2) + "\n")
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = cfg.rollout_gpus
@@ -81,6 +80,9 @@ def main():
             rollout, env=env, check=True, stdout=handle, stderr=subprocess.STDOUT
         )
     generations = json.loads((directory / "responses.json").read_text())["generations"]
+    expected_ids = [source["id"] for source in requests for _ in range(cfg.group_size)]
+    if [generation["source_id"] for generation in generations] != expected_ids:
+        raise ValueError("Held-out generations contain incomplete or misordered groups")
     reward = resolve_callable(cfg.reward_function)
     sources = {item["id"]: item for item in requests}
     if requests[0]["task"] == "tts_asr_wer":
@@ -104,6 +106,8 @@ def main():
             float(mmau_match(sources[generation["source_id"]], generation))
             for generation in generations
         ]
+    for row, value in zip(scored, values, strict=True):
+        row[metric] = -value if metric == "wer" else value
     result = {
         "metric": metric,
         "value": (-sum(values) if metric == "wer" else sum(values)) / len(values),
@@ -111,6 +115,12 @@ def main():
         "prompt_count": len(requests),
         "sampling": "unit temperature, full support, all group candidates",
         "checkpoint": str(checkpoint),
+        "checkpoint_sha256": hashlib.file_digest(
+            checkpoint.open("rb"), "sha256"
+        ).hexdigest(),
+        "manifest_sha256": hashlib.sha256(
+            Path(cfg.eval_manifest).read_bytes()
+        ).hexdigest(),
         "dataset": requests[0]["dataset"],
         "generations": scored,
     }
