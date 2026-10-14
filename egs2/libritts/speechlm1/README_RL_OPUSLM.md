@@ -12,7 +12,7 @@ Install Miles through `tools/installers/install_miles_rl.sh` and use
 `tools/installers/install_sglang_rl.sh` in a fresh inference environment. The
 reviewed SGLang fork is `https://github.com/whr-a/sglang` at
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. See
-[`espnet2/rl/README.md`](../../../../espnet2/rl/README.md) for the optional flow.
+[`espnet2/rl/README.md`](../../../espnet2/rl/README.md) for the optional flow.
 Create the inference venv without `--system-site-packages`; its dependencies
 and ESPnet's architecture-specific optional dependencies must be installed in
 that environment. Do not prepend an old SGLang installation through

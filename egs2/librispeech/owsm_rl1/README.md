@@ -56,3 +56,22 @@ inference environment. The default recipe and 2026-10-14 training acceptance
 use SGLang. The optional vLLM adapter also passed real engine generation on two
 LibriSpeech prompts with two candidates each; its maximum native action-logprob
 error was 0.00015927. This was a backend check, with no vLLM optimizer update.
+
+To select that backend from the existing stage, copy the vLLM template into
+`/path/to/rl_miles_wer_vllm.yaml`, set its `vllm_source` to the reviewed ESPnet
+vLLM checkout, then run from this recipe directory:
+
+```bash
+./run.sh --config /path/to/rl_miles_wer_vllm.yaml \
+  --wav-scp ../asr1/data/train_clean_100/wav.scp \
+  --text ../asr1/data/train_clean_100/text \
+  --train-config /path/to/owsm/config.yaml --checkpoint /path/to/owsm/checkpoint.pth \
+  --work-dir exp/owsm_miles_wer_vllm \
+  --rollout-python /path/to/validated-vllm-env/bin/python \
+  --miles-source /path/to/pinned-miles-library \
+  --device cuda:0 --reference-device cuda:1 --rollout-gpus 2
+```
+
+`vllm_source` is a YAML field; the stage wrapper accepts `--config` and
+`--rollout-python` but has no `--vllm-source` option. Keep the vLLM interpreter
+and source separate from the default SGLang environment.

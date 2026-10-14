@@ -17,7 +17,8 @@ SGLang runs in a separate interpreter configured with `rollout_python` and
 `sglang_source`. The user's fork is https://github.com/whr-a/sglang. Each recipe
 declares its architecture's generation factory, native scorer and exact exporter.
 `make sglang_rl.done` accepts `SGLANG_SOURCE` and `SGLANG_REVISION` for a reviewed
-checkout; use a dedicated environment matching that checkout's dependency lock.
+checkout; use a dedicated environment matching its reviewed dependency profile
+in [ENVIRONMENT.md](ENVIRONMENT.md).
 An inference environment may be different from the native training environment.
 
 `prepare_kaldi_manifest` accepts `wav.scp` and `text`, joins by utterance ID,

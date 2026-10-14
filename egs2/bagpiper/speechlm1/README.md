@@ -478,6 +478,28 @@ raw responses, manifest and checkpoint hashes, prompt count, and response count
 are included in the audit. This subset is an engineering check, not a full
 MMAU-mini benchmark. A successful two-update run does not imply a metric gain.
 
+The evaluator rejects training/held-out ID overlap, checks response checkpoint
+hash, backend and policy version, and verifies every sampled action's probability
+against the specified final native checkpoint. Its export must match every native
+tensor except the nonpolicy `vocab_weight`. `--device cpu` is the default for
+this independent probability gate. Use effective `frozen_config.json` with
+`--manifest` to select a separately prepared held-out set without losing training
+CLI overrides. Each evaluation writes its own completion status and failure
+traceback. Existing real outputs can be audited without generating again:
+
+```bash
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+    --config exp/rl/frozen_config.json --checkpoint /path/to/evaluated-native.pth \
+    --manifest data/rl/mmau.jsonl --responses /path/to/eval/responses.json \
+    --export-dir /path/to/eval/hf --policy-step -1 --device cpu \
+    --output exp/rl/mmau-saved-audit
+```
+
+Use the saved response's actual `policy_step`; no new generation occurs in this
+mode. `--export-dir` additionally checks the existing HF export against the
+native checkpoint. Relative config paths resolve from the command's current
+directory, so run from the original recipe or freeze absolute paths.
+
 The first SGLang implementation is deliberately synchronous and uses full-prefix
 FP32 forward with TP=1. It records every primary and secondary action, mask,
 sampling contract and joint behavior log probability; it is not a throughput
