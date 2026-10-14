@@ -488,3 +488,22 @@ reach a final answer. Native layer and score-block recomputation use the same
 32-row matrix shapes during backward; the objective and sampled actions remain
 unchanged. The FP32 prototype requires three 80 GB GPUs with optimizer state on
 CPU; its initial acceptance configuration uses one sample per scoring forward.
+
+`conf/rl_think.yaml` is a separate WEST think profile for the native SFT's
+caption, reasoning and answer output. Its reward is exactly WEST's
+`0.8 * accuracy + 0.1 * one_answer_block + 0.1 * one_think_block`; descriptions
+outside those blocks are allowed. The exact answer check retains WEST's parser,
+including its treatment of a newline inside the answer block. Report accuracy
+and both format terms separately; format reward by itself is not QA improvement.
+
+```bash
+./run.sh --stage 6 --data-input /path/to/avqa.parquet \
+    --qa-template think --rl-config conf/rl_think.yaml
+```
+
+Freeze each protocol before running it. The small think verification profile
+uses four updates, two prompts per update and four candidates, covering all
+eight prepared AVQA prompts in order once. A default-format result remains a
+result of its original protocol; changing to think mode creates a new run and
+a new prepared manifest. Use a separately prepared think MMAU manifest for the
+matching held-out evaluation.

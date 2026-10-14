@@ -1,0 +1,40 @@
+# Separate WEST think protocol for native caption-reasoning-answer SFT.
+# Freeze before a new round; do not switch a running default-format run.
+family: bagpiper
+train_config: conf/train.yaml
+checkpoint: exp/sft/model.pth
+manifest: data/rl/train-think.jsonl
+output_dir: exp/rl-think
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+request_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:request_factory
+sglang_generate_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:generate
+reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_think_reward
+device: cuda:0
+reference_device: cuda:1
+rollout_gpus: '2'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: torch_native
+  context_length: 4096
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+dtype: float32
+optimizer_device: cpu
+seed: 42
+steps: 4
+prompts_per_step: 2
+group_size: 4
+micro_batch_size: 1
+learning_rate: 1.0e-6
+kl_coef: 0.04
+max_tokens: 1536
+score_tolerance: 0.03

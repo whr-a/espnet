@@ -11,6 +11,12 @@ from pathlib import Path
 
 QA_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
 TTS_TEMPLATE = "Please read the following text aloud verbatim: {text}"
+QA_THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
+
+
+def qa_prompt(question, choices, template="default"):
+    selected = {"default": QA_TEMPLATE, "think": QA_THINK_TEMPLATE}[template]
+    return selected.format(question=question, choices=choices)
 
 
 def _kaldi(path):
@@ -144,6 +150,9 @@ def main():
     parser.add_argument("--task", choices=("tts_asr_wer", "qa"), default="qa")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--hf-revision")
+    parser.add_argument(
+        "--qa-template", choices=("default", "think"), default="default"
+    )
     args = parser.parse_args()
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -179,6 +188,12 @@ def main():
             source = output.parent / "avqa-source.parquet"
             ds.to_parquet(str(source))
         records = prepare_parquet(source, args.dataset, output.parent)
+    if args.task == "qa":
+        for record in records:
+            record["prompt"] = qa_prompt(
+                record["question"], record["choices"], args.qa_template
+            )
+            record["qa_template"] = args.qa_template
     if args.limit:
         records = records[: args.limit]
     if not records:
@@ -193,7 +208,16 @@ def main():
                 "input": args.input,
                 "dataset": args.dataset,
                 "hf_revision": args.hf_revision,
-                "template": (QA_TEMPLATE if args.task == "qa" else TTS_TEMPLATE),
+                "qa_template": args.qa_template,
+                "template": (
+                    (
+                        QA_TEMPLATE
+                        if args.qa_template == "default"
+                        else QA_THINK_TEMPLATE
+                    )
+                    if args.task == "qa"
+                    else TTS_TEMPLATE
+                ),
             },
             indent=2,
         )

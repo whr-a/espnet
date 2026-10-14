@@ -18,6 +18,7 @@ questions=
 choices=
 hf_revision=
 limit=
+qa_template=default
 while [[ $# -gt 0 ]]; do
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case "$1" in
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
         --choices) choices=$2 ;;
         --hf-revision) hf_revision=$2 ;;
         --limit) limit=$2 ;;
+        --qa-template) qa_template=$2 ;;
         --python) python_cmd=$2 ;;
         *) echo "Unknown RL option $1" >&2; exit 2 ;;
     esac
@@ -50,9 +52,9 @@ if (( stage <= 1 && stop_stage >= 1 )); then
     if [[ "$reuse_manifest" == true && -z "$wav_scp" && -z "$data_input" ]]; then
         [[ -f "$manifest" ]] || { echo "Prepared manifest does not exist: $manifest" >&2; exit 2; }
     else
-        args=(--dataset "$dataset" --output "$manifest" --task qa)
+        args=(--dataset "$dataset" --output "$manifest" --task qa --qa-template "$qa_template")
         if [[ -n "$wav_scp" ]]; then
-            args=(--dataset wav_scp --wav-scp "$wav_scp" --text "$text" --output "$manifest" --task qa)
+            args=(--dataset wav_scp --wav-scp "$wav_scp" --text "$text" --output "$manifest" --task qa --qa-template "$qa_template")
             [[ -z "$questions" ]] || args+=(--questions "$questions")
             [[ -z "$choices" ]] || args+=(--choices "$choices")
         else

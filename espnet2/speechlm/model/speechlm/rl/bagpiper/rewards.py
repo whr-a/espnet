@@ -37,6 +37,22 @@ def qa_reward(source, generation):
     return 0.5 * (accuracy + format_score)
 
 
+def qa_think_reward(source, generation):
+    """WEST think mode for native caption-reasoning-answer responses.
+
+    Keep WEST's exact-string answer check, including its newline behavior.
+    Structural rewards require exactly one complete answer/think block.
+    Select this protocol only before freezing a new independent round.
+    """
+    text = generation["text"]
+    match = re.search(r"<answer>(.*?)</answer>", text)
+    answer = match.group(1).strip() if match else text.strip()
+    accuracy = float(answer == source["reference"])
+    answer_format = float(len(re.findall(r"<answer>.*?</answer>", text, re.S)) == 1)
+    think_format = float(len(re.findall(r"<think>.*?</think>", text, re.S)) == 1)
+    return 0.8 * accuracy + 0.1 * answer_format + 0.1 * think_format
+
+
 def mmau_match(source, generation):
     """Official MMAU evaluation.py token-set match, with all rows retained."""
     tokenize = lambda value: set(re.findall(r"\b\w+\b", value.lower()))
