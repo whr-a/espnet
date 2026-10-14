@@ -352,13 +352,9 @@ The RL wrapper performs data preparation, configuration validation and training.
 Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also
 available. `--manifest` selects the prepared file used by both validation and
 training. `--python` selects the native interpreter; rollout uses the separate
-`rollout_python` from the YAML. To download AVQA, omit `--data-input` and pass
-`--hf-revision` with its exact dataset commit. AVQA preparation
-uses the WEST default question/choice/`<answer>` format and supports the original
-HuggingFace parquet or existing cached parquet. LibriTTS uses `.normalized.txt`
-paired with WAV files. Custom QA inputs require `questions` keyed like `wav.scp`
-and optional `choices.json` mapping utterance IDs to choice arrays. All manifests
-have unique identities, references, input audio paths and SHA256 audit sidecars.
+`rollout_python` from the YAML. LibriTTS uses `.normalized.txt` paired with
+WAV files. All manifests have unique identities, references, input audio paths
+and SHA256 audit sidecars.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
@@ -369,9 +365,23 @@ are identical. The starter configuration uses two candidates per prompt and a
 Freeze the native recipe's `activation_checkpointing: true`; the RL scorer
 recomputes native decoder layers and 32-token score blocks in evaluation mode.
 
-QA training uses the WEST default equally weighted exact-answer and answer-format
-rewards. MMAU evaluation must
-freeze its own held-out manifest and retains raw generations before scoring.
+Prepare a separate held-out LibriTTS split, and set `eval_manifest` to that
+JSONL in the frozen RL configuration. Evaluate the final native checkpoint:
+
+```bash
+PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
+  --dataset libritts --input /path/to/heldout-libritts \
+  --task tts_asr_wer --output data/rl/eval.jsonl
+PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+  --config conf/rl.yaml --checkpoint exp/rl/step-000002.native.pth \
+  --output exp/rl/heldout
+```
+
+The evaluation refuses train/eval identity overlap and scores every frozen group
+candidate. It preserves generated codec actions, WAV files, ASR transcripts,
+WER, checkpoint identity and native/rollout probability checks. `value` is the
+unweighted mean WER over all candidates; its prompt and candidate denominators
+are reported separately.
 
 The first SGLang implementation is deliberately synchronous and uses full-prefix
 FP32 forward with TP=1. It records every primary and secondary action, mask,
