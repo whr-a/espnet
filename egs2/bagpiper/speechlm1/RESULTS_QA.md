@@ -1,5 +1,16 @@
 # Bagpiper QA engineering evidence (2026-10-14)
 
+The independently frozen `bagpiper-qa-stage6-006` completed four optimizer
+updates and all 32 training candidates at 20:03:27 UTC, with `Succeeded` / exit
+zero. Its saved AVQA reward-component audit records exact-answer accuracy
+**1/32**, answer format **6/32**, and think format **27/32**. The complete
+initial-reference audit and strict reuse audit of all 32 before responses have
+succeeded. The full native/Adam/export/previous-actor checkpoint audit and fresh
+MMAU after evaluation remain `Running`; final engineering acceptance is pending.
+Training reward components are separate from official held-out MMAU accuracy
+and do not establish QA quality improvement. Earlier trajectories below remain
+preserved as historical results.
+
 The default-format integration run `bagpiper-qa-stage6-004` exited zero after
 two updates, but it **did not pass the QA learning-signal acceptance gate**.
 All sixteen rewards, advantages and gradients were zero. Complete audits
@@ -68,7 +79,9 @@ There are 8942 recorded frames; one terminal EOS per candidate is deterministic.
 All 8934 sampled actions had finite, nonzero group advantages.
 Initial native/reference probabilities matched exactly. There is no final
 QA005 checkpoint or after evaluation. Its independent think-template MMAU
-before evaluation continues to its natural terminal state.
+before evaluation completed all 32 responses with `Succeeded` and official
+MMAU accuracy **0/32**. QA006 reuses those original before responses only after
+a separate strict saved-response audit; there was no new before generation.
 
 The generic memory repair was developed outside that failed trajectory. It
 skips unused Bagpiper stream projections while retaining current support,
@@ -90,12 +103,27 @@ Torch 2.11, including the CUDA parameter-storage-view guard.
 `bagpiper-qa-stage6-006` started on 2026-10-14 at 14:32:26 UTC from a fresh
 frozen ESPnet `fb9d9117e68ffc10a2d4491d57b7591969fe98f8`, published SGLang
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`, and unchanged Miles pin. It retains
-four updates, all eight AVQA prompts, group size four, FP32, a 1536-token cap and
-32-row scoring. Its before check explicitly reuses QA005's complete initial
-MMAU outputs only after independent native/export auditing; `new_generation`
-is false for that check. The final after evaluation generates all 32 candidates
-from the actual step-four checkpoint with the same effective engine seed 41.
-Training and final evaluation have not yet passed acceptance.
+four updates, all eight AVQA prompts, group size four, FP32, a 1536-token cap,
+32-row scoring and lossless activation CPU storage. Training finished with
+`Succeeded` / exit zero on 2026-10-14 at 20:03:27 UTC: eight prompts consumed
+once in order, 32 candidates, four optimizer updates, and all four native/full
+checkpoints saved. Gradient norms were `[0.592595, 0.375921, 0.591220, 0.605122]`.
+The independent saved training-component audit found exact-answer accuracy
+1/32, one answer block in 6/32, and one think block in 27/32, under the frozen
+WEST think reward `0.8*accuracy + 0.1*answer-format + 0.1*think-format`. These
+counts describe all saved training candidates, not official MMAU scoring.
+
+`bagpiper-qa-reference-audit-006` succeeded on all 32 candidates: independently
+reloaded initial-reference logprob error was zero and reference tensors remained
+unchanged. `bagpiper-qa-before-saved-audit-006` also succeeded on all 32 original
+QA005 before responses, with 1381 native/export tensors exactly equal and maximum
+native action logprob error 0.000156641; `new_before_generation` is false.
+The before official MMAU result remains 0/32. The fresh after evaluation is
+still `Running` and targets all 32 candidates from the actual step-four
+checkpoint with the same effective engine seed 41. The complete four-update
+checkpoint audit is also `Running`; parameter/Adam/export/previous-actor integrity
+and the final engineering gate have not yet passed acceptance. Training exit
+zero and nonzero gradient norms do not replace these independent checks.
 
 Additional evidence under the same task directory:
 
@@ -106,6 +134,11 @@ Additional evidence under the same task directory:
 - `runs/bagpiper-qa-full-batch-preflight-001-loaded_source_note.json`
 - `evidence/bagpiper_memory_repo_tests_001.json`
 - `runs/bagpiper-qa-stage6-006/{freeze.json,state.json}`
+- `evidence/qa006_saved_train_reward_components_001.json`
+- `runs/bagpiper-qa-reference-audit-006/`
+- `runs/bagpiper-qa-before-saved-audit-006/`
+- `runs/bagpiper-qa-checkpoint-audit-006/` (audit still running)
+- `runs/bagpiper-qa-mmau-after-006/` (fresh evaluation still running)
 - `evidence/qa006_launcher_postrun_independent_review.json`
 - `evidence/qa006_registered_protection_audit.json`
 
