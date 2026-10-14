@@ -67,6 +67,41 @@ def checkpoint_native_layers(model, enabled):
                 layer.forward = prior
 
 
+@contextmanager
+def offload_saved_activations(model, enabled):
+    """Losslessly store checkpoint boundary activations on CPU for backward.
+
+    Parameter and buffer storage remains on its original device, including any
+    transposed/shared views saved by autograd. Nested checkpoint implementations
+    may own additional saved tensors; this only controls this hook's boundary.
+    """
+    if not enabled or not torch.is_grad_enabled():
+        yield
+        return
+    protected = {
+        tensor.untyped_storage().data_ptr()
+        for tensor in (*model.parameters(), *model.buffers())
+        if tensor.device.type == "cuda"
+    }
+
+    def pack(tensor):
+        if (
+            tensor.device.type != "cuda"
+            or tensor.untyped_storage().data_ptr() in protected
+        ):
+            return tensor
+        return tensor.device, tensor.detach().to("cpu", copy=True)
+
+    def unpack(saved):
+        if isinstance(saved, tuple):
+            device, tensor = saved
+            return tensor.to(device)
+        return saved
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, unpack):
+        yield
+
+
 class NativeSpeechLMPolicy(nn.Module):
     """Score actual, already delayed SGLang actions; do not interleave them twice.
 
@@ -88,6 +123,7 @@ class NativeSpeechLMPolicy(nn.Module):
         bagpiper_config=None,
         activation_checkpointing=False,
         score_checkpointing=True,
+        activation_cpu_offload=False,
     ):
         super().__init__()
         self.model = model
@@ -120,6 +156,7 @@ class NativeSpeechLMPolicy(nn.Module):
         self.bagpiper_config = bagpiper_config
         self.activation_checkpointing = bool(activation_checkpointing)
         self.score_checkpointing = bool(score_checkpointing)
+        self.activation_cpu_offload = bool(activation_cpu_offload)
         if bagpiper_config is not None and layout != "parallel":
             raise ValueError("Bagpiper deployed likelihood requires a parallel model")
 
@@ -305,6 +342,45 @@ class NativeSpeechLMPolicy(nn.Module):
             logp_chunks, entropy_chunks = [], []
             for start in range(0, t, self.token_chunk_size):
                 end = min(t, start + self.token_chunk_size)
+                targets = labels[:, start:end, stream]
+                active = stream_mask[:, start:end, stream]
+                if not active.any():
+                    if phases is not None:
+                        # Inactive codec streams still validate the current
+                        # modality decision against the recorded action layout.
+                        # Their categorical projection contributes exactly zero
+                        # and need not allocate a full-vocabulary gradient.
+                        primary_logits = F.linear(
+                            hidden[:, start:end],
+                            self.core.lm_head.weight,
+                            self.core.lm_head.bias,
+                        )
+                        for j in range(end - start):
+                            spec = contracts[start + j][stream]
+                            top_k = spec.get("top_k", 0)
+                            if (
+                                spec.get("temperature", 1.0) != 1.0
+                                or 0 < top_k < primary_logits.shape[-1]
+                            ):
+                                raise ValueError(
+                                    "Bagpiper native RL requires untruncated unit-temperature sampling"
+                                )
+                            self._bagpiper_deployed_row(
+                                primary_logits[:, j : j + 1],
+                                primary_logits[:, j : j + 1],
+                                stream,
+                                phases[start + j],
+                                mode,
+                                targets[:, j : j + 1],
+                                active[:, j : j + 1],
+                            )
+                    # Preserve zero rather than absent stream-offset gradients
+                    # so optimizer state/weight-decay behavior remains unchanged.
+                    zero = hidden[:, start:end, 0].float() * 0
+                    zero = zero + self._stream_weight(stream).float().sum() * 0
+                    logp_chunks.append(zero)
+                    entropy_chunks.append(zero)
+                    continue
                 h = hidden[:, start:end] + self._stream_weight(stream).to(hidden.dtype)
                 logits = F.linear(h, self.core.lm_head.weight, self.core.lm_head.bias)
                 primary_logits = None
@@ -314,8 +390,6 @@ class NativeSpeechLMPolicy(nn.Module):
                         self.core.lm_head.weight,
                         self.core.lm_head.bias,
                     )
-                targets = labels[:, start:end, stream]
-                active = stream_mask[:, start:end, stream]
                 if contracts is not None:
                     chunks, ents = [], []
                     for j in range(end - start):
@@ -441,6 +515,10 @@ class NativeSpeechLMPolicy(nn.Module):
         return logits.masked_fill(~allowed, -torch.inf)
 
     def forward(self, batch):
+        with offload_saved_activations(self.model, self.activation_cpu_offload):
+            return self._forward(batch)
+
+    def _forward(self, batch):
         device = next(self.model.parameters()).device
         responses = batch.batch["responses"].to(device)
         if responses.ndim == 2:
@@ -852,6 +930,9 @@ def factory(config, device):
             "activation_checkpointing", False
         ),
         score_checkpointing=config.adapter_options.get("score_checkpointing", True),
+        activation_cpu_offload=config.adapter_options.get(
+            "activation_cpu_offload", False
+        ),
     )
 
 
