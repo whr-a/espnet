@@ -1,9 +1,9 @@
 # Native training and SGLang environment profiles
 
-Native ESPnet and rollout use separate Python interpreters. The actual
-2026-10-14 H100 runs used Python 3.12.3 with these imported versions:
+Native ESPnet and rollout can use separate Python interpreters. The existing
+2026-10-14 H100 interpreters used Python 3.12.3 with these observed profiles:
 
-| Package | Native training / native evaluation | SGLang rollout |
+| Package | Existing native interpreter | Original SGLang interpreter |
 | --- | --- | --- |
 | Torch | 2.13.0+cu130 | 2.11.0+cu130 |
 | Torchaudio | 2.11.0+cu130 | 2.11.0+cu130 |
@@ -16,10 +16,13 @@ Native ESPnet and rollout use separate Python interpreters. The actual
 | FlashInfer Python | not used by native RL | 0.6.15.post1 |
 
 These are observed working profiles, not a resolver lock or a clean installation
-test. A separate clean CPU profile is validated below; it does not replace
-the frozen GPU environments in this table. OWSM and accepted TTS used the native
-profile above. Bagpiper QA005 instead
-ran both its native learner and SGLang rollout with the rollout interpreter:
+test. A separate clean environment is validated below; it does not replace
+the frozen GPU environments in this table. Accepted Bagpiper TTS training used
+the existing native interpreter. OWSM `owsm_stage18_002` used Torch 2.11.0+cu130
+and Transformers 5.12.1 in the original SGLang interpreter for both its native
+learner and rollout; its independent native
+greedy before/after evaluation also used that interpreter. Bagpiper QA005
+ran both its native learner and rollout with the same original SGLang profile:
 Torch 2.11.0+cu130 from `sglang_system_dependencies` and Transformers 5.12.1.
 It failed at its first full backward with zero optimizer updates; its longer
 audio-conditioned sequences have no successful-gradient acceptance from the
@@ -36,7 +39,11 @@ precedence over older overlay metadata. Actual module paths and source hashes
 were checked in addition to distribution versions.
 
 Miles is the unmodified library at
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. The unified SGLang fork is
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. ESPnet directly calls its GRPO
+normalization/returns, PPO clipping and KL mathematical APIs. ESPnet owns the
+native training loop, AdamW, checkpoints and SGLang rollout orchestration;
+the complete Miles distributed training runtime is not integrated. The unified
+SGLang fork is
 `https://github.com/whr-a/sglang` at
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. Its three registration modules
 import OWSM, Bagpiper and both OpusLM implementations from this ESPnet checkout.
@@ -71,6 +78,25 @@ pins were ESPnet `296fefe8096ee347569b74f911e0f8ce68a27c9e` and SGLang
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. This proves the clean CPU
 environment profile; no Engine/model instance, GPU kernel, new rollout
 probability or RL experiment was executed in that environment.
+
+The same public installer completed an independent clean installation on the
+VA2 H100 host in `va2-clean-rl-install-003` at 23:32:52 UTC on 2026-10-14.
+Its separate source checkouts were ESPnet
+`5212e56c65fc9ca9b5a803b33dd78819bd890b0f` and SGLang
+`4c3f163fe54634f20ef846e1ec0c507b27ae2430`. The isolated venv used no dependency
+overlay or system site packages, with Torch/Torchaudio 2.11.0+cu130,
+Transformers 5.12.1 and NumPy 2.3.5; `pip check` passed.
+
+The subsequent independent `owsm-clean-sglang-001` completed at 23:48:03 UTC.
+It generated two LibriSpeech prompts with two candidates each through the real
+SGLang Engine: four responses and 78 sampled actions. Independent native scoring
+verified every sampled action, with maximum logprob error 0.0000343323 against
+the 0.03 tolerance. No optimizer update or held-out quality comparison was
+performed. Bagpiper, Plain OpusLM and Dialogue OpusLM passed imports and model
+registry identity checks in this clean environment; their GPU model instances
+were not executed in this validation. Private evidence is retained in
+`runtime_profiles/va2_clean_rl_003/state.json` and
+`runs/owsm_clean_sglang_001/{state.json,environment_audit.json,generation_summary.json,native_probability_audit.json}`.
 
 The installer creates a new venv and refuses an existing path. It checks
 source dependency metadata against the profile before creating the environment.

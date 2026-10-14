@@ -7,10 +7,16 @@ The SGLang fork provides the input-embedding API extension and thin model
 registrations that import the implementation from ESPnet. The model, native
 scorer, data preparation and exporter remain in `espnet2/speechlm/rl`; Miles is
 an unmodified library pinned to `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`.
+ESPnet owns the native training loop, AdamW, checkpoints and rollout orchestration.
+This directly reuses Miles' mathematical APIs; its complete distributed training
+runtime is not integrated.
 
 Install Miles through `tools/installers/install_miles_rl.sh` and use
-`tools/installers/install_sglang_rl.sh` in a fresh inference environment. The
-reviewed SGLang fork is `https://github.com/whr-a/sglang` at
+`tools/installers/install_sglang_rl_env.sh` for a new inference environment, with
+the hash-locked profile described in
+[`espnet2/rl/ENVIRONMENT.md`](../../../espnet2/rl/ENVIRONMENT.md). The original
+`install_sglang_rl.sh` remains available for an already reviewed compatible
+dependency profile. The reviewed SGLang fork is `https://github.com/whr-a/sglang` at
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. See
 [`espnet2/rl/README.md`](../../../espnet2/rl/README.md) for the optional flow.
 Create the inference venv without `--system-site-packages`; its dependencies
@@ -18,6 +24,13 @@ and ESPnet's architecture-specific optional dependencies must be installed in
 that environment. Do not prepend an old SGLang installation through
 `PYTHONPATH`: the installer checks the actual imported source and refuses
 shadowing. `rollout_python` may differ from the native ESPnet interpreter.
+
+The public installer passed on the VA2 H100 host in `va2-clean-rl-install-003`.
+Independent `owsm-clean-sglang-001` then generated four responses from two prompts,
+with 78 sampled actions and maximum native logprob error 0.0000343323. It performed
+zero optimizer updates. Bagpiper and both OpusLM architectures passed imports and
+registry identity checks in that clean environment; this did not execute their
+GPU model instances. See the environment guide for source pins and evidence.
 
 Prepare LibriSpeech `wav.scp` / `text` using its existing data recipe. The
 following command creates separate complete train-clean-100 and dev-clean
@@ -99,13 +112,17 @@ waveform-to-text WER updates; full codec-output TTS RL remains a separate
 multi-stream sampler requirement. New native pad-cleared results are distinct
 from historical vLLM pad-bias experiments.
 
-On the shared 8-H100 host, two actual GRPO updates and separate heldout
-evaluation succeeded for both released architectures. Plain updated all 356
-model tensors (7,409,405,952 parameters); Dialogue updated all 220 tensors
+On the shared 8-H100 host, two optimizer updates and separate heldout
+evaluation succeeded for both released architectures. Plain's second update
+had equal task rewards within each group and zero GRPO advantage; fixed KL
+produced that update. Plain updated all 356 model tensors (7,409,405,952
+parameters); Dialogue updated all 220 tensors
 (1,867,433,984 parameters). Adam states were finite at steps 1/2, independent
 reference logprobs matched the initial checkpoint, and every final HF tensor
-equaled its native counterpart. Plain heldout WER was 0.1138028577; Dialogue
-was 0.3996628225, each with four distinct audio prompts times two completions.
+equaled its native counterpart. The unweighted sample mean WER across eight
+heldout completions was **11.3803%** for Plain and **39.9663%** for Dialogue,
+each with four distinct audio prompts and two completions per prompt. Dialogue's
+separate corpus WER was **64/134 = 47.7612%**, using reference-word counts.
 Native/SGLang heldout logprob errors were at most 2.0504e-05. These small runs
 verify the engineering loop and numerical contract, not quality improvement;
 they do not establish full-corpus accuracy or full codec-output TTS support.
