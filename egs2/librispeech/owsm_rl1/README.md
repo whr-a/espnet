@@ -53,5 +53,6 @@ An explicit optional vLLM backend is configured by
 function and exports the native OWSM encoder-decoder format. Set `vllm_source`
 and `rollout_python` to the previously validated ESPnet vLLM fork and its
 inference environment. The default recipe and 2026-10-14 training acceptance
-use SGLang. The optional vLLM adapter passed strict export/request checks;
-this session did not run a new vLLM training experiment.
+use SGLang. The optional vLLM adapter also passed real engine generation on two
+LibriSpeech prompts with two candidates each; its maximum native action-logprob
+error was 0.00015927. This was a backend check, with no vLLM optimizer update.
