@@ -416,8 +416,8 @@ codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
 ./run.sh --stage 6 --data-input /path/to/avqa --rl-config conf/rl.yaml
 # A user data directory is accepted directly:
 ./run.sh --rl --wav-scp data/rl/wav.scp --text data/rl/text --questions data/rl/questions --choices data/rl/choices.json
-# Existing frozen manifests can skip preparation:
-./run.sh --rl --stage 2 --rl-config conf/rl.yaml
+# Explicit existing manifests skip preparation:
+./run.sh --stage 6 --manifest data/rl/train.jsonl --rl-config conf/rl.yaml
 ```
 
 For a sequence that also includes supervised stages, select `--stop-stage 6`
@@ -438,14 +438,50 @@ paired with WAV files. Custom QA inputs require `questions` keyed like `wav.scp`
 and optional `choices.json` mapping utterance IDs to choice arrays. All manifests
 have unique identities, references, input audio paths and SHA256 audit sidecars.
 
+Waveform QA uses the original `SpeechLMPreprocessor` dialogue template: a user
+audio segment followed by a user text segment, with native end-of-turn markers,
+zero continuous-audio placeholders, and the recipe text tokenizer's vocabulary
+offset. Audio features and their native insertion indices remain in every
+sampled rollout. The learner executes the native model on those same features.
+
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
 QA training follows WEST default GRPO: exact answer and answer-format rewards
 with equal weights. MMAU uses the official token-set match. MMAU evaluation must
 freeze its own held-out manifest and retains raw generations before scoring.
 
+For engineering validation, prepare MMAU separately with an immutable dataset
+revision or an existing parquet. Choose the sample limit before starting the
+round; `--limit 8` creates the small verification subset used by this recipe.
+
+```bash
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
+    --dataset mmau --input /path/to/mmau.parquet --limit 8 \
+    --output data/rl/mmau.jsonl --task qa
+# Set eval_manifest: data/rl/mmau.jsonl in the frozen RL YAML.
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+    --config conf/rl.yaml --checkpoint /path/to/initial-native.pth \
+    --output exp/rl/mmau-before
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+    --config conf/rl.yaml --checkpoint exp/rl/step-000002.native.pth \
+    --output exp/rl/mmau-after
+```
+
+Evaluation uses every configured candidate: eight prompts with `group_size: 4`
+produce 32 responses and a denominator of 32. The official MMAU token-set matcher
+requires all answer words and excludes words unique to incorrect choices. It
+does not use the training format reward. Each generation and score is retained;
+raw responses, manifest and checkpoint hashes, prompt count, and response count
+are included in the audit. This subset is an engineering check, not a full
+MMAU-mini benchmark. A successful two-update run does not imply a metric gain.
+
 The first SGLang implementation is deliberately synchronous and uses full-prefix
 FP32 forward with TP=1. It records every primary and secondary action, mask,
 sampling contract and joint behavior log probability; it is not a throughput
 benchmark. Checkpoints, exports, nonzero gradients, probability agreement and
 held-out task metrics must all pass before claiming end-to-end acceptance.
+The default 1536-token budget allows the SFT model's description and reasoning to
+reach a final answer. Native layer and score-block recomputation use the same
+32-row matrix shapes during backward; the objective and sampled actions remain
+unchanged. The FP32 prototype requires three 80 GB GPUs with optimizer state on
+CPU; its initial acceptance configuration uses one sample per scoring forward.

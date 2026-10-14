@@ -25,6 +25,7 @@ adapter_options:
   audio_config_path: exp/sft/audio_config
   audio_processor_path: exp/sft/audio_processor
   tokenizer_mode: hf
+  score_chunk_size: 32
 dtype: float32
 optimizer_device: cpu
 seed: 42
@@ -34,5 +35,6 @@ group_size: 4
 micro_batch_size: 1
 learning_rate: 1.0e-6
 kl_coef: 0.04
-max_tokens: 128
+# Allow the native SFT's description/reasoning to reach its final QA answer.
+max_tokens: 1536
 score_tolerance: 0.03
