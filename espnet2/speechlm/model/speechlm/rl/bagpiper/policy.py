@@ -19,15 +19,52 @@ interface. This wrapper retains their embeddings, encoders, transformer, stream
 offsets, and output projection, and exposes differentiable selected logprobs.
 """
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from espnet2.rl.types import TokenScores
 
 from .tokens import selected_log_probs
+
+
+@contextmanager
+def checkpoint_native_layers(model, enabled):
+    """Recompute native decoder layers while retaining their evaluation mode.
+
+    HF's built-in layer checkpointing is gated by training mode. RL scoring
+    disables dropout, so temporarily wrap the original layer forwards instead.
+    Restore every attribute before returning; checkpoint and reference copies
+    retain the original native module names and methods.
+    """
+    if not enabled or not torch.is_grad_enabled():
+        yield
+        return
+    layers = getattr(model, "layers", None)
+    if layers is None:
+        raise ValueError("Native layer checkpointing requires an HF decoder layer list")
+    restored = []
+    try:
+        for layer in layers:
+            prior = layer.__dict__.get("forward")
+            original = layer.forward
+
+            def recompute(*args, _original=original, **kwargs):
+                return checkpoint(_original, *args, use_reentrant=False, **kwargs)
+
+            restored.append((layer, prior))
+            layer.forward = recompute
+        yield
+    finally:
+        for layer, prior in restored:
+            if prior is None:
+                layer.__dict__.pop("forward", None)
+            else:
+                layer.forward = prior
 
 
 class NativeSpeechLMPolicy(nn.Module):
@@ -49,6 +86,8 @@ class NativeSpeechLMPolicy(nn.Module):
         inference_semantics="native",
         legacy_codec_pad_embeddings=False,
         bagpiper_config=None,
+        activation_checkpointing=False,
+        score_checkpointing=True,
     ):
         super().__init__()
         self.model = model
@@ -79,6 +118,8 @@ class NativeSpeechLMPolicy(nn.Module):
         self.inference_semantics = inference_semantics
         self.legacy_codec_pad_embeddings = bool(legacy_codec_pad_embeddings)
         self.bagpiper_config = bagpiper_config
+        self.activation_checkpointing = bool(activation_checkpointing)
+        self.score_checkpointing = bool(score_checkpointing)
         if bagpiper_config is not None and layout != "parallel":
             raise ValueError("Bagpiper deployed likelihood requires a parallel model")
 
@@ -113,12 +154,13 @@ class NativeSpeechLMPolicy(nn.Module):
                 ]
             # One utterance per forward avoids padding leakage and packed-example
             # attention without imposing a different native model backend.
-            output = core.model(
-                inputs_embeds=embeds,
-                position_ids=positions,
-                use_cache=False,
-                **kwargs.get("attn_args", {}),
-            )
+            with checkpoint_native_layers(core.model, self.activation_checkpointing):
+                output = core.model(
+                    inputs_embeds=embeds,
+                    position_ids=positions,
+                    use_cache=False,
+                    **kwargs.get("attn_args", {}),
+                )
             return output.last_hidden_state
         # Bypass ARDelayLM.forward: it would delay the actual rollout a second time.
         embeds = core.process_embedding(
@@ -163,8 +205,35 @@ class NativeSpeechLMPolicy(nn.Module):
             return offsets[stream] * 0
         return offsets[stream]
 
-    def _score_frames(self, hidden, labels, stream_mask, source, return_streams=False):
+    def _score_frames(self, hidden, labels, stream_mask, source, return_streams=False, _recomputed=False):
         b, t, q = labels.shape
+        if self.score_checkpointing and torch.is_grad_enabled() and not _recomputed:
+            rows, entropies, streams = [], [], []
+            phase = source.get("sampling_extra_args", {}).get("phase", "text")
+            mode = source.get("mode", source.get("sampling_extra_args", {}).get("mode", "text_only"))
+            for start in range(0, t, self.token_chunk_size):
+                end = min(t, start + self.token_chunk_size)
+                part = dict(source)
+                if source.get("sampling_contracts") is not None:
+                    part["sampling_contracts"] = source["sampling_contracts"][start:end]
+                part["sampling_extra_args"] = {**source.get("sampling_extra_args", {}), "phase": phase}
+                target, active = labels[:, start:end], stream_mask[:, start:end]
+
+                def recompute(value, _target=target, _active=active, _source=part):
+                    return self._score_frames(value, _target, _active, _source, True, True)
+
+                logp, entropy, per_stream = checkpoint(recompute, hidden[:, start:end], use_reentrant=False)
+                rows.append(logp); entropies.append(entropy); streams.append(per_stream)
+                if self.bagpiper_config is not None and mode == "text_audio":
+                    for token in target[0, :, 0].tolist():
+                        if phase == "text" and token == self.bagpiper_config["eot_token_id"]:
+                            phase = "transition"
+                        elif phase == "transition":
+                            phase = "audio"
+                        elif phase == "audio" and token == self.bagpiper_config["eot_token_id"]:
+                            phase = "audio_stop"
+            outputs = (torch.cat(rows, 1), torch.cat(entropies, 1), torch.cat(streams, 1))
+            return outputs if return_streams else outputs[:2]
         frame_logp = hidden.new_zeros((b, t), dtype=torch.float32)
         frame_entropy = hidden.new_zeros((b, t), dtype=torch.float32)
         stream_log_probs = []
@@ -749,6 +818,8 @@ def factory(config, device):
             if getattr(config, "family", None) == "bagpiper"
             else None
         ),
+        activation_checkpointing=recipe.get("model", {}).get("activation_checkpointing", False),
+        score_checkpointing=config.adapter_options.get("score_checkpointing", True),
     )
 
 
