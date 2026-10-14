@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from espnet2.rl.data import collate_rollouts
@@ -11,6 +12,8 @@ from espnet2.rl.miles_library import (
     compute_policy_loss_vanilla,
     kl_penalty,
 )
+from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.types import TokenScores
 
 
 def test_group_baselines_and_forced_padding():
@@ -95,3 +98,67 @@ def test_multistream_batch_retains_audio_reward_evidence():
         == "generated.wav"
     )
     assert batch.batch["response_stream_mask"][0, 1, 0].item() == 0
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -1.0, 0.5])
+@pytest.mark.parametrize("field", ["action_mask", "stream_mask"])
+def test_rollout_rejects_nonbinary_sampling_masks(field, invalid):
+    generation = {
+        "source_id": "u",
+        "prompt_token_ids": [[1, 0]],
+        "token_ids": [[2, 3], [0, 0]],
+        "log_probs": [-0.2, 0.0],
+        "stream_mask": [[1, 1], [0, 0]],
+        "action_mask": [1, 0],
+    }
+    generation[field][0] = invalid if field == "action_mask" else [1, invalid]
+    with pytest.raises(ValueError, match="finite binary"):
+        collate_rollouts([{"id": "u"}], [generation] * 2, 2)
+
+
+def test_forced_multistream_frame_cannot_enter_reward_denominator():
+    generation = {
+        "source_id": "u",
+        "prompt_token_ids": [[1, 0]],
+        "token_ids": [[2, 3], [0, 0]],
+        "log_probs": [-0.2, 0.0],
+        "stream_mask": [[1, 1], [0, 0]],
+        "action_mask": [1, 1],
+    }
+    with pytest.raises(ValueError, match="differs from sampled streams"):
+        collate_rollouts([{"id": "u"}], [generation] * 2, 2)
+    generation["action_mask"] = [1, 0]
+    batch = collate_rollouts([{"id": "u"}], [generation] * 2, 2)
+    assert batch.batch["response_mask"].sum().item() == 2
+
+
+@pytest.mark.parametrize("changed_mask", [False, True])
+def test_trainer_rejects_native_scorer_action_identity_drift(changed_mask):
+    generation = {
+        "source_id": "u",
+        "prompt_token_ids": [1],
+        "token_ids": [2, 0],
+        "log_probs": [-0.2, 0.0],
+        "action_mask": [1, 0],
+    }
+    batch = collate_rollouts([{"id": "u"}], [generation] * 2, 2)
+
+    class Scorer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(0.0))
+
+        def forward(self, part):
+            mask = part.batch["response_mask"]
+            native_mask = torch.ones_like(mask) if changed_mask else mask.clone()
+            return TokenScores(
+                torch.zeros_like(mask), torch.zeros_like(mask), native_mask
+            )
+
+    trainer = NativeGRPOTrainer.__new__(NativeGRPOTrainer)
+    trainer.config = SimpleNamespace(micro_batch_size=1)
+    if changed_mask:
+        with pytest.raises(ValueError, match="differs from the sampled-action mask"):
+            trainer._score_chunks(Scorer(), batch)
+    else:
+        assert trainer._score_chunks(Scorer(), batch).shape == (2, 2)

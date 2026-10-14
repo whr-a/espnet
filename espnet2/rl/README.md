@@ -44,9 +44,15 @@ To install the inference fork in its dedicated environment, run the installer
 with that environment's Python (the Makefile otherwise uses active ESPnet Python):
 
 ```bash
+python3 -m venv /path/to/sglang-env
 SGLANG_SOURCE=/path/to/sglang SGLANG_REVISION=EXACT_REVIEWED_COMMIT \
   PYTHON=/path/to/sglang-env/bin/python bash tools/installers/install_sglang_rl.sh
 ```
+
+Create this environment without `--system-site-packages`. An existing system
+SGLang installation can shadow the editable fork even after pip reports success;
+the installer rejects that case by checking the actual import path. Install the
+checkout's dependencies in the dedicated environment before freezing a run.
 
 The editable installation checks the actual imported module and frozen API/model
 files. Record the SGLang source pin alongside each recipe config; model registration

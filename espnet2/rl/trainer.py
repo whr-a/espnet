@@ -34,6 +34,7 @@ from .miles_library import (
 )
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
+from .types import validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
 
@@ -125,7 +126,9 @@ class NativeGRPOTrainer:
                 np.arange(start, min(len(batch), start + self.config.micro_batch_size))
             )
             subset.to(scoring_device)
-            results.append(policy(subset).log_probs.detach().cpu())
+            scores = policy(subset)
+            validate_token_scores(scores, subset.batch["response_mask"])
+            results.append(scores.log_probs.detach().cpu())
         return torch.cat(results)
 
     def prepare_batch(self, batch):
@@ -194,6 +197,7 @@ class NativeGRPOTrainer:
                 part.to(self.device)
                 current = self.actor(part)
                 mask = part.batch["response_mask"]
+                validate_token_scores(current, mask)
                 loss, ppo_metrics = compute_policy_loss_vanilla(
                     part.batch["old_log_probs"],
                     current.log_probs,

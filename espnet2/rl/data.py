@@ -21,6 +21,7 @@ from pathlib import Path
 import torch
 
 from .batch import RolloutBatch
+from .types import validate_binary_mask
 from .utils import object_array
 
 
@@ -77,6 +78,7 @@ def collate_rollouts(sources, generations, group_size):
         action_mask = torch.as_tensor(
             generation.get("action_mask", [1] * len(action)), dtype=torch.float32
         )
+        validate_binary_mask(action_mask, "Rollout action_mask")
         if action_mask.shape != probability.shape or not action_mask.sum():
             raise ValueError("Every rollout requires at least one active action")
         actions.append(action)
@@ -119,6 +121,8 @@ def collate_rollouts(sources, generations, group_size):
         repeated_sources.append(sample_source)
         raw_generations.append(copy.deepcopy(generation))
         if action.ndim == 2:
+            if generation.get("stream_mask") is None:
+                raise ValueError("Multistream rollout requires a sampling mask")
             stream_mask = torch.as_tensor(
                 generation.get("stream_mask"), dtype=torch.float32
             )
@@ -126,6 +130,9 @@ def collate_rollouts(sources, generations, group_size):
                 raise ValueError(
                     "Multistream rollout requires the true per-stream sampling mask"
                 )
+            validate_binary_mask(stream_mask, "Rollout stream_mask")
+            if not torch.equal(action_mask.bool(), stream_mask.bool().any(-1)):
+                raise ValueError("Rollout action_mask differs from sampled streams")
             stream_masks.append(stream_mask)
         prefixes.append(generation["prompt_token_ids"])
         ids.append(source["id"])
