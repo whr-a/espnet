@@ -48,6 +48,7 @@ def collate_rollouts(sources, generations, group_size):
     if len(generations) != len(sources) * group_size:
         raise ValueError("Incomplete rollout groups")
     repeated_sources = []
+    raw_generations = []
     prefixes, actions, action_masks, log_probs, ids, texts, stream_masks = [], [], [], [], [], [], []
     for index, generation in enumerate(generations):
         source = sources[index // group_size]
