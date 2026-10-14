@@ -22,9 +22,9 @@ def _algorithms():
 
 
 def verify_miles(config):
-    from miles import __file__ as module_file
-
-    root = Path(module_file).resolve().parent.parent
+    # Editable installs can expose ``miles`` as a namespace package. Verify
+    # the imported algorithm module itself, which must have a real source file.
+    root = Path(_algorithms().__file__).resolve().parents[5]
     requested = config.miles_commit
     if requested != PIN:
         raise ValueError("The recipe must use the reviewed Miles pin")
