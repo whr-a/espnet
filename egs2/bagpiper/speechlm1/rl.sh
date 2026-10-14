@@ -9,6 +9,7 @@ stage=1
 stop_stage=3
 rl_config=conf/rl.yaml
 manifest=
+reuse_manifest=false
 dataset=avqa
 data_input=
 wav_scp=
@@ -23,7 +24,7 @@ while [[ $# -gt 0 ]]; do
         --stage) stage=$2 ;;
         --stop-stage) stop_stage=$2 ;;
         --rl-config) rl_config=$2 ;;
-        --manifest) manifest=$2 ;;
+        --manifest) manifest=$2; reuse_manifest=true ;;
         --data-input) data_input=$2 ;;
         --wav-scp) wav_scp=$2 ;;
         --text) text=$2 ;;
@@ -46,6 +47,9 @@ PYCONFIG
 )
 fi
 if (( stage <= 1 && stop_stage >= 1 )); then
+    if [[ "$reuse_manifest" == true && -z "$wav_scp" && -z "$data_input" ]]; then
+        [[ -f "$manifest" ]] || { echo "Prepared manifest does not exist: $manifest" >&2; exit 2; }
+    else
     args=(--dataset "$dataset" --output "$manifest" --task qa)
     if [[ -n "$wav_scp" ]]; then
         args=(--dataset wav_scp --wav-scp "$wav_scp" --text "$text" --output "$manifest" --task qa)
@@ -57,6 +61,7 @@ if (( stage <= 1 && stop_stage >= 1 )); then
     [[ -z "$hf_revision" ]] || args+=(--hf-revision "$hf_revision")
     [[ -z "$limit" ]] || args+=(--limit "$limit")
     "${python_cmd}" -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
+    fi
 fi
 if (( stage <= 2 && stop_stage >= 2 )); then
     "${python_cmd}" -m espnet2.bin.rl_train --config "$rl_config" --manifest "$manifest" --validate-only
