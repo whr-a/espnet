@@ -1,5 +1,6 @@
 """Independent analytical checks of the native library boundary."""
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -15,6 +16,20 @@ from espnet2.rl.miles_library import (
 )
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
+
+
+def test_frozen_json_configuration_retains_scientific_numeric_types(tmp_path):
+    config = ESPnetRLConfig(
+        learning_rate=1e-6,
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_generate_factory="unused:generate",
+    )
+    path = tmp_path / "frozen_config.json"
+    path.write_text(json.dumps(config.to_dict()))
+    restored = ESPnetRLConfig.load(path)
+    assert isinstance(restored.learning_rate, float)
+    assert restored.to_dict() == config.to_dict()
 
 
 def test_group_baselines_and_forced_padding():

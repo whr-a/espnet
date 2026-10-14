@@ -13,6 +13,7 @@
 # limitations under the License.
 """Configuration for the native torch ESPnet/Miles backend."""
 
+import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,11 @@ class ESPnetRLConfig:
 
     @classmethod
     def load(cls, path: str):
+        if Path(path).suffix.lower() == ".json":
+            with Path(path).open() as stream:
+                config = cls(**json.load(stream))
+            config.validate()
+            return config
         return cls.from_yaml(path)
 
     @classmethod
