@@ -89,7 +89,10 @@ class ASRWERReward:
         target=self.directory/f"{source['id']}-{digest[:16]}"
         sf.write(str(target)+".wav",waveform,rate)
         inputs=self.processor(waveform,sampling_rate=rate,return_tensors="pt")
-        with torch.inference_mode(): ids=self.asr.generate(**inputs.to(self.asr.device),language="en",task="transcribe",max_new_tokens=256)
+        kwargs={"max_new_tokens":256}
+        if getattr(self.asr.generation_config,"is_multilingual",False):
+            kwargs.update(language="en",task="transcribe")
+        with torch.inference_mode(): ids=self.asr.generate(**inputs.to(self.asr.device),**kwargs)
         hypothesis=self.processor.batch_decode(ids,skip_special_tokens=True)[0]
         value=wer(source["reference"],hypothesis)
         Path(str(target)+".json").write_text(json.dumps({"source_id":source["id"],"reference":source["reference"],"hypothesis":hypothesis,"wer":value,"reward":-value,"waveform_sha256":digest,"sample_rate":rate,"asr_model":self.asr_tag,"asr_revision":self.asr_revision,"codec_frames":length,"generated_tokens":generation["token_ids"]},indent=2)+"\n")
