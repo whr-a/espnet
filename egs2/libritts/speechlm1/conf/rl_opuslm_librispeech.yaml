@@ -1,0 +1,36 @@
+# Released opuslm; waveform-to-text WER post-training via Miles.
+family: opuslm
+train_config: /path/to/released/config.yaml
+checkpoint: /path/to/released/model.pth
+manifest: data/rl/librispeech_train.jsonl
+output_dir: exp/rl_opuslm_librispeech
+adapter_factory: espnet2.speechlm.rl.policy:factory
+exporter: espnet2.speechlm.rl.integration:exporter
+request_factory: espnet2.speechlm.rl.integration:request_factory
+sglang_generate_factory: espnet2.speechlm.rl.integration:sglang_generate
+reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
+rollout_backend: sglang
+sglang_source: /path/to/pinned/sglang
+rollout_python: /path/to/optional_rl_env/bin/python
+rollout_gpus: '1'
+device: cuda:0
+reference_device: cpu
+optimizer_device: cpu
+dtype: float32
+steps: 100
+prompts_per_step: 2
+group_size: 4
+micro_batch_size: 1
+ppo_epochs: 1
+learning_rate: 1.0e-6
+max_tokens: 128
+score_tolerance: 0.03
+adapter_options:
+  reference_assets: /path/to/checkpoint/hf_assets
+  native_attention: sdpa
+  inference_semantics: native
+sglang_engine_kwargs:
+  disable_cuda_graph: true
+  disable_radix_cache: true
+  skip_tokenizer_init: true
+  attention_backend: triton

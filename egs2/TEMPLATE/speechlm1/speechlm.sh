@@ -42,6 +42,13 @@ dumpdir=dump         # Directory to dump features.
 expdir=exp           # Directory to save experiments.
 python=python3       # Specify python to execute espnet commands.
 
+# Optional Miles RL post-training after the existing supervised stages.
+rl_config=""
+rl_wav_scp=""
+rl_text=""
+rl_manifest=""
+rl_prepare_args=""
+
 # Data preparation related
 local_data_opts=""  # Options to be passed to local/data.sh.
 data_tag=""         # You may combine the data in multiple ways. This is the tag for data composition
@@ -583,5 +590,18 @@ fi
 
 # TODO(Jinchuan) Evaluation and model upload stages
 
+
+if [ "${stage}" -le 10 ] && [ "${stop_stage}" -ge 10 ] && [ -n "${rl_config}" ]; then
+    log "Stage 10: Miles RL post-training with SGLang"
+    if [ -n "${rl_wav_scp}" ]; then
+        [ -n "${rl_text}" ] && [ -n "${rl_manifest}" ] || {
+            log "ERROR: --rl_wav_scp requires --rl_text and --rl_manifest"; exit 2;
+        }
+        # shellcheck disable=SC2086
+        ${python} -m espnet2.speechlm.rl.prepare --wav-scp "${rl_wav_scp}" \
+            --text "${rl_text}" --output "${rl_manifest}" ${rl_prepare_args}
+    fi
+    ${python} -m espnet2.bin.rl_train --config "${rl_config}"
+fi
 
 log "Successfully finished. [elapsed=${SECONDS}s]"
