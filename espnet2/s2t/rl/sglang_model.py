@@ -1,0 +1,137 @@
+"""Native OWSM decoder executed by SGLang's actual model runner and sampler.
+
+This first version prioritizes exact native probabilities over KV throughput.
+It supports TP=1, full prefill and disabled radix cache/CUDA graph. The first
+input ID is an opaque source index that is stripped before native decoding;
+it never participates in the OWSM text context or response action mask.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+import torch
+from torch import nn
+
+from espnet2.s2t.rl.policy import OWSMPolicy, load_audio
+
+
+class ESPnetOWSMForCausalLM(nn.Module):
+    def __init__(self, config, quant_config=None, prefix=""):
+        super().__init__()
+        if quant_config is not None:
+            raise ValueError("Native OWSM RL does not support weight quantization")
+        from espnet2.tasks.s2t import S2TTask
+        from sglang.srt.distributed import get_tensor_model_parallel_world_size
+
+        if get_tensor_model_parallel_world_size() != 1:
+            raise ValueError("Native OWSM SGLang requires TP=1")
+        self.config = config
+        self.directory = Path(config._name_or_path).resolve()
+        if config.espnet_rollout_contract != "source-index-carrier/native-full-prefix/v1":
+            raise ValueError("Unknown native OWSM rollout contract")
+        self.target_device = torch.empty(0).device
+        native = dict(config.espnet_config)
+        native["bpemodel"] = str(self.directory / native["bpemodel"])
+        if native.get("normalize") == "global_mvn":
+            native["normalize_conf"] = dict(native["normalize_conf"])
+            native["normalize_conf"]["stats_file"] = str(self.directory / native["normalize_conf"]["stats_file"])
+        args = argparse.Namespace(**native)
+        # Native positional caches and frontend are initialized in FP32 on CPU,
+        # just as they are in the train actor, then moved by model_runner.
+        with torch.device("cpu"):
+            saved = torch.get_default_dtype()
+            torch.set_default_dtype(torch.float32)
+            try:
+                self.policy = OWSMPolicy(S2TTask.build_model(args), args, train_encoder=True)
+            finally:
+                torch.set_default_dtype(saved)
+        self.policy.eval()
+        self.source_path = self.directory.parent / "requests.json"
+        self.sources = json.loads(self.source_path.read_text())
+        self.source_sha256 = hashlib.sha256(self.source_path.read_bytes()).hexdigest()
+        self.memory = {}
+        self.request_prefixes = {}
+
+    def load_weights(self, weights):
+        source = {key: tensor for key, tensor in weights}
+        target = self.policy.model.state_dict()
+        normalized = {}
+        for key, tensor in source.items():
+            name = key
+            if name not in target:
+                name = name.replace(".embed.out.0.", ".embed.out.").replace(".embed.out.1.", ".embed.pos_enc.")
+            if name in normalized:
+                raise ValueError(f"Duplicate native checkpoint key: {name}")
+            normalized[name] = tensor
+        self.policy.model.load_state_dict(normalized, strict=True)
+        # FP32/IEEE is the accepted initial contract. Do not silently recast
+        # frontend mel statistics or sinusoidal caches to reduced precision.
+        if str(getattr(self.config, "torch_dtype", "float32")).replace("torch.", "") != "float32":
+            raise ValueError("The OWSM initial SGLang RL contract requires float32")
+        self.policy.to(device=self.target_device, dtype=torch.float32)
+        self.policy.eval()
+        native = self.directory.parent / "native.pt"
+        if hashlib.file_digest(native.open("rb"), "sha256").hexdigest() != self.config.native_checkpoint_sha256:
+            raise ValueError("SGLang OWSM export and native checkpoint hash disagree")
+        return set(normalized)
+
+    def _memory(self, source_index, device):
+        if source_index not in self.memory:
+            if not 0 <= source_index < len(self.sources):
+                raise ValueError("Opaque source index is outside the frozen request manifest")
+            audio = load_audio(self.sources[source_index], self.policy.sample_rate, self.policy.window_samples)
+            speech = torch.as_tensor(audio, dtype=torch.float32, device=device).unsqueeze(0)
+            length = torch.tensor([speech.size(1)], device=device)
+            memory, lengths = self.policy._encode(speech, length)
+            self.memory[source_index] = (memory, lengths)
+        return self.memory[source_index]
+
+    @torch.no_grad()
+    def forward(self, input_ids, positions, forward_batch, **kwargs):
+        from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+
+        device = next(self.policy.parameters()).device
+        pool_ids = forward_batch.req_pool_indices.tolist()
+        if forward_batch.forward_mode.is_decode():
+            chunks = list(input_ids.split(1))
+        elif forward_batch.forward_mode.is_extend():
+            lengths = forward_batch.extend_seq_lens_cpu
+            prefixes = forward_batch.extend_prefix_lens_cpu
+            if any(prefixes):
+                raise ValueError("OWSM native full-prefix contract requires disabled radix/prefix cache")
+            chunks = list(input_ids.split(lengths))
+        elif forward_batch.forward_mode.is_idle():
+            return LogitsProcessorOutput(next_token_logits=torch.empty(0, self.config.vocab_size, device=device))
+        else:
+            raise ValueError("Unsupported SGLang forward mode for native OWSM")
+        outputs = []
+        prefix_logprobs = []
+        for row, (pool_id, chunk) in enumerate(zip(pool_ids, chunks, strict=True)):
+            if forward_batch.forward_mode.is_decode():
+                if pool_id not in self.request_prefixes:
+                    raise RuntimeError("SGLang decode request is missing native prefill")
+                source_index, prefix = self.request_prefixes[pool_id]
+                prefix = [*prefix, *chunk.tolist()]
+            else:
+                carrier = chunk.tolist()
+                source_index, prefix = carrier[0], carrier[1:]
+                if not prefix:
+                    raise ValueError("OWSM native decoder prefix is empty")
+            self.request_prefixes[pool_id] = (source_index, prefix)
+            memory, memory_lengths = self._memory(source_index, device)
+            tokens = torch.tensor([prefix], dtype=torch.long, device=device)
+            logits, _ = self.policy.model.decoder(memory, memory_lengths, tokens, torch.tensor([len(prefix)], device=device))
+            outputs.append(logits[0, -1].float())
+            if not forward_batch.forward_mode.is_decode() and forward_batch.return_logprob:
+                if len(prefix) < 2:
+                    raise ValueError("OWSM prefix probability audit requires at least two native prompt tokens")
+                prefix_logprobs.append(torch.log_softmax(logits[0, -2].float(), -1)[prefix[-1]])
+        result = LogitsProcessorOutput(next_token_logits=torch.stack(outputs))
+        if not forward_batch.forward_mode.is_decode() and forward_batch.return_logprob:
+            # logprob_start_len is deliberately the final prompt position, so
+            # SGLang returns the real final native prompt token probability.
+            result.input_token_logprobs = torch.stack(prefix_logprobs)
+        result.customized_info = {"owsm_source_sha256": [self.source_sha256] * len(pool_ids)}
+        return result

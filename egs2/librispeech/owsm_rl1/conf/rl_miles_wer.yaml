@@ -1,0 +1,34 @@
+family: owsm
+model_version: v4
+rollout_backend: sglang
+adapter_factory: espnet2.s2t.rl.policy:build_policy
+exporter: espnet2.s2t.rl.export:export_owsm
+sglang_generate_factory: espnet2.s2t.rl.sglang_rollout:generate
+reward_function: null
+dtype: float32
+train_encoder: true
+seed: 42
+steps: 100
+prompts_per_step: 2
+group_size: 4
+micro_batch_size: 1
+ppo_epochs: 1
+learning_rate: 0.00001
+weight_decay: 0.0
+max_grad_norm: 1.0
+clip_ratio: 0.2
+kl_coef: 0.01
+kl_type: k3+
+normalize_advantage: true
+loss_agg_mode: token-mean
+max_tokens: 256
+temperature: 1.0
+top_p: 1.0
+top_k: -1
+score_tolerance: 0.03
+language: <eng>
+task: <asr>
+predict_timestamps: false
+sglang_engine_kwargs:
+  attention_backend: torch_native
+  sampling_backend: pytorch

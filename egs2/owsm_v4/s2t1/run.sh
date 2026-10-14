@@ -5,6 +5,16 @@ set -e
 set -u
 set -o pipefail
 
+# Optional post-training is explicit; ordinary S2T stages retain their recipe.
+for ((i=1; i<=$#; i++)); do
+    if [[ ${!i} == --stage ]]; then
+        j=$((i + 1))
+        if [[ ${!j} == 18 ]]; then
+            exec "$(dirname -- "$0")/rl.sh" "$@"
+        fi
+    fi
+done
+
 train_set=train
 valid_set=dev
 test_sets=dev

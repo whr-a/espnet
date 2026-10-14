@@ -146,3 +146,11 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
   pdf="https://arxiv.org/pdf/2309.13876",
 }
 ```
+
+## Optional Miles RL stage
+
+Stage 18 adds WER GRPO post-training to an existing OWSM checkpoint:
+`./run.sh --stage 18 --wav-scp /path/wav.scp --text /path/text
+--train-config /path/config.yaml --checkpoint /path/model.pth`.
+The [LibriSpeech RL recipe](../../librispeech/owsm_rl1/README.md) documents
+optional SGLang installation, devices, audited data and current limitations.
