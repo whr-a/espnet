@@ -362,7 +362,15 @@ have unique identities, references, input audio paths and SHA256 audit sidecars.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
-QA training uses exact normalized answer/choice accuracy. MMAU evaluation must
+LibriTTS and `wav.scp` use one shared verbatim reading instruction and preserve
+the reference separately for WER. The native text preprocessor and rollout prefix
+are identical. The starter configuration uses two candidates per prompt and a
+1536-token limit because this TTS model emits a text plan before its audio.
+Freeze the native recipe's `activation_checkpointing: true`; the RL scorer
+recomputes native decoder layers and 32-token score blocks in evaluation mode.
+
+QA training uses the WEST default equally weighted exact-answer and answer-format
+rewards. MMAU evaluation must
 freeze its own held-out manifest and retains raw generations before scoring.
 
 The first SGLang implementation is deliberately synchronous and uses full-prefix
