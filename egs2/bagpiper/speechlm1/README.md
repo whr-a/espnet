@@ -429,7 +429,8 @@ have unique identities, references, input audio paths and SHA256 audit sidecars.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
-QA training uses exact normalized answer/choice accuracy. MMAU evaluation must
+QA training follows WEST default GRPO: exact answer and answer-format rewards
+with equal weights. MMAU uses the official token-set match. MMAU evaluation must
 freeze its own held-out manifest and retains raw generations before scoring.
 
 The first SGLang implementation is deliberately synchronous and uses full-prefix

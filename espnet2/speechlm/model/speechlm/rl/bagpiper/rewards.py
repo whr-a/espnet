@@ -22,14 +22,24 @@ def wer(reference,hypothesis):
 
 
 def qa_reward(source,generation):
+    """WEST default GRPO: equal weights for exact accuracy and answer format."""
     text=generation["text"]
-    match=re.search(r"<answer>\s*(.*?)\s*</answer>",text,re.I|re.S)
+    match=re.search(r"<answer>(.*?)</answer>",text)
     answer=match.group(1).strip() if match else text.strip()
-    choices=source.get("choices",[])
-    label=re.fullmatch(r"\(?([A-Z])\)?[.)]?",answer)
-    if label and ord(label.group(1))-65<len(choices): answer=choices[ord(label.group(1))-65]
-    answer=re.sub(r"^(?:[A-Z]\.|\([A-Z]\))\s*","",answer)
-    return float(normalize(answer)==normalize(source["reference"]))
+    accuracy=float(answer==source["reference"])
+    format_score=float(re.fullmatch(r"<answer>.*?</answer>",text,re.S) is not None)
+    return 0.5*(accuracy+format_score)
+
+
+def mmau_match(source,generation):
+    """Official MMAU evaluation.py token-set match, with all rows retained."""
+    tokenize=lambda value:set(re.findall(r"\b\w+\b",value.lower()))
+    answer=tokenize(source["reference"]); prediction=tokenize(generation["text"])
+    incorrect=set()
+    for choice in source["choices"]:
+        tokens=tokenize(choice)
+        if tokens!=answer: incorrect.update(tokens-answer)
+    return bool(prediction) and answer.issubset(prediction) and prediction.isdisjoint(incorrect)
 
 
 class ASRWERReward:

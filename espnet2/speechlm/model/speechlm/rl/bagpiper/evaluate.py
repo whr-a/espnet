@@ -39,7 +39,10 @@ def main():
         reward=ASRWERReward(cfg)
     scored=[{"source_id":generation["source_id"],"reward":reward(sources[generation["source_id"]],generation),"text":generation["text"]} for generation in generations]
     values=[item["reward"] for item in scored]
-    metric="wer" if requests[0]["task"]=="tts_asr_wer" else "choice_accuracy"
+    metric="wer" if requests[0]["task"]=="tts_asr_wer" else "mmau_official_accuracy"
+    if metric=="mmau_official_accuracy":
+        from .rewards import mmau_match
+        values=[float(mmau_match(sources[generation["source_id"]],generation)) for generation in generations]
     result={"metric":metric,"value":(-sum(values) if metric=="wer" else sum(values))/len(values),"sample_count":len(values),"prompt_count":len(requests),"sampling":"unit temperature, full support, all group candidates","checkpoint":str(checkpoint),"dataset":requests[0]["dataset"],"generations":scored}
     (directory/"metrics.json").write_text(json.dumps(result,indent=2)+"\n")
     print(json.dumps(result))
