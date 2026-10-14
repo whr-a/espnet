@@ -193,11 +193,7 @@ def main():
                 "input": args.input,
                 "dataset": args.dataset,
                 "hf_revision": args.hf_revision,
-                "template": (
-                    QA_TEMPLATE
-                    if args.task == "qa"
-                    else TTS_TEMPLATE
-                ),
+                "template": (QA_TEMPLATE if args.task == "qa" else TTS_TEMPLATE),
             },
             indent=2,
         )
