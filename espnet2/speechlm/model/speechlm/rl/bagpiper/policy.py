@@ -252,6 +252,14 @@ class NativeSpeechLMPolicy(nn.Module):
         _recomputed=False,
     ):
         b, t, q = labels.shape
+        zero_head = hidden.new_zeros((), dtype=torch.float32)
+        if not _recomputed and not stream_mask.any():
+            # A standalone deterministic-only block historically creates zero
+            # head gradients. Preserve that optimizer-state contract once for
+            # the whole block rather than through every unused projection.
+            zero_head = self.core.lm_head.weight.reshape(-1)[0].float() * 0
+            if self.core.lm_head.bias is not None:
+                zero_head = zero_head + self.core.lm_head.bias[0].float() * 0
         if self.score_checkpointing and torch.is_grad_enabled() and not _recomputed:
             rows, entropies, streams = [], [], []
             phase = source.get("sampling_extra_args", {}).get("phase", "text")
@@ -295,8 +303,8 @@ class NativeSpeechLMPolicy(nn.Module):
                         ):
                             phase = "audio_stop"
             outputs = (
-                torch.cat(rows, 1),
-                torch.cat(entropies, 1),
+                torch.cat(rows, 1) + zero_head,
+                torch.cat(entropies, 1) + zero_head,
                 torch.cat(streams, 1),
             )
             return outputs if return_streams else outputs[:2]
@@ -459,8 +467,12 @@ class NativeSpeechLMPolicy(nn.Module):
             else:
                 stream_log_probs.append(hidden.new_zeros((b, t), dtype=torch.float32))
         if return_streams:
-            return frame_logp, frame_entropy, torch.stack(stream_log_probs, -1)
-        return frame_logp, frame_entropy
+            return (
+                frame_logp + zero_head,
+                frame_entropy + zero_head,
+                torch.stack(stream_log_probs, -1),
+            )
+        return frame_logp + zero_head, frame_entropy + zero_head
 
     def _bagpiper_deployed_row(
         self, logits, raw_primary, stream, phase, mode, target, recorded_active

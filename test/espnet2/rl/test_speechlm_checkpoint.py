@@ -3,6 +3,7 @@
 import copy
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 from transformers import Qwen3Config, Qwen3Model
@@ -10,6 +11,7 @@ from transformers import Qwen3Config, Qwen3Model
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import (
     NativeSpeechLMPolicy,
     checkpoint_native_layers,
+    offload_saved_activations,
 )
 
 
@@ -149,3 +151,114 @@ def test_native_layer_checkpoint_preserves_eval_and_backbone_gradient():
     for name, grad in results[0][-1].items():
         if grad is not None:
             torch.testing.assert_close(grad, results[1][-1][name], rtol=1e-5, atol=1e-5)
+
+
+def text_only_policy():
+    core = ScoreCore()
+    with torch.no_grad():
+        core.lm_head.weight.zero_()
+        core.stream_emb.weight.zero_()
+        core.lm_head.weight[20, 0] = 3
+    geometry = dict(
+        text_token_offset=12,
+        text_token_end=40,
+        codec_base_offset=40,
+        codec_layer_size=4,
+        text_token_id=7,
+        audio_token_id=8,
+        eot_token_id=3,
+        assistant_token_id=6,
+        eos_token_id=2,
+    )
+    policy = NativeSpeechLMPolicy(
+        core, token_chunk_size=2, bagpiper_config=geometry, score_checkpointing=False
+    )
+    source = dict(
+        mode="text_only",
+        sampling_contracts=[[dict(temperature=1.0, top_k=64) for _ in range(4)]],
+    )
+    hidden = torch.zeros(1, 1, 7, requires_grad=True)
+    hidden.data[..., 0] = 1
+    labels = torch.tensor([[[20, 0, 0, 0]]])
+    masks = torch.tensor([[[True, False, False, False]]])
+    return policy, source, hidden, labels, masks
+
+
+def test_inactive_codec_stream_preserves_zero_gradient_and_adam_state():
+    policy, source, hidden, labels, masks = text_only_policy()
+    before = policy.core.stream_emb.weight.detach().clone()
+    logp, entropy = policy._score_frames(hidden, labels, masks, source)
+    (logp.sum() + 0.03 * entropy.sum()).backward()
+    assert policy.core.stream_emb.weight.grad is not None
+    assert torch.count_nonzero(policy.core.stream_emb.weight.grad) == 0
+    optimizer = torch.optim.AdamW(policy.parameters(), lr=0.01, weight_decay=0)
+    optimizer.step()
+    assert torch.equal(policy.core.stream_emb.weight, before)
+    state = optimizer.state[policy.core.stream_emb.weight]
+    assert state["step"] == 1
+    assert torch.count_nonzero(state["exp_avg"]) == 0
+
+
+@pytest.mark.parametrize("setting,value", [("temperature", 0.5), ("top_k", 3)])
+def test_inactive_codec_stream_rejects_changed_sampling_contract(setting, value):
+    policy, source, hidden, labels, masks = text_only_policy()
+    source["sampling_contracts"][0][1][setting] = value
+    with pytest.raises(ValueError, match="untruncated unit-temperature"):
+        policy._score_frames(hidden, labels, masks, source)
+
+
+def test_inactive_codec_stream_rejects_current_modality_change():
+    policy, source, hidden, labels, masks = text_only_policy()
+    with torch.no_grad():
+        policy.core.lm_head.weight[41, 0] = 4
+    labels[0, 0, 0] = 41
+    with pytest.raises(ValueError, match="sampled-stream action layout"):
+        policy._score_frames(hidden, labels, masks, source)
+
+
+@pytest.mark.parametrize("checkpoint", [False, True])
+def test_all_forced_block_preserves_zero_head_gradient(checkpoint):
+    policy, source, hidden, labels, masks = text_only_policy()
+    policy.score_checkpointing = checkpoint
+    policy.core.lm_head.bias = nn.Parameter(torch.zeros(64))
+    source.update(mode="text_audio", sampling_extra_args=dict(phase="transition"))
+    labels[0, 0, 0] = 6
+    masks[:] = False
+    logp, entropy = policy._score_frames(hidden, labels, masks, source)
+    (logp.sum() + 0.03 * entropy.sum()).backward()
+    for parameter in (
+        policy.core.lm_head.weight,
+        policy.core.lm_head.bias,
+        policy.core.stream_emb.weight,
+    ):
+        assert parameter.grad is not None
+        assert torch.count_nonzero(parameter.grad) == 0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA storage-view test")
+def test_activation_offload_keeps_parameter_storage_views_on_cuda():
+    model = nn.Linear(3, 4, bias=False).cuda()
+    active = torch.ones(1, 3, device="cuda", requires_grad=True)
+    observed = {}
+
+    class SavedViews(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, value, weight):
+            ctx.save_for_backward(value, weight.T)
+            return value.sum()
+
+        @staticmethod
+        def backward(ctx, gradient):
+            value, weight_view = ctx.saved_tensors
+            observed["activation_device"] = value.device
+            observed["weight_storage"] = weight_view.untyped_storage().data_ptr()
+            observed["weight_device"] = weight_view.device
+            return gradient.expand_as(value), None
+
+    with offload_saved_activations(model, True):
+        result = SavedViews.apply(active, model.weight)
+    result.backward()
+    assert observed["activation_device"] == active.device
+    assert observed["weight_device"] == model.weight.device
+    assert observed["weight_storage"] == model.weight.untyped_storage().data_ptr()
+    assert torch.equal(active.grad, torch.ones_like(active))

@@ -96,3 +96,23 @@ preconfigured training environment. Data preparation requires `text` references
 for WER; QA also requires question/answer metadata. `wav.scp` alone cannot supply
 these labels. Save effective absolute paths in `frozen_config.json` for later
 evaluation, since relative paths are resolved from the command's working directory.
+
+Bagpiper QA's 1536-token FP32 templates enable
+`adapter_options.activation_cpu_offload: true`. This stores saved activation
+boundaries on CPU while keeping parameter/buffer storage on the original GPU.
+It needs host RAM in addition to the CPU Adam states; provision a large-memory
+host and measure the effective native environment before freezing training.
+The validation host had 2 TiB RAM. This is an activation storage option, not a
+change to the model, sampling budget, GRPO objective or categorical precision.
+TTS retains its independently tested default configuration.
+
+The original QA005 Torch 2.11 FP32 run failed on its first backward before any
+optimizer update. The independent longest saved-action oracle covered all 1431
+actions plus 179 prompt tokens, preserving 32-row score GEMMs. The original
+scorer with lossless activation storage and the production scorer produced
+identical action probabilities, entropies and all 402 parameter gradients.
+An additional preflight applied the actual PPO/KL backward to every one of the
+eight saved candidates and accumulated finite gradients without stepping Adam.
+Peak allocated GPU memory was 77,508,865,536 bytes. This verifies that saved
+batch, and does not predict peak memory for every possible future response.
+The original failure and fresh independent training rounds remain separate.

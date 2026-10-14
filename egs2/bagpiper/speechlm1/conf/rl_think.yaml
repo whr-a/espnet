@@ -27,6 +27,7 @@ adapter_options:
   audio_processor_path: exp/sft/audio_processor
   tokenizer_mode: hf
   score_chunk_size: 32
+  activation_cpu_offload: true
 dtype: float32
 optimizer_device: cpu
 seed: 42
