@@ -30,6 +30,7 @@ def generate(config, model_path, sources, step):
     kwargs.update(
         model_path=str(model_path),
         dtype=config.dtype,
+        random_seed=config.seed + step,
         tp_size=1,
         disable_cuda_graph=True,
         disable_radix_cache=True,
