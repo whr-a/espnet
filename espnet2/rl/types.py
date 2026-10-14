@@ -11,6 +11,7 @@ class TokenScores:
     log_probs: torch.Tensor
     entropy: torch.Tensor
     response_mask: torch.Tensor
+    stream_log_probs: torch.Tensor | None = None
 
 
 class NativeESPnetPolicy(nn.Module):
