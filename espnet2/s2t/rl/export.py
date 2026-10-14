@@ -13,6 +13,10 @@ from safetensors.torch import save_file
 
 def export_owsm(config, checkpoint, output):
     """Miles exporter hook: no vocabulary or trained tensor is transformed."""
+    if getattr(config, "rollout_backend", "sglang") == "vllm":
+        from espnet2.s2t.rl.vllm_export import export_owsm as export_vllm
+
+        return export_vllm(config.train_config, checkpoint, output, model_version=config.model_version)
     source_config = Path(config.train_config)
     native = yaml.safe_load(source_config.read_text())
     if native.get("model", "espnet") != "espnet" or native.get("decoder", "transformer") != "transformer":

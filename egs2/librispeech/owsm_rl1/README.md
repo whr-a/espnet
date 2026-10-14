@@ -46,3 +46,12 @@ python -m espnet2.s2t.rl.evaluate --config exp/owsm_miles_wer/rl_config.yaml \
   --checkpoint exp/owsm_miles_wer/train/step-000002.native.pth \
   --manifest /path/to/disjoint-heldout.jsonl --output heldout.json
 ```
+
+An explicit optional vLLM backend is configured by
+`egs2/owsm_v4/s2t1/conf/rl_miles_wer_vllm.yaml`. It uses
+`espnet2.s2t.rl.vllm_rollout:generate`; request preparation is a separate
+function and exports the native OWSM encoder-decoder format. Set `vllm_source`
+and `rollout_python` to the previously validated ESPnet vLLM fork and its
+inference environment. The default recipe and 2026-10-14 training acceptance
+use SGLang. The optional vLLM adapter passed strict export/request checks;
+this session did not run a new vLLM training experiment.
