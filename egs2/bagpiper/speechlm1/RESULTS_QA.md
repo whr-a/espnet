@@ -58,8 +58,50 @@ learning signal, and `bagpiper-qa-stage6-003` failed during preparation before
 training because it attempted to replace a frozen manifest. Neither is a
 successful RL acceptance result.
 
-`bagpiper-qa-stage6-005` is a new independently frozen WEST think protocol, with
-four updates covering all eight AVQA prompts in order. It has its own matching
-think-template MMAU before/after evaluation. Its results must be reported
-separately, with accuracy and format components distinguished. A format reward
-increase alone does not establish QA quality improvement.
+`bagpiper-qa-stage6-005` was an independently frozen WEST think protocol,
+planning four updates over all eight AVQA prompts in order. It **failed on the
+first backward with CUDA OOM, before any optimizer update**. The complete first
+eight candidates remain saved. Their exact-answer accuracy was zero; the two
+groups had rewards `[0, 0.1, 0.1, 0]` and `[0.1, 0.2, 0.1, 0.1]` from answer/think
+format terms. All 8934 sampled actions had finite, nonzero group advantages.
+Initial native/reference probabilities matched exactly. There is no final
+QA005 checkpoint or after evaluation. Its independent think-template MMAU
+before evaluation continues to its natural terminal state.
+
+The generic memory repair was developed outside that failed trajectory. It
+skips unused Bagpiper stream projections while retaining current support,
+sampling-contract and zero-gradient optimizer semantics. Optional lossless CPU
+storage of saved activations preserves parameter/buffer storage on the GPU.
+On the longest saved answer, 1431 frames plus 179 prompt tokens, the original
+and production scorers produced exactly equal log probabilities, entropies and
+all 402 parameter gradients. A separate actual PPO/KL backward over all eight
+saved candidates accumulated finite gradients with every native parameter
+unchanged and zero optimizer steps. Peak allocated memory was
+77,508,865,536 bytes. These checks verify the repair, not successful training.
+
+`bagpiper-qa-stage6-006` started on 2026-10-14 at 14:32:26 UTC from a fresh
+frozen ESPnet `fb9d9117e68ffc10a2d4491d57b7591969fe98f8`, published SGLang
+`4c3f163fe54634f20ef846e1ec0c507b27ae2430`, and unchanged Miles pin. It retains
+four updates, all eight AVQA prompts, group size four, FP32, a 1536-token cap and
+32-row scoring. Its before check explicitly reuses QA005's complete initial
+MMAU outputs only after independent native/export auditing; `new_generation`
+is false for that check. The final after evaluation generates all 32 candidates
+from the actual step-four checkpoint with the same effective engine seed 41.
+Training and final evaluation have not yet passed acceptance.
+
+Additional evidence under the same task directory:
+
+- `evidence/qa005_terminal_saved_batch_root_audit.json`
+- `evidence/bagpiper_memory_fix_independent_acceptance_001.json`
+- `evidence/bagpiper_memory_production_gradient_comparison_001.json`
+- `runs/bagpiper-qa-full-batch-preflight-001/result.json`
+- `runs/bagpiper-qa-stage6-006/{freeze.json,state.json}`
+- `evidence/qa006_launcher_postrun_independent_review.json`
+- `evidence/qa006_registered_protection_audit.json`
+
+The AVQA training and local MMAU held-out audio hashes are disjoint; available
+registered protection metadata also has no match. Complete connected-component
+mappings for the general benchmark registry are unavailable locally, so this
+does not establish complete general benchmark contamination admission. Accuracy
+and format components remain separate. Format learning alone does not establish
+QA quality improvement.
