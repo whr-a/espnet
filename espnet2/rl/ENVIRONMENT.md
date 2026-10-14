@@ -16,7 +16,13 @@ Native ESPnet and rollout use separate Python interpreters. The actual
 | FlashInfer Python | not used by native RL | 0.6.15.post1 |
 
 These are observed working profiles, not a resolver lock or a clean installation
-test. Native Torch 2.13 and Torchaudio 2.11 came from the existing host environment;
+test. OWSM and accepted TTS used the native profile above. Bagpiper QA005 instead
+ran both its native learner and SGLang rollout with the rollout interpreter:
+Torch 2.11.0+cu130 from `sglang_system_dependencies` and Transformers 5.12.1.
+It failed at its first full backward with zero optimizer updates; its longer
+audio-conditioned sequences have no successful-gradient acceptance from the
+TTS Torch 2.13 run. Keep each run's actual interpreter and package paths with
+its frozen configuration rather than assuming every family used one profile. Native Torch 2.13 and Torchaudio 2.11 came from the existing host environment;
 this records the actual pair rather than recommending a new unmatched pair.
 The rollout environment inherited a declared dependency overlay excluding old
 SGLang and editable Miles imports. New Transformers/FlashInfer packages took

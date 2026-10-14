@@ -425,6 +425,11 @@ and pass `--rl-config`, with `--rl-data-input` or `--rl-wav-scp`/`--rl-text`.
 To reuse a prepared dataset, pass `--rl-manifest`; this skips preparation when no
 new RL data is supplied. Each RL run starts from the explicit native checkpoint
 in its YAML and writes a fresh output directory.
+Both QA RL templates default to `exp/sft/export/model.pt`, the existing stage 4
+export destination. If a preceding stage uses a different `--sft-output-dir` or
+`--export-path`, set `checkpoint` in the selected RL YAML to that exact exported
+file before starting the combined run. The RL stage reads the checkpoint
+configured in its YAML; it does not infer a custom export path.
 
 The RL wrapper performs data preparation, configuration validation and training.
 Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also

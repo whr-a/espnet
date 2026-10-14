@@ -1,7 +1,7 @@
 # Optional post-training stage; install pinned Miles and the SGLang ESPnet fork.
 family: bagpiper
 train_config: conf/train.yaml
-checkpoint: exp/sft/model.pth
+checkpoint: exp/sft/export/model.pt
 manifest: data/rl/train.jsonl
 output_dir: exp/rl
 rollout_backend: sglang
