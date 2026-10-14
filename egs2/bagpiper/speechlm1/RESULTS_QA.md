@@ -63,7 +63,9 @@ planning four updates over all eight AVQA prompts in order. It **failed on the
 first backward with CUDA OOM, before any optimizer update**. The complete first
 eight candidates remain saved. Their exact-answer accuracy was zero; the two
 groups had rewards `[0, 0.1, 0.1, 0]` and `[0.1, 0.2, 0.1, 0.1]` from answer/think
-format terms. All 8934 sampled actions had finite, nonzero group advantages.
+format terms: one answer block and six think blocks across the eight candidates.
+There are 8942 recorded frames; one terminal EOS per candidate is deterministic.
+All 8934 sampled actions had finite, nonzero group advantages.
 Initial native/reference probabilities matched exactly. There is no final
 QA005 checkpoint or after evaluation. Its independent think-template MMAU
 before evaluation continues to its natural terminal state.
@@ -78,6 +80,12 @@ all 402 parameter gradients. A separate actual PPO/KL backward over all eight
 saved candidates accumulated finite gradients with every native parameter
 unchanged and zero optimizer steps. Peak allocated memory was
 77,508,865,536 bytes. These checks verify the repair, not successful training.
+Skipping unused projections alone did not reduce the measured single-candidate
+peak. The preflight imported the `e81c25b0e` implementation; its source-file hash
+was read at completion after later offline boundary/test edits. The loaded-source
+note preserves that distinction. The final generic/all-forced boundary changes
+do not trigger on this active Bagpiper batch. Nine repository tests passed in
+Torch 2.11, including the CUDA parameter-storage-view guard.
 
 `bagpiper-qa-stage6-006` started on 2026-10-14 at 14:32:26 UTC from a fresh
 frozen ESPnet `fb9d9117e68ffc10a2d4491d57b7591969fe98f8`, published SGLang
@@ -95,6 +103,8 @@ Additional evidence under the same task directory:
 - `evidence/bagpiper_memory_fix_independent_acceptance_001.json`
 - `evidence/bagpiper_memory_production_gradient_comparison_001.json`
 - `runs/bagpiper-qa-full-batch-preflight-001/result.json`
+- `runs/bagpiper-qa-full-batch-preflight-001-loaded_source_note.json`
+- `evidence/bagpiper_memory_repo_tests_001.json`
 - `runs/bagpiper-qa-stage6-006/{freeze.json,state.json}`
 - `evidence/qa006_launcher_postrun_independent_review.json`
 - `evidence/qa006_registered_protection_audit.json`
