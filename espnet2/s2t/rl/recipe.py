@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--rollout-gpus", default="2")
     parser.add_argument("--rollout-python", default="python")
     parser.add_argument("--sglang-source", default="")
+    parser.add_argument("--miles-source", default="")
     parser.add_argument("--language", default="<eng>")
     args = parser.parse_args()
     from espnet2.rl.prepare import prepare_kaldi_manifest
@@ -36,7 +37,7 @@ def main():
                   reference_device=args.reference_device,
                   rollout_gpus=args.rollout_gpus,
                   rollout_python=args.rollout_python,
-                  sglang_source=args.sglang_source,
+                  sglang_source=args.sglang_source, miles_source=args.miles_source,
                   language=args.language)
     path = work / "rl_config.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False))

@@ -15,11 +15,12 @@ Prepare LibriSpeech with the existing `egs2/librispeech/asr1` data stage, then:
   --work-dir exp/owsm_miles_wer \
   --rollout-python /path/to/optional-sglang-env/bin/python \
   --sglang-source /path/to/pinned-sglang-fork \
+  --miles-source /path/to/pinned-miles-library \
   --device cuda:0 --reference-device cuda:1 --rollout-gpus 2
 ```
 
 The same stage is available from the existing OWSM recipe:
-`egs2/owsm_v4/s2t1/run.sh --stage 18` with the arguments above. `wav.scp` and
+`bash egs2/owsm_v4/s2t1/run.sh --stage 18` with the arguments above. `wav.scp` and
 `text` must contain the same utterance IDs. Reference text is required to
 compute WER; the audio waveform itself cannot supply a supervised reference.
 Preparation creates an audited manifest and training freezes its config.
@@ -36,3 +37,12 @@ Checkpoint synchronization, native versus rollout probability checks,
 optimizer updates, native checkpoints and all WER outcomes are retained in
 `--work-dir`. A short engineering run establishes pipeline correctness;
 quality improvement needs a separately budgeted full training/evaluation run.
+
+Two-update engineering acceptance and heldout results are recorded in
+[RESULTS.md](RESULTS.md). For independent native greedy heldout evaluation:
+
+```bash
+python -m espnet2.s2t.rl.evaluate --config exp/owsm_miles_wer/rl_config.yaml \
+  --checkpoint exp/owsm_miles_wer/train/step-000002.native.pth \
+  --manifest /path/to/disjoint-heldout.jsonl --output heldout.json
+```

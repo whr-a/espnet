@@ -18,7 +18,7 @@ weight_decay: 0.0
 max_grad_norm: 1.0
 clip_ratio: 0.2
 kl_coef: 0.01
-kl_type: k3+
+kl_type: k3
 normalize_advantage: true
 loss_agg_mode: token-mean
 max_tokens: 256

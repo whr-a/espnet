@@ -15,7 +15,6 @@
 
 import argparse
 import importlib
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,22 +32,7 @@ def resolve_callable(name: str):
     return getattr(importlib.import_module(module), symbol)
 
 
-@dataclass
-class TokenScores:
-    log_probs: torch.Tensor
-    entropy: torch.Tensor
-    response_mask: torch.Tensor
-
-
-class NativeESPnetPolicy(nn.Module):
-    """All policies return one log probability per sampled action/frame."""
-
-    def forward(self, batch: Any) -> TokenScores:
-        raise NotImplementedError
-
-    def checkpoint_state_dict(self):
-        """Export the ESPnet model keys, excluding the RL wrapper prefix."""
-        return self.model.state_dict()
+from espnet2.rl.types import NativeESPnetPolicy, TokenScores
 
 
 def object_array(values):
