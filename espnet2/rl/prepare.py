@@ -64,7 +64,7 @@ def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
         sf.write(target, waveform, sample_rate, subtype="FLOAT")
         records.append({
             "id": identity, "audio": str(target), "reference": references[identity],
-            "task": task, "sample_rate": sample_rate,
+            "reward_task": task, "sample_rate": sample_rate,
             "audio_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
             "source_audio_sha256": source_hash,
         })

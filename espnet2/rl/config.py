@@ -86,7 +86,7 @@ class ESPnetRLConfig:
                 raise ValueError(f"{name} must be positive")
         if self.temperature != 1.0 or self.top_p != 1.0 or self.top_k != -1:
             raise ValueError(
-                "The first native backend requires temperature=1, top_p=1, top_k=-1 so vLLM raw "
+                "The first native backend requires temperature=1, top_p=1, top_k=-1 so engine raw "
                 "logprobs match the native actor distribution. Truncated sampling requires a separate "
                 "explicit behavior-policy implementation."
             )

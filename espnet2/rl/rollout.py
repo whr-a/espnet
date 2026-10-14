@@ -86,7 +86,6 @@ class CheckpointRollout:
             paths.insert(0, str(Path(self.config.sglang_source).resolve() / "python"))
         elif self.config.vllm_source:
             paths.insert(0, str(Path(self.config.vllm_source).resolve()))
-        environment["PYTHONPATH"] = os.pathsep.join(paths + [environment.get("PYTHONPATH", "")])
         if self.config.miles_source:
             paths.append(str(Path(self.config.miles_source).resolve()))
         environment["PYTHONPATH"] = os.pathsep.join(paths + [environment.get("PYTHONPATH", "")])
