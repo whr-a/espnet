@@ -110,6 +110,10 @@ class ESPnetRLConfig:
             raise ValueError("score_tolerance must be nonnegative")
 
     @classmethod
+    def load(cls, path: str):
+        return cls.from_yaml(path)
+
+    @classmethod
     def from_yaml(cls, path: str):
         with Path(path).open() as stream:
             config = cls(**yaml.safe_load(stream))
