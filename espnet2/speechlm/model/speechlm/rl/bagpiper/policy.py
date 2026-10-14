@@ -25,10 +25,9 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .tokens import selected_log_probs
-
-
 from espnet2.rl.types import TokenScores
+
+from .tokens import selected_log_probs
 
 
 class NativeSpeechLMPolicy(nn.Module):
@@ -98,14 +97,20 @@ class NativeSpeechLMPolicy(nn.Module):
             for name, handler in core.multimodal_io_dict.items():
                 features = kwargs.get(name + "_feats")
                 parameter = next(handler.parameters(), None)
-                if features is not None and parameter is not None and features.is_floating_point():
+                if (
+                    features is not None
+                    and parameter is not None
+                    and features.is_floating_point()
+                ):
                     # Frontend artifacts remain fp32 in the manifest; convert
                     # only at the trainable native encoder boundary.
                     kwargs[name + "_feats"] = features.to(dtype=parameter.dtype)
             embeds = core._embed(sequence, kwargs)
             positions = kwargs.get("position_ids")
             if positions is None:
-                positions = torch.arange(sequence.shape[1], device=sequence.device)[None, :]
+                positions = torch.arange(sequence.shape[1], device=sequence.device)[
+                    None, :
+                ]
             # One utterance per forward avoids padding leakage and packed-example
             # attention without imposing a different native model backend.
             output = core.model(
@@ -116,7 +121,9 @@ class NativeSpeechLMPolicy(nn.Module):
             )
             return output.last_hidden_state
         # Bypass ARDelayLM.forward: it would delay the actual rollout a second time.
-        embeds = core.process_embedding(sequence, conti_feats=native_inputs.get("conti_feats"))
+        embeds = core.process_embedding(
+            sequence, conti_feats=native_inputs.get("conti_feats")
+        )
         if self.inference_semantics == "vllm_legacy_pad_bias":
             codec_mask = native_inputs.get("_rl_legacy_codec_mask")
             if codec_mask is None or codec_mask.shape != sequence.shape[:2]:
@@ -127,7 +134,9 @@ class NativeSpeechLMPolicy(nn.Module):
             pad_embed = core.emb.weight[core.pad_id]
             primary_pad = sequence[..., 0] == core.pad_id
             embeds = embeds + primary_pad[..., None] * pad_embed
-            embeds = embeds + (~codec_mask)[..., None] * (self.num_stream - 1) * pad_embed
+            embeds = (
+                embeds + (~codec_mask)[..., None] * (self.num_stream - 1) * pad_embed
+            )
             if self.legacy_codec_pad_embeddings:
                 # Dialogue's current SGLang buffer embeds padding in secondary
                 # codec streams too; plain OpusLM clears these buffer pads.
@@ -137,13 +146,19 @@ class NativeSpeechLMPolicy(nn.Module):
         if getattr(decoder, "model_type", None) == "huggingface":
             # The legacy wrapper retains a KV cache across calls. Independent
             # teacher-forced utterances must use fresh attention state.
-            return decoder.model(inputs_embeds=embeds, use_cache=False).last_hidden_state
+            return decoder.model(
+                inputs_embeds=embeds, use_cache=False
+            ).last_hidden_state
         decoder.kv_cache = None
         return decoder(embeds)
 
     def _stream_weight(self, stream):
         core = self.core
-        offsets = core.stream_emb.weight if self.layout == "parallel" else core.head_emb.weight
+        offsets = (
+            core.stream_emb.weight
+            if self.layout == "parallel"
+            else core.head_emb.weight
+        )
         if self.layout == "parallel" and stream == 0:
             return offsets[stream] * 0
         return offsets[stream]
@@ -159,10 +174,16 @@ class NativeSpeechLMPolicy(nn.Module):
         phases = None
         if self.bagpiper_config is not None:
             if contracts is None:
-                raise ValueError("Bagpiper deployed likelihood requires actual rollout contracts")
-            mode = source.get("mode", source.get("sampling_extra_args", {}).get("mode", "text_only"))
+                raise ValueError(
+                    "Bagpiper deployed likelihood requires actual rollout contracts"
+                )
+            mode = source.get(
+                "mode", source.get("sampling_extra_args", {}).get("mode", "text_only")
+            )
             if mode not in ("text_only", "text_audio"):
-                raise ValueError("Bagpiper deployed likelihood supports text_only/text_audio")
+                raise ValueError(
+                    "Bagpiper deployed likelihood supports text_only/text_audio"
+                )
             phase = source.get("sampling_extra_args", {}).get("phase", "text")
             phases = []
             for token in labels[0, :, 0].tolist():
@@ -170,11 +191,17 @@ class NativeSpeechLMPolicy(nn.Module):
                     raise ValueError("Unknown Bagpiper decoding phase")
                 phases.append(phase)
                 if mode == "text_audio":
-                    if phase == "text" and token == self.bagpiper_config["eot_token_id"]:
+                    if (
+                        phase == "text"
+                        and token == self.bagpiper_config["eot_token_id"]
+                    ):
                         phase = "transition"
                     elif phase == "transition":
                         phase = "audio"
-                    elif phase == "audio" and token == self.bagpiper_config["eot_token_id"]:
+                    elif (
+                        phase == "audio"
+                        and token == self.bagpiper_config["eot_token_id"]
+                    ):
                         phase = "audio_stop"
         for stream in range(q):
             logp_chunks, entropy_chunks = [], []
@@ -184,7 +211,11 @@ class NativeSpeechLMPolicy(nn.Module):
                 logits = F.linear(h, self.core.lm_head.weight, self.core.lm_head.bias)
                 primary_logits = None
                 if phases is not None:
-                    primary_logits = F.linear(hidden[:, start:end], self.core.lm_head.weight, self.core.lm_head.bias)
+                    primary_logits = F.linear(
+                        hidden[:, start:end],
+                        self.core.lm_head.weight,
+                        self.core.lm_head.bias,
+                    )
                 targets = labels[:, start:end, stream]
                 active = stream_mask[:, start:end, stream]
                 if contracts is not None:
@@ -198,8 +229,13 @@ class NativeSpeechLMPolicy(nn.Module):
                             # keeps every logit, including the current modality
                             # mask, and is not a truncated policy distribution.
                             top_k = spec.get("top_k", 0)
-                            if spec.get("temperature", 1.0) != 1.0 or 0 < top_k < row.shape[-1]:
-                                raise ValueError("Bagpiper native RL requires untruncated unit-temperature sampling")
+                            if (
+                                spec.get("temperature", 1.0) != 1.0
+                                or 0 < top_k < row.shape[-1]
+                            ):
+                                raise ValueError(
+                                    "Bagpiper native RL requires untruncated unit-temperature sampling"
+                                )
                             row = self._bagpiper_deployed_row(
                                 row,
                                 primary_logits[:, j : j + 1],
@@ -210,7 +246,9 @@ class NativeSpeechLMPolicy(nn.Module):
                                 active[:, j : j + 1],
                             )
                         elif spec.get("allowed_ranges") is not None:
-                            allowed = torch.zeros(row.shape[-1], device=row.device, dtype=torch.bool)
+                            allowed = torch.zeros(
+                                row.shape[-1], device=row.device, dtype=torch.bool
+                            )
                             for lo, hi in spec["allowed_ranges"]:
                                 allowed[lo:hi] = True
                             for token in spec.get("allowed_token_ids", []):
@@ -235,7 +273,9 @@ class NativeSpeechLMPolicy(nn.Module):
                     if self.stream_vocab_ranges is not None:
                         lo, hi = self.stream_vocab_ranges[stream]
                         allowed = torch.arange(logits.shape[-1], device=logits.device)
-                        logits = logits.masked_fill((allowed < lo) | (allowed >= hi), -torch.inf)
+                        logits = logits.masked_fill(
+                            (allowed < lo) | (allowed >= hi), -torch.inf
+                        )
                     logp, entropy = selected_log_probs(logits, targets, active)
                 logp_chunks.append(logp)
                 entropy_chunks.append(entropy)
@@ -250,7 +290,9 @@ class NativeSpeechLMPolicy(nn.Module):
             return frame_logp, frame_entropy, torch.stack(stream_log_probs, -1)
         return frame_logp, frame_entropy
 
-    def _bagpiper_deployed_row(self, logits, raw_primary, stream, phase, mode, target, recorded_active):
+    def _bagpiper_deployed_row(
+        self, logits, raw_primary, stream, phase, mode, target, recorded_active
+    ):
         """Recompute deployed support from current logits, never old support.
 
         A changed categorical support gives zero likelihood to an excluded
@@ -268,7 +310,11 @@ class NativeSpeechLMPolicy(nn.Module):
             expected_active = audio
         else:
             if mode == "text_audio" and phase in ("transition", "audio_stop"):
-                forced = cfg["assistant_token_id"] if phase == "transition" else cfg["eos_token_id"]
+                forced = (
+                    cfg["assistant_token_id"]
+                    if phase == "transition"
+                    else cfg["eos_token_id"]
+                )
                 allowed[forced] = True
             elif detect:
                 allowed[cfg["text_token_id"]] = True
@@ -283,10 +329,17 @@ class NativeSpeechLMPolicy(nn.Module):
                 allowed[cfg["eos_token_id"]] = allowed[cfg["eot_token_id"]] = True
             expected_active = int((allowed & torch.isfinite(logits[0, 0])).sum()) > 1
         if bool(recorded_active[0, 0]) != expected_active:
-            raise ValueError("Bagpiper current policy changed the sampled-stream action layout")
+            raise ValueError(
+                "Bagpiper current policy changed the sampled-stream action layout"
+            )
         if not stream or expected_active:
-            if not 0 <= int(target[0, 0]) < len(allowed) or not allowed[int(target[0, 0])]:
-                raise ValueError("Bagpiper rollout action has zero likelihood under current deployed support")
+            if (
+                not 0 <= int(target[0, 0]) < len(allowed)
+                or not allowed[int(target[0, 0])]
+            ):
+                raise ValueError(
+                    "Bagpiper rollout action has zero likelihood under current deployed support"
+                )
         return logits.masked_fill(~allowed, -torch.inf)
 
     def forward(self, batch):
@@ -294,7 +347,9 @@ class NativeSpeechLMPolicy(nn.Module):
         responses = batch.batch["responses"].to(device)
         if responses.ndim == 2:
             if self.num_stream != 1:
-                raise ValueError("Multistream policy requires responses [B,T,Q], including all sampled codebooks")
+                raise ValueError(
+                    "Multistream policy requires responses [B,T,Q], including all sampled codebooks"
+                )
             responses = responses.unsqueeze(-1)
         if responses.ndim != 3 or responses.shape[-1] != self.num_stream:
             raise ValueError("Response stream count differs from native model")
@@ -303,7 +358,9 @@ class NativeSpeechLMPolicy(nn.Module):
         stream_masks = batch.batch.get("response_stream_mask")
         if stream_masks is None:
             if self.num_stream > 1:
-                raise ValueError("Multistream RL requires an explicit response_stream_mask")
+                raise ValueError(
+                    "Multistream RL requires an explicit response_stream_mask"
+                )
             stream_masks = masks.unsqueeze(-1)
         stream_masks = stream_masks.to(device).bool()
         if stream_masks.shape != responses.shape or masks.shape != responses.shape[:2]:
@@ -330,7 +387,11 @@ class NativeSpeechLMPolicy(nn.Module):
                     ),
                     -1,
                 )
-            if prefix.ndim != 2 or prefix.shape[1] != self.num_stream or not prefix.shape[0]:
+            if (
+                prefix.ndim != 2
+                or prefix.shape[1] != self.num_stream
+                or not prefix.shape[0]
+            ):
                 raise ValueError("Expected a nonempty prompt [P,Q]")
             source = batch.non_tensor_batch["source"][i]
             native = _native_model_inputs(source.get("native_model_inputs", {}), device)
@@ -338,29 +399,47 @@ class NativeSpeechLMPolicy(nn.Module):
             if self.inference_semantics == "vllm_legacy_pad_bias":
                 codec_frames = source.get("codec_frame_mask")
                 if codec_frames is None or len(codec_frames) != length:
-                    raise ValueError("Legacy SGLang scoring requires recorded codec_frame_mask")
-                prompt_codec = source.get("prompt_codec_mask", [False] * prefix.shape[0])
+                    raise ValueError(
+                        "Legacy SGLang scoring requires recorded codec_frame_mask"
+                    )
+                prompt_codec = source.get(
+                    "prompt_codec_mask", [False] * prefix.shape[0]
+                )
                 if len(prompt_codec) != prefix.shape[0]:
                     raise ValueError("prompt_codec_mask must cover the native prompt")
                 native["_rl_legacy_codec_mask"] = torch.as_tensor(
                     [*prompt_codec, *codec_frames], device=device, dtype=torch.bool
                 )[None]
-            if "position_ids" in native and native["position_ids"].shape[-1] != sequence.shape[1]:
-                raise ValueError("position_ids must include the full prompt and response")
+            if (
+                "position_ids" in native
+                and native["position_ids"].shape[-1] != sequence.shape[1]
+            ):
+                raise ValueError(
+                    "position_ids must include the full prompt and response"
+                )
             hidden = self._hidden(sequence, native)
             # hidden[P-1] predicts the first response; the final response's
             # hidden is not used. Target rows retain their rollout delay layout.
             hidden = hidden[:, prefix.shape[0] - 1 : prefix.shape[0] + length - 1]
             active = stream_masks[i : i + 1, :length] & masks[i : i + 1, :length, None]
             logp, entropy, stream_logp = self._score_frames(
-                hidden, responses[i : i + 1, :length], active, source, return_streams=True
+                hidden,
+                responses[i : i + 1, :length],
+                active,
+                source,
+                return_streams=True,
             )
             padding = responses.shape[1] - length
             lp_rows.append(F.pad(logp, (0, padding)))
             entropy_rows.append(F.pad(entropy, (0, padding)))
             mask_rows.append(F.pad(active.any(-1), (0, padding)))
             stream_rows.append(F.pad(stream_logp, (0, 0, 0, padding)))
-        return TokenScores(torch.cat(lp_rows), torch.cat(entropy_rows), torch.cat(mask_rows), torch.cat(stream_rows))
+        return TokenScores(
+            torch.cat(lp_rows),
+            torch.cat(entropy_rows),
+            torch.cat(mask_rows),
+            torch.cat(stream_rows),
+        )
 
 
 def _to_device(value, device):
@@ -385,15 +464,22 @@ def _native_model_inputs(value, device):
             result[name] = torch.as_tensor(item, device=device, dtype=torch.float32)
         elif name == "attn_args":
             result[name] = {
-                key: torch.as_tensor(array, device=device, dtype=torch.int32)
-                if key.startswith("cu_seq_lens")
-                else array
+                key: (
+                    torch.as_tensor(array, device=device, dtype=torch.int32)
+                    if key.startswith("cu_seq_lens")
+                    else array
+                )
                 for key, array in item.items()
             }
         elif name == "conti_feats":
             result[name] = [
                 [
-                    (torch.as_tensor(feats, device=device, dtype=torch.float32), int(start), int(end), part)
+                    (
+                        torch.as_tensor(feats, device=device, dtype=torch.float32),
+                        int(start),
+                        int(end),
+                        part,
+                    )
                     for feats, start, end, part in utterance
                 ]
                 for utterance in item
@@ -408,6 +494,8 @@ def _build_current_native_model(recipe, options):
     text-row initialization is unnecessary. Vocabulary/IO construction follows
     SpeechLMJobTemplate._build_vocabulary in the pinned stable ESPnet release.
     """
+    from transformers import AutoConfig
+
     from espnet2.speechlm.model.speechlm.lm.parallel import (
         build_parallel_hf_class,
         configure_moe_model,
@@ -417,7 +505,6 @@ def _build_current_native_model(recipe, options):
         DiscreteAudioIO,
     )
     from espnet2.speechlm.model.speechlm.multimodal_io.text import HuggingFaceTextIO
-    from transformers import AutoConfig
 
     choices = {
         "text": HuggingFaceTextIO,
@@ -426,28 +513,45 @@ def _build_current_native_model(recipe, options):
     }
     io = {}
     for name, kwargs in recipe["multimodal_io"].items():
-        if name == "discrete_audio" and kwargs.get("codec_choice") == "Xcodec" and kwargs.get("ssl_choice") is None:
+        if (
+            name == "discrete_audio"
+            and kwargs.get("codec_choice") == "Xcodec"
+            and kwargs.get("ssl_choice") is None
+        ):
             # Native checkpoints contain the entire codec, including its
             # semantic/acoustic submodels. Rebuild from geometry so the
             # existing strict loader supplies the final weights once.
             from transformers import XcodecModel
 
             tag = options.get("codec_config_path", kwargs["codec_hf_model_tag"])
-            geometry = AutoConfig.from_pretrained(tag, revision=options.get("codec_config_revision"))
+            geometry = AutoConfig.from_pretrained(
+                tag, revision=options.get("codec_config_revision")
+            )
             handler = DiscreteAudioIO.__new__(DiscreteAudioIO)
             nn.Module.__init__(handler)
             handler.modality, handler.is_discrete = "audio", True
             handler.codec_choice = "Xcodec"
             handler.codec_hf_model_tag = kwargs["codec_hf_model_tag"]
-            handler.codec_max_token_per_frame = kwargs.get("codec_max_token_per_frame", 8)
+            handler.codec_max_token_per_frame = kwargs.get(
+                "codec_max_token_per_frame", 8
+            )
             handler.codec_model = XcodecModel(geometry)
-            handler.codec_n_streams = min(geometry.num_quantizers, handler.codec_max_token_per_frame)
-            handler.codec_vocab_size = [geometry.codebook_size] * handler.codec_n_streams
-            handler.codec_sample_rate, handler.codec_frame_shift = geometry.sample_rate, geometry.hop_length
+            handler.codec_n_streams = min(
+                geometry.num_quantizers, handler.codec_max_token_per_frame
+            )
+            handler.codec_vocab_size = [
+                geometry.codebook_size
+            ] * handler.codec_n_streams
+            handler.codec_sample_rate, handler.codec_frame_shift = (
+                geometry.sample_rate,
+                geometry.hop_length,
+            )
             handler.codec_frame_per_second = geometry.frame_rate
             handler.codec_bandwidth = min(
                 geometry.target_bandwidths,
-                key=lambda item: abs(item - handler.codec_n_streams * geometry.frame_rate * 10 / 1000),
+                key=lambda item: abs(
+                    item - handler.codec_n_streams * geometry.frame_rate * 10 / 1000
+                ),
             )
             handler.use_codec, handler.use_ssl = True, False
             handler.ssl_choice = handler.ssl_hf_model_tag = None
@@ -457,7 +561,10 @@ def _build_current_native_model(recipe, options):
             handler._init_ssl(None, None)
             handler._init_sanity_check()
             io[name] = handler
-        elif name == "continuous_audio" and kwargs.get("encoder_hf_model_tag") == "Qwen/Qwen3-Omni-30B-A3B-Instruct":
+        elif (
+            name == "continuous_audio"
+            and kwargs.get("encoder_hf_model_tag") == "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+        ):
             # Every audio-tower parameter is supplied by the native checkpoint.
             # Construct only that exact tower, preserving the original module
             # names and get_audio_features implementation; no 30B LM download.
@@ -501,7 +608,9 @@ def _build_current_native_model(recipe, options):
             nn.Module.__init__(holder)
             holder.audio_tower = Qwen3OmniMoeAudioEncoder(geometry)
             handler.model = holder
-            processor_source = options.get("audio_processor_path", handler.encoder_hf_model_tag)
+            processor_source = options.get(
+                "audio_processor_path", handler.encoder_hf_model_tag
+            )
             handler.processor = AutoFeatureExtractor.from_pretrained(
                 processor_source, revision=options.get("audio_processor_revision")
             )
@@ -537,23 +646,32 @@ def _build_current_native_model(recipe, options):
             mm_start = start if mm_start is None else min(mm_start, start)
             mm_end = len(vocab) if mm_end is None else max(mm_end, len(vocab))
         intervals[name] = []
-        for (lo, hi), weight in zip(handler.get_stream_interval(), handler.get_stream_weight(), strict=True):
+        for (lo, hi), weight in zip(
+            handler.get_stream_interval(), handler.get_stream_weight(), strict=True
+        ):
             intervals[name].append((start + lo, start + hi))
             weights.append(torch.ones(hi - lo) * weight)
         num_stream = max(num_stream, handler.num_stream())
     # Apply the current recipe's recorded-layout check without constructing
     # its supervised trainer or loading the model a second time.
     from types import SimpleNamespace
+
     from espnet2.speechlm.model.speechlm.speechlm_job import SpeechLMJobTemplate
 
-    SpeechLMJobTemplate._check_recorded_layout(SimpleNamespace(config=recipe), intervals)
+    SpeechLMJobTemplate._check_recorded_layout(
+        SimpleNamespace(config=recipe), intervals
+    )
     model_config = recipe["model"]
     if model_config.get("model_choice") != "parallel":
-        raise ValueError("Initial native backend requires a complete parallel model, not a pruned PP stage")
+        raise ValueError(
+            "Initial native backend requires a complete parallel model, not a pruned PP stage"
+        )
     tag = model_config["model_hf_tag"]
     geometry = AutoConfig.from_pretrained(tag)
     geometry.vocab_size = len(vocab)
-    geometry.tie_word_embeddings = model_config.get("model_conf", {}).get("tie_word_embeddings", False)
+    geometry.tie_word_embeddings = model_config.get("model_conf", {}).get(
+        "tie_word_embeddings", False
+    )
     geometry._attn_implementation = options.get(
         "native_attention",
         model_config.get("model_conf", {}).get("attn_implementation", "sdpa"),
@@ -602,11 +720,23 @@ def factory(config, device):
         raise ValueError("Bagpiper adapter requires its current native SpeechLM recipe")
     if config.adapter_options.get("reference_assets"):
         import json
-        exported=json.loads((Path(config.adapter_options["reference_assets"])/"config.json").read_text())
-        geometry=_bagpiper_geometry(model)
-        for field in ("text_token_offset","text_token_end","codec_base_offset","codec_layer_size"):
+
+        exported = json.loads(
+            (
+                Path(config.adapter_options["reference_assets"]) / "config.json"
+            ).read_text()
+        )
+        geometry = _bagpiper_geometry(model)
+        for field in (
+            "text_token_offset",
+            "text_token_end",
+            "codec_base_offset",
+            "codec_layer_size",
+        ):
             if geometry[field] != exported[field]:
-                raise ValueError(f"Native recipe modality order differs from frozen token assets: {field} {geometry[field]} != {exported[field]}; preserve original YAML mapping order")
+                raise ValueError(
+                    f"Native recipe modality order differs from frozen token assets: {field} {geometry[field]} != {exported[field]}; preserve original YAML mapping order"
+                )
     model = model.to(device=device, dtype=getattr(torch, config.dtype)).eval()
     if recipe.get("model", {}).get("activation_checkpointing", False):
         model.model.gradient_checkpointing_enable()
@@ -614,7 +744,11 @@ def factory(config, device):
         model,
         inference_semantics=config.adapter_options.get("inference_semantics", "native"),
         legacy_codec_pad_embeddings=False,
-        bagpiper_config=_bagpiper_geometry(model) if getattr(config, "family", None) == "bagpiper" else None,
+        bagpiper_config=(
+            _bagpiper_geometry(model)
+            if getattr(config, "family", None) == "bagpiper"
+            else None
+        ),
     )
 
 
@@ -623,9 +757,18 @@ def _bagpiper_geometry(model):
     core = getattr(model, "corelm", model)
     text = core.vocab_intervals["text"]
     audio = core.vocab_intervals["discrete_audio"]
-    if len(text) != 1 or len(audio) != core.num_stream or len({hi - lo for lo, hi in audio}) != 1:
-        raise ValueError("Bagpiper recipe has incompatible per-stream vocabulary intervals")
-    if any(lo != audio[0][0] + index * (audio[0][1] - audio[0][0]) for index, (lo, _) in enumerate(audio)):
+    if (
+        len(text) != 1
+        or len(audio) != core.num_stream
+        or len({hi - lo for lo, hi in audio}) != 1
+    ):
+        raise ValueError(
+            "Bagpiper recipe has incompatible per-stream vocabulary intervals"
+        )
+    if any(
+        lo != audio[0][0] + index * (audio[0][1] - audio[0][0])
+        for index, (lo, _) in enumerate(audio)
+    ):
         raise ValueError("Bagpiper codec stream intervals must be contiguous")
     return {
         "text_token_offset": text[0][0],

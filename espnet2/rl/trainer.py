@@ -24,15 +24,17 @@ import torch
 import torch.distributed as distributed
 from torch.nn.parallel import DistributedDataParallel
 
-from .miles_library import (
-    agg_loss, compute_grpo_outcome_advantage, compute_policy_loss_vanilla,
-    kl_penalty, verify_miles,
-)
-from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
-
 from .data import collate_rollouts, read_manifest
+from .miles_library import (
+    agg_loss,
+    compute_grpo_outcome_advantage,
+    compute_policy_loss_vanilla,
+    kl_penalty,
+    verify_miles,
+)
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
+from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
 
 def clone_reference(policy, device=None):
@@ -77,12 +79,18 @@ class NativeGRPOTrainer:
         config.validate()
         self.config = config
         self.rank = distributed.get_rank() if distributed.is_initialized() else 0
-        self.world_size = distributed.get_world_size() if distributed.is_initialized() else 1
+        self.world_size = (
+            distributed.get_world_size() if distributed.is_initialized() else 1
+        )
         if config.optimizer_device is not None and self.world_size > 1:
-            raise ValueError("CPU optimizer offload currently requires a single native actor rank")
+            raise ValueError(
+                "CPU optimizer offload currently requires a single native actor rank"
+            )
         self.policy = policy.eval()
         self.reference = (
-            reference if reference is not None else clone_reference(policy, config.reference_device)
+            reference
+            if reference is not None
+            else clone_reference(policy, config.reference_device)
         ).eval()
         if config.reference_device is not None:
             self.reference = self.reference.to(config.reference_device)
@@ -90,7 +98,9 @@ class NativeGRPOTrainer:
         self.device = next(policy.parameters()).device
         if self.world_size > 1:
             device_ids = [self.device.index] if self.device.type != "cpu" else None
-            self.actor = DistributedDataParallel(policy, device_ids=device_ids, find_unused_parameters=True)
+            self.actor = DistributedDataParallel(
+                policy, device_ids=device_ids, find_unused_parameters=True
+            )
         else:
             self.actor = policy
         self.optimizer = torch.optim.AdamW(
@@ -100,8 +110,10 @@ class NativeGRPOTrainer:
         )
         self.rollout = rollout
         from types import SimpleNamespace
+
         self.actor_config = SimpleNamespace(
-            clip_ratio_low=config.clip_ratio, clip_ratio_high=config.clip_ratio,
+            clip_ratio_low=config.clip_ratio,
+            clip_ratio_high=config.clip_ratio,
             global_batch_info={},
         )
 
@@ -109,7 +121,9 @@ class NativeGRPOTrainer:
         results = []
         scoring_device = next(policy.parameters()).device
         for start in range(0, len(batch), self.config.micro_batch_size):
-            subset = batch.select_idxs(np.arange(start, min(len(batch), start + self.config.micro_batch_size)))
+            subset = batch.select_idxs(
+                np.arange(start, min(len(batch), start + self.config.micro_batch_size))
+            )
             subset.to(scoring_device)
             results.append(policy(subset).log_probs.detach().cpu())
         return torch.cat(results)
@@ -120,7 +134,9 @@ class NativeGRPOTrainer:
             reference = self._score_chunks(self.reference, batch)
         mask = batch.batch["response_mask"]
         if old.shape != mask.shape or reference.shape != mask.shape:
-            raise ValueError("The ESPnet scorer must return exactly one probability per action")
+            raise ValueError(
+                "The ESPnet scorer must return exactly one probability per action"
+            )
         drift = ((old - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
         if not np.isfinite(drift) or drift > self.config.score_tolerance:
             raise RuntimeError(
@@ -158,7 +174,11 @@ class NativeGRPOTrainer:
         local = batch.select_idxs(indices)
         denominator = int(batch.batch["response_mask"].sum())
         self.actor_config.global_batch_info.update(
-            {"dp_size": self.world_size, "batch_num_tokens": denominator, "global_batch_size": len(batch)}
+            {
+                "dp_size": self.world_size,
+                "batch_num_tokens": denominator,
+                "global_batch_size": len(batch),
+            }
         )
         if denominator == 0:
             raise ValueError("No valid sampled actions")
@@ -166,7 +186,11 @@ class NativeGRPOTrainer:
         for _ in range(self.config.ppo_epochs):
             self.optimizer.zero_grad(set_to_none=True)
             for start in range(0, len(local), self.config.micro_batch_size):
-                part = local.select_idxs(np.arange(start, min(len(local), start + self.config.micro_batch_size)))
+                part = local.select_idxs(
+                    np.arange(
+                        start, min(len(local), start + self.config.micro_batch_size)
+                    )
+                )
                 part.to(self.device)
                 current = self.actor(part)
                 mask = part.batch["response_mask"]
@@ -179,26 +203,41 @@ class NativeGRPOTrainer:
                     config=self.actor_config,
                 )
                 kl = agg_loss(
-                    kl_penalty(current.log_probs, part.batch["ref_log_probs"], self.config.kl_type),
+                    kl_penalty(
+                        current.log_probs,
+                        part.batch["ref_log_probs"],
+                        self.config.kl_type,
+                    ),
                     mask,
                     self.config.loss_agg_mode,
                     **self.actor_config.global_batch_info,
                 )
                 entropy = agg_loss(
-                    current.entropy, mask, self.config.loss_agg_mode, **self.actor_config.global_batch_info
+                    current.entropy,
+                    mask,
+                    self.config.loss_agg_mode,
+                    **self.actor_config.global_batch_info,
                 )
-                total = loss + self.config.kl_coef * kl - self.config.entropy_coef * entropy
+                total = (
+                    loss + self.config.kl_coef * kl - self.config.entropy_coef * entropy
+                )
                 if not torch.isfinite(total):
                     raise FloatingPointError("Nonfinite policy loss")
                 total.backward()
                 metrics["actor/loss"] += total.detach().item() / self.config.ppo_epochs
                 metrics["actor/kl_loss"] += kl.detach().item() / self.config.ppo_epochs
-                metrics["actor/entropy"] += entropy.detach().item() / self.config.ppo_epochs
+                metrics["actor/entropy"] += (
+                    entropy.detach().item() / self.config.ppo_epochs
+                )
                 metrics.update(ppo_metrics)
-            norm = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.max_grad_norm)
+            norm = torch.nn.utils.clip_grad_norm_(
+                self.policy.parameters(), self.config.max_grad_norm
+            )
             if not torch.isfinite(norm):
                 self.optimizer.zero_grad(set_to_none=True)
-                raise FloatingPointError("Nonfinite gradient norm; optimizer was not stepped")
+                raise FloatingPointError(
+                    "Nonfinite gradient norm; optimizer was not stepped"
+                )
             self._optimizer_step()
             metrics["actor/grad_norm"] = norm.item()
         if self.world_size > 1:
@@ -220,7 +259,11 @@ class NativeGRPOTrainer:
         if self.config.optimizer_device is None:
             self.optimizer.step()
             return
-        parameters = [parameter for group in self.optimizer.param_groups for parameter in group["params"]]
+        parameters = [
+            parameter
+            for group in self.optimizer.param_groups
+            for parameter in group["params"]
+        ]
         devices = [parameter.device for parameter in parameters]
         try:
             for parameter in parameters:
@@ -243,12 +286,16 @@ class NativeGRPOTrainer:
             if self.rank == 0:
                 try:
                     chosen = [
-                        sources[(step * self.config.prompts_per_step + i) % len(sources)]
+                        sources[
+                            (step * self.config.prompts_per_step + i) % len(sources)
+                        ]
                         for i in range(self.config.prompts_per_step)
                     ]
                     self.rollout.sync_weights(self.policy, step)
                     generations = self.rollout.generate(chosen, step)
-                    batch = collate_rollouts(chosen, generations, self.config.group_size)
+                    batch = collate_rollouts(
+                        chosen, generations, self.config.group_size
+                    )
                     metrics = self.prepare_batch(batch)
                     batch.save_to_disk(output / f"rollout-{step:06d}.pkl")
                     payload = [batch, metrics, None]
@@ -260,7 +307,9 @@ class NativeGRPOTrainer:
                 distributed.broadcast_object_list(payload, src=0)
             batch, metrics, error = payload
             if error:
-                raise RuntimeError(f"Rollout/score stage failed at step {step}: {error}")
+                raise RuntimeError(
+                    f"Rollout/score stage failed at step {step}: {error}"
+                )
             metrics.update(self.update_actor(batch))
             status = [None]
             if self.rank == 0:
@@ -270,14 +319,20 @@ class NativeGRPOTrainer:
                         stream.write(json.dumps(metrics) + "\n")
                     print(json.dumps(metrics), flush=True)
                     save_checkpoint(
-                        output / f"step-{step + 1:06d}.pt", self.policy, self.optimizer, step + 1, self.config
+                        output / f"step-{step + 1:06d}.pt",
+                        self.policy,
+                        self.optimizer,
+                        step + 1,
+                        self.config,
                     )
                 except Exception as error:
                     status[0] = f"{type(error).__name__}: {error}"
             if self.world_size > 1:
                 distributed.broadcast_object_list(status, src=0)
             if status[0]:
-                raise RuntimeError(f"Checkpoint stage failed at step {step + 1}: {status[0]}")
+                raise RuntimeError(
+                    f"Checkpoint stage failed at step {step + 1}: {status[0]}"
+                )
 
 
 def run(config):
@@ -295,7 +350,9 @@ def run(config):
     random.seed(config.seed)
     if int(os.getenv("WORLD_SIZE", "1")) > 1:
         device_type = torch.device(config.device).type
-        distributed.init_process_group(get_nccl_backend() if device_type != "cpu" else "gloo")
+        distributed.init_process_group(
+            get_nccl_backend() if device_type != "cpu" else "gloo"
+        )
         if device_type != "cpu":
             get_torch_device().set_device(int(os.environ["LOCAL_RANK"]))
             config.device = f"{device_type}:{os.environ['LOCAL_RANK']}"
@@ -306,9 +363,13 @@ def run(config):
         output.mkdir(parents=True, exist_ok=True)
         frozen = output / "frozen_config.json"
         if frozen.exists():
-            raise FileExistsError(f"Use a fresh output_dir; refusing to change frozen config {frozen}")
+            raise FileExistsError(
+                f"Use a fresh output_dir; refusing to change frozen config {frozen}"
+            )
         frozen.write_text(json.dumps(config.to_dict(), indent=2) + "\n")
-        (output / "miles_library.json").write_text(json.dumps(miles_evidence, indent=2) + "\n")
+        (output / "miles_library.json").write_text(
+            json.dumps(miles_evidence, indent=2) + "\n"
+        )
     if distributed.is_initialized():
         distributed.barrier()
     sources = read_manifest(config.manifest)

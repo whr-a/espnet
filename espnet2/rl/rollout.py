@@ -48,11 +48,17 @@ class CheckpointRollout:
         directory = self.directory / f"policy-{step:06d}"
         staging = self.directory / f".policy-{step:06d}.tmp"
         if directory.exists() or staging.exists():
-            raise FileExistsError(f"Refusing to overwrite a frozen policy export: {directory}")
+            raise FileExistsError(
+                f"Refusing to overwrite a frozen policy export: {directory}"
+            )
         staging.mkdir()
         native = staging / "native.pt"
         torch.save(
-            {key: value.detach().cpu().contiguous() for key, value in policy.checkpoint_state_dict().items()}, native
+            {
+                key: value.detach().cpu().contiguous()
+                for key, value in policy.checkpoint_state_dict().items()
+            },
+            native,
         )
         args = [
             self.config.rollout_python,
@@ -67,11 +73,19 @@ class CheckpointRollout:
         ]
         environment = self._environment()
         with (staging / "export.log").open("w") as stream:
-            subprocess.run(args, env=environment, stdout=stream, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(
+                args,
+                env=environment,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
         metadata = {"step": step, "native_sha256": sha256(native), "hf_files": {}}
         for path in sorted((staging / "hf").rglob("*")):
             if path.is_file():
-                metadata["hf_files"][str(path.relative_to(staging / "hf"))] = sha256(path)
+                metadata["hf_files"][str(path.relative_to(staging / "hf"))] = sha256(
+                    path
+                )
         if not metadata["hf_files"]:
             raise RuntimeError("The ESPnet exporter produced no model files")
         (staging / "sync.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -88,7 +102,9 @@ class CheckpointRollout:
             paths.insert(0, str(Path(self.config.vllm_source).resolve()))
         if self.config.miles_source:
             paths.append(str(Path(self.config.miles_source).resolve()))
-        environment["PYTHONPATH"] = os.pathsep.join(paths + [environment.get("PYTHONPATH", "")])
+        environment["PYTHONPATH"] = os.pathsep.join(
+            paths + [environment.get("PYTHONPATH", "")]
+        )
         environment["CUDA_VISIBLE_DEVICES"] = self.config.rollout_gpus
         if self.config.rollout_backend == "vllm":
             environment["VLLM_USE_V2_MODEL_RUNNER"] = "0"
@@ -98,7 +114,14 @@ class CheckpointRollout:
             environment["NVIDIA_TF32_OVERRIDE"] = "0"
             environment["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
         # A subprocess is an independent GPU consumer, never a torchrun rank.
-        for name in ("RANK", "LOCAL_RANK", "WORLD_SIZE", "LOCAL_WORLD_SIZE", "MASTER_ADDR", "MASTER_PORT"):
+        for name in (
+            "RANK",
+            "LOCAL_RANK",
+            "WORLD_SIZE",
+            "LOCAL_WORLD_SIZE",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+        ):
             environment.pop(name, None)
         return environment
 
@@ -124,10 +147,20 @@ class CheckpointRollout:
             str(step),
         ]
         with (self.version / "generation.log").open("w") as stream:
-            subprocess.run(args, env=self._environment(), stdout=stream, stderr=subprocess.STDOUT, check=True)
+            subprocess.run(
+                args,
+                env=self._environment(),
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
         result = json.loads(responses.read_text())
-        if result["policy_step"] != step or result["native_sha256"] != sha256(self.version / "native.pt"):
-            raise RuntimeError("Rollout consumed a stale or different policy checkpoint")
+        if result["policy_step"] != step or result["native_sha256"] != sha256(
+            self.version / "native.pt"
+        ):
+            raise RuntimeError(
+                "Rollout consumed a stale or different policy checkpoint"
+            )
         return result["generations"]
 
 

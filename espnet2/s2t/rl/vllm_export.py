@@ -11,7 +11,6 @@ from pathlib import Path
 import torch
 import yaml
 from safetensors.torch import save_file
-
 from vllm.transformers_utils.configs.owsm import OWSMConfig
 
 

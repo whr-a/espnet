@@ -29,13 +29,18 @@ def test_native_alignment_uses_last_prompt_position():
     model.eos = 0
     policy = OWSMPolicy(model)
     batch = SimpleNamespace(
-        batch={"responses": torch.tensor([[3, 2]]),
-               "response_mask": torch.ones(1, 2), "response_lengths": torch.tensor([2])},
-        non_tensor_batch={"source": [{"encoder_features": np.zeros((2, 1))}],
-                          "prompt_token_ids": [[1, 3]]},
+        batch={
+            "responses": torch.tensor([[3, 2]]),
+            "response_mask": torch.ones(1, 2),
+            "response_lengths": torch.tensor([2]),
+        },
+        non_tensor_batch={
+            "source": [{"encoder_features": np.zeros((2, 1))}],
+            "prompt_token_ids": [[1, 3]],
+        },
     )
     scores = policy(batch)
-    expected = torch.log_softmax(-torch.abs(torch.arange(7).float()-3), 0)
+    expected = torch.log_softmax(-torch.abs(torch.arange(7).float() - 3), 0)
     assert scores.log_probs[0, 0].item() == pytest.approx(expected[3].item())
     assert scores.log_probs[0, 1].item() == pytest.approx(expected[2].item())
 

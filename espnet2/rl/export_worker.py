@@ -18,8 +18,8 @@ import importlib.util
 import json
 from pathlib import Path
 
-from .utils import resolve_callable
 from .config import ESPnetRLConfig
+from .utils import resolve_callable
 
 
 def main():

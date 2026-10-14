@@ -21,7 +21,6 @@ from pathlib import Path
 import torch
 
 from .batch import RolloutBatch
-
 from .utils import object_array
 
 
@@ -36,7 +35,9 @@ def read_manifest(path):
                 raise ValueError(f"Manifest line {line_number} requires a unique id")
             if "audio" in record:
                 audio = Path(record["audio"])
-                record["audio"] = str(audio if audio.is_absolute() else Path(path).parent / audio)
+                record["audio"] = str(
+                    audio if audio.is_absolute() else Path(path).parent / audio
+                )
             records.append(record)
     if not records or len({r["id"] for r in records}) != len(records):
         raise ValueError("The manifest must be nonempty and contain unique ids")
@@ -49,7 +50,15 @@ def collate_rollouts(sources, generations, group_size):
         raise ValueError("Incomplete rollout groups")
     repeated_sources = []
     raw_generations = []
-    prefixes, actions, action_masks, log_probs, ids, texts, stream_masks = [], [], [], [], [], [], []
+    prefixes, actions, action_masks, log_probs, ids, texts, stream_masks = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
     for index, generation in enumerate(generations):
         source = sources[index // group_size]
         if generation["source_id"] != source["id"]:
@@ -58,9 +67,16 @@ def collate_rollouts(sources, generations, group_size):
         probability = torch.as_tensor(generation["log_probs"], dtype=torch.float32)
         if action.ndim not in (1, 2) or not len(action):
             raise ValueError("Empty or malformed rollout actions")
-        if probability.shape != action.shape[:1] or not torch.isfinite(probability).all():
-            raise ValueError("Every sampled action needs a finite behavior log probability")
-        action_mask = torch.as_tensor(generation.get("action_mask", [1] * len(action)), dtype=torch.float32)
+        if (
+            probability.shape != action.shape[:1]
+            or not torch.isfinite(probability).all()
+        ):
+            raise ValueError(
+                "Every sampled action needs a finite behavior log probability"
+            )
+        action_mask = torch.as_tensor(
+            generation.get("action_mask", [1] * len(action)), dtype=torch.float32
+        )
         if action_mask.shape != probability.shape or not action_mask.sum():
             raise ValueError("Every rollout requires at least one active action")
         actions.append(action)
@@ -70,11 +86,21 @@ def collate_rollouts(sources, generations, group_size):
         prepared = generation.get("prepared_native_source")
         if prepared is not None:
             if prepared.get("source_id") != source["id"]:
-                raise ValueError("Prepared native source identity differs from the original manifest")
+                raise ValueError(
+                    "Prepared native source identity differs from the original manifest"
+                )
             payload = prepared["data"]
-            allowed = {"native_model_inputs", "prompt_codec_mask", "sampling_extra_args", "mode", "native_preparation"}
+            allowed = {
+                "native_model_inputs",
+                "prompt_codec_mask",
+                "sampling_extra_args",
+                "mode",
+                "native_preparation",
+            }
             if set(payload) - allowed:
-                raise ValueError("Inference preparation attempted to replace source identity or supervision")
+                raise ValueError(
+                    "Inference preparation attempted to replace source identity or supervision"
+                )
             encoded = json.dumps(
                 {"source_id": prepared["source_id"], "data": payload},
                 sort_keys=True,
@@ -82,7 +108,9 @@ def collate_rollouts(sources, generations, group_size):
                 allow_nan=False,
             ).encode()
             if hashlib.sha256(encoded).hexdigest() != prepared["sha256"]:
-                raise ValueError("Prepared native source hash differs from rollout evidence")
+                raise ValueError(
+                    "Prepared native source hash differs from rollout evidence"
+                )
             sample_source.update(copy.deepcopy(payload))
         if "sampling_contracts" in generation:
             sample_source["sampling_contracts"] = generation["sampling_contracts"]
@@ -91,20 +119,35 @@ def collate_rollouts(sources, generations, group_size):
         repeated_sources.append(sample_source)
         raw_generations.append(copy.deepcopy(generation))
         if action.ndim == 2:
-            stream_mask = torch.as_tensor(generation.get("stream_mask"), dtype=torch.float32)
+            stream_mask = torch.as_tensor(
+                generation.get("stream_mask"), dtype=torch.float32
+            )
             if stream_mask.shape != action.shape:
-                raise ValueError("Multistream rollout requires the true per-stream sampling mask")
+                raise ValueError(
+                    "Multistream rollout requires the true per-stream sampling mask"
+                )
             stream_masks.append(stream_mask)
         prefixes.append(generation["prompt_token_ids"])
         ids.append(source["id"])
         texts.append(generation.get("text", ""))
     rank = actions[0].ndim
-    if any(action.ndim != rank or action.shape[1:] != actions[0].shape[1:] for action in actions):
-        raise ValueError("One batch cannot mix scalar tokens and different codebook counts")
+    if any(
+        action.ndim != rank or action.shape[1:] != actions[0].shape[1:]
+        for action in actions
+    ):
+        raise ValueError(
+            "One batch cannot mix scalar tokens and different codebook counts"
+        )
     width = max(map(len, actions))
-    response = torch.zeros((len(actions), width, *actions[0].shape[1:]), dtype=torch.long)
-    mask, behavior = torch.zeros((len(actions), width)), torch.zeros((len(actions), width))
-    for row, (action, active, probability) in enumerate(zip(actions, action_masks, log_probs, strict=True)):
+    response = torch.zeros(
+        (len(actions), width, *actions[0].shape[1:]), dtype=torch.long
+    )
+    mask, behavior = torch.zeros((len(actions), width)), torch.zeros(
+        (len(actions), width)
+    )
+    for row, (action, active, probability) in enumerate(
+        zip(actions, action_masks, log_probs, strict=True)
+    ):
         response[row, : len(action)] = action
         mask[row, : len(action)] = active
         behavior[row, : len(action)] = probability

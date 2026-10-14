@@ -26,7 +26,9 @@ def edit_distance(reference, hypothesis):
     for i, expected in enumerate(reference, 1):
         updated = [i]
         for j, actual in enumerate(hypothesis, 1):
-            updated.append(min(updated[-1] + 1, row[j] + 1, row[j - 1] + (expected != actual)))
+            updated.append(
+                min(updated[-1] + 1, row[j] + 1, row[j - 1] + (expected != actual))
+            )
         row = updated
     return row[-1]
 
@@ -55,7 +57,12 @@ def outcome_rewards(batch, function=None):
         batch.non_tensor_batch["generation"],
         strict=True,
     ):
-        value = float(callback(source, {**raw, "text": text, "token_ids": tokens[: int(length)].tolist()}))
+        value = float(
+            callback(
+                source,
+                {**raw, "text": text, "token_ids": tokens[: int(length)].tolist()},
+            )
+        )
         if not math.isfinite(value):
             raise ValueError(f"Nonfinite reward for {source['id']}")
         values.append(value)
@@ -64,6 +71,8 @@ def outcome_rewards(batch, function=None):
     # An action mask may contain forced codec-delay frames: reward is assigned
     # to the last active action, rather than to a masked padding frame.
     positions = torch.arange(token_rewards.size(1)).expand_as(token_rewards)
-    last_active = positions.masked_fill(batch.batch["response_mask"] == 0, -1).max(-1).values
+    last_active = (
+        positions.masked_fill(batch.batch["response_mask"] == 0, -1).max(-1).values
+    )
     token_rewards[torch.arange(len(batch)), last_active] = scalar
     return scalar, token_rewards

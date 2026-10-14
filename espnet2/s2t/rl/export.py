@@ -16,10 +16,15 @@ def export_owsm(config, checkpoint, output):
     if getattr(config, "rollout_backend", "sglang") == "vllm":
         from espnet2.s2t.rl.vllm_export import export_owsm as export_vllm
 
-        return export_vllm(config.train_config, checkpoint, output, model_version=config.model_version)
+        return export_vllm(
+            config.train_config, checkpoint, output, model_version=config.model_version
+        )
     source_config = Path(config.train_config)
     native = yaml.safe_load(source_config.read_text())
-    if native.get("model", "espnet") != "espnet" or native.get("decoder", "transformer") != "transformer":
+    if (
+        native.get("model", "espnet") != "espnet"
+        or native.get("decoder", "transformer") != "transformer"
+    ):
         raise ValueError("This RL adapter supports autoregressive OWSM, not OWSM-CTC")
     target = Path(output)
     if target.exists() and any(target.iterdir()):
@@ -50,7 +55,10 @@ def export_owsm(config, checkpoint, output):
     for wrapper in ("module", "state_dict", "model"):
         if wrapper in state and isinstance(state[wrapper], dict):
             state = state[wrapper]
-    state = {key.removeprefix("module."): tensor.detach().cpu().contiguous() for key, tensor in state.items()}
+    state = {
+        key.removeprefix("module."): tensor.detach().cpu().contiguous()
+        for key, tensor in state.items()
+    }
     hidden = int(native["encoder_conf"]["output_size"])
     decoder = native.get("decoder_conf", {})
     if tuple(state["decoder.output_layer.weight"].shape) != (len(tokens), hidden):
@@ -67,28 +75,42 @@ def export_owsm(config, checkpoint, output):
         "num_attention_heads": int(decoder.get("attention_heads", 4)),
         "num_key_value_heads": int(decoder.get("attention_heads", 4)),
         "max_position_embeddings": 2048,
-        "bos_token_id": tokens.index(native.get("model_conf", {}).get("sym_sos", "<sos>")),
-        "eos_token_id": tokens.index(native.get("model_conf", {}).get("sym_eos", "<eos>")),
+        "bos_token_id": tokens.index(
+            native.get("model_conf", {}).get("sym_sos", "<sos>")
+        ),
+        "eos_token_id": tokens.index(
+            native.get("model_conf", {}).get("sym_eos", "<eos>")
+        ),
         "pad_token_id": tokens.index("<blank>"),
         "tie_word_embeddings": False,
         "torch_dtype": config.dtype,
         "espnet_config": native,
         "espnet_model_version": config.model_version,
         "espnet_rollout_contract": "source-index-carrier/native-full-prefix/v1",
-        "native_checkpoint_sha256": hashlib.file_digest(Path(checkpoint).open("rb"), "sha256").hexdigest(),
+        "native_checkpoint_sha256": hashlib.file_digest(
+            Path(checkpoint).open("rb"), "sha256"
+        ).hexdigest(),
     }
     (target / "config.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (target / "espnet_config.yaml").write_text(yaml.safe_dump(native, sort_keys=False))
     (target / "tokens.txt").write_text("\n".join(tokens) + "\n")
     save_file(state, target / "model.safetensors", metadata={"format": "pt"})
-    (target / "export_manifest.json").write_text(json.dumps({
-        "source_config": str(source_config.resolve()),
-        "source_config_sha256": hashlib.sha256(source_config.read_bytes()).hexdigest(),
-        "source_checkpoint": str(Path(checkpoint).resolve()),
-        "source_checkpoint_sha256": metadata["native_checkpoint_sha256"],
-        "native_weights": len(state),
-        "vocab_size": len(tokens),
-        "backend": "sglang",
-        "contract": metadata["espnet_rollout_contract"],
-    }, indent=2) + "\n")
+    (target / "export_manifest.json").write_text(
+        json.dumps(
+            {
+                "source_config": str(source_config.resolve()),
+                "source_config_sha256": hashlib.sha256(
+                    source_config.read_bytes()
+                ).hexdigest(),
+                "source_checkpoint": str(Path(checkpoint).resolve()),
+                "source_checkpoint_sha256": metadata["native_checkpoint_sha256"],
+                "native_weights": len(state),
+                "vocab_size": len(tokens),
+                "backend": "sglang",
+                "contract": metadata["espnet_rollout_contract"],
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     return target

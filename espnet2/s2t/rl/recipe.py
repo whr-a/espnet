@@ -3,6 +3,7 @@
 import argparse
 import json
 from pathlib import Path
+
 import yaml
 
 
@@ -30,15 +31,20 @@ def main():
     manifest = work / "train.jsonl"
     prepare_kaldi_manifest(args.wav_scp, args.text, manifest, task="asr_wer")
     config = yaml.safe_load(Path(args.config).read_text())
-    config.update(train_config=str(Path(args.train_config).resolve()),
-                  checkpoint=str(Path(args.checkpoint).resolve()),
-                  manifest=str(manifest), output_dir=str(work / "train"),
-                  steps=args.steps, device=args.device,
-                  reference_device=args.reference_device,
-                  rollout_gpus=args.rollout_gpus,
-                  rollout_python=args.rollout_python,
-                  sglang_source=args.sglang_source, miles_source=args.miles_source,
-                  language=args.language)
+    config.update(
+        train_config=str(Path(args.train_config).resolve()),
+        checkpoint=str(Path(args.checkpoint).resolve()),
+        manifest=str(manifest),
+        output_dir=str(work / "train"),
+        steps=args.steps,
+        device=args.device,
+        reference_device=args.reference_device,
+        rollout_gpus=args.rollout_gpus,
+        rollout_python=args.rollout_python,
+        sglang_source=args.sglang_source,
+        miles_source=args.miles_source,
+        language=args.language,
+    )
     path = work / "rl_config.yaml"
     path.write_text(yaml.safe_dump(config, sort_keys=False))
     print(path)

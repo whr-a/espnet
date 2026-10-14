@@ -35,12 +35,25 @@ def _json_features(value):
 
 def prepared_native_metadata(source):
     """Only native conditioning crosses from the inference worker to learner."""
-    fields = ("native_model_inputs", "prompt_codec_mask", "sampling_extra_args", "mode", "native_preparation")
+    fields = (
+        "native_model_inputs",
+        "prompt_codec_mask",
+        "sampling_extra_args",
+        "mode",
+        "native_preparation",
+    )
     metadata = _json_features({name: source[name] for name in fields if name in source})
     encoded = json.dumps(
-        {"source_id": source["id"], "data": metadata}, sort_keys=True, separators=(",", ":"), allow_nan=False
+        {"source_id": source["id"], "data": metadata},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode()
-    return {"source_id": source["id"], "data": metadata, "sha256": hashlib.sha256(encoded).hexdigest()}
+    return {
+        "source_id": source["id"],
+        "data": metadata,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _speechlm_waveform(source, target_rate):
@@ -61,10 +74,14 @@ def _speechlm_waveform(source, target_rate):
     if audio.ndim == 2:
         audio = audio[:, 0]
     if audio.ndim != 1 or not audio.size or rate <= 0 or not np.isfinite(audio).all():
-        raise ValueError("SpeechLM audio requires finite nonempty waveform and positive sample rate")
+        raise ValueError(
+            "SpeechLM audio requires finite nonempty waveform and positive sample rate"
+        )
     original_hash = hashlib.sha256(np.ascontiguousarray(audio).tobytes()).hexdigest()
     if rate != target_rate:
-        audio = torchaudio.functional.resample(torch.from_numpy(audio.copy()), rate, target_rate).numpy()
+        audio = torchaudio.functional.resample(
+            torch.from_numpy(audio.copy()), rate, target_rate
+        ).numpy()
     return np.ascontiguousarray(audio, dtype=np.float32), {
         "original_sample_rate": rate,
         "sample_rate": target_rate,
@@ -83,8 +100,9 @@ def _bagpiper_audio_source(config, metadata, source):
     import numpy as np
     import torch
     import yaml
-    from espnet2.speechlm.model.speechlm.multimodal_io.audio import ContinuousAudioIO
     from transformers import AutoFeatureExtractor
+
+    from espnet2.speechlm.model.speechlm.multimodal_io.audio import ContinuousAudioIO
 
     recipe = yaml.safe_load(Path(config.train_config).read_text())
     io = recipe["multimodal_io"]["continuous_audio"]
@@ -93,16 +111,22 @@ def _bagpiper_audio_source(config, metadata, source):
     revision = options.get("audio_processor_revision")
     processor_source = options.get("audio_processor_path", tag)
     if revision is None and not Path(processor_source).is_dir():
-        raise ValueError("Freeze audio_processor_revision or a local processor path before waveform RL")
+        raise ValueError(
+            "Freeze audio_processor_revision or a local processor path before waveform RL"
+        )
     frontend = AutoFeatureExtractor.from_pretrained(processor_source, revision=revision)
     processor_files = {}
     if Path(processor_source).is_dir():
         processor_files = {
-            str(path.relative_to(processor_source)): hashlib.sha256(path.read_bytes()).hexdigest()
+            str(path.relative_to(processor_source)): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
             for path in sorted(Path(processor_source).rglob("*.json"))
             if path.is_file()
         }
-    waveform, waveform_contract = _speechlm_waveform(source, int(frontend.sampling_rate))
+    waveform, waveform_contract = _speechlm_waveform(
+        source, int(frontend.sampling_rate)
+    )
     # Stable ContinuousAudioIO only needs processor geometry during preprocess.
     # Bypass its full multimodal pretrained constructor; no encoder is loaded.
     handler = ContinuousAudioIO.__new__(ContinuousAudioIO)
@@ -111,11 +135,14 @@ def _bagpiper_audio_source(config, metadata, source):
     handler.sample_rate = frontend.sampling_rate
     handler.hop_length = frontend.hop_length
     handler.encoder_hf_model_tag = tag
-    _, (encoded_length, features), _ = handler.preprocess((waveform[None], int(frontend.sampling_rate)))
+    _, (encoded_length, features), _ = handler.preprocess(
+        (waveform[None], int(frontend.sampling_rate))
+    )
     if not encoded_length or not len(features):
         raise ValueError("SpeechLM waveform has no native encoder frames")
     count = int(metadata["num_stream"])
     from transformers import AutoTokenizer
+
     tok = AutoTokenizer.from_pretrained(options["reference_assets"], use_fast=True)
     question = source.get("prompt", source.get("question", ""))
     text_ids = tok.encode(question, add_special_tokens=False) if question else []
@@ -145,7 +172,9 @@ def _bagpiper_audio_source(config, metadata, source):
     }
     source["multi_modal_data"] = {
         "audio": {
-            "input_audio_features": torch.from_numpy(np.ascontiguousarray(features.T)).float(),
+            "input_audio_features": torch.from_numpy(
+                np.ascontiguousarray(features.T)
+            ).float(),
             "audio_feature_lengths": torch.tensor([len(features)], dtype=torch.long),
             "feature_attention_mask": torch.ones((1, len(features)), dtype=torch.long),
         }
@@ -159,7 +188,9 @@ def _bagpiper_audio_source(config, metadata, source):
         "sample_rate": int(frontend.sampling_rate),
         "processor_files_sha256": processor_files,
         "waveform_sha256": hashlib.sha256(waveform.tobytes()).hexdigest(),
-        "features_sha256": hashlib.sha256(np.ascontiguousarray(features).tobytes()).hexdigest(),
+        "features_sha256": hashlib.sha256(
+            np.ascontiguousarray(features).tobytes()
+        ).hexdigest(),
         "feature_length": len(features),
         "encoder_length": int(encoded_length),
         "conditioning": "native recipe mel; trainable encoder/adaptor; SGLang precomputed feature input",
@@ -168,41 +199,70 @@ def _bagpiper_audio_source(config, metadata, source):
     return source
 
 
-
-
 def exporter(config, native_checkpoint_path, hf_output_dir):
     """Export complete native tensors with the checkpoint-bound token assets."""
     import torch
     from safetensors.torch import save_file
+
     directory = Path(hf_output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     assets = Path(config.adapter_options["reference_assets"])
     for item in assets.iterdir():
         if item.is_file() and item.suffix in (".json", ".txt", ".jinja"):
             import shutil
+
             shutil.copy2(item, directory / item.name)
     metadata = json.loads((assets / "config.json").read_text())
     _native_export_geometry(config, metadata)
     flat = dict(metadata["text_config"])
-    flat.update(model_type="qwen3", architectures=["ESPnetBagpiperForCausalLM"],
-                espnet_bagpiper=metadata, espnet_rl_payload_path=str(directory.parent / "payload.json"),
-                eos_token_id=metadata["eos_token_id"], bos_token_id=metadata["bos_token_id"],
-                pad_token_id=0, tie_word_embeddings=False)
-    (directory / "config.json").write_text(json.dumps(flat, indent=2)+"\n")
+    flat.update(
+        model_type="qwen3",
+        architectures=["ESPnetBagpiperForCausalLM"],
+        espnet_bagpiper=metadata,
+        espnet_rl_payload_path=str(directory.parent / "payload.json"),
+        eos_token_id=metadata["eos_token_id"],
+        bos_token_id=metadata["bos_token_id"],
+        pad_token_id=0,
+        tie_word_embeddings=False,
+    )
+    (directory / "config.json").write_text(json.dumps(flat, indent=2) + "\n")
     state = torch.load(native_checkpoint_path, map_location="cpu", weights_only=True)
     state = state.get("module", state)
     excluded = {"vocab_weight"}
-    weights = {key: value.detach().cpu().contiguous() for key,value in state.items() if key not in excluded}
+    weights = {
+        key: value.detach().cpu().contiguous()
+        for key, value in state.items()
+        if key not in excluded
+    }
     names, shard, count, size = {}, {}, 1, 0
     for key, value in weights.items():
-        if shard and size + value.numel()*value.element_size() > 5*1024**3:
-            filename=f"model-{count:05d}.safetensors"
-            save_file(shard,str(directory/filename)); count+=1; shard={}; size=0
-        shard[key]=value; size+=value.numel()*value.element_size()
-        names[key]=f"model-{count:05d}.safetensors"
-    if shard: save_file(shard,str(directory/f"model-{count:05d}.safetensors"))
-    (directory/"model.safetensors.index.json").write_text(json.dumps({"metadata":{},"weight_map":names},indent=2)+"\n")
-    (directory/"rl_export.json").write_text(json.dumps({"source":str(native_checkpoint_path),"tensor_count":len(weights),"excluded":list(excluded),"mapping":"verbatim native; loader explicitly omits frozen codec","recipe":config.train_config},indent=2)+"\n")
+        if shard and size + value.numel() * value.element_size() > 5 * 1024**3:
+            filename = f"model-{count:05d}.safetensors"
+            save_file(shard, str(directory / filename))
+            count += 1
+            shard = {}
+            size = 0
+        shard[key] = value
+        size += value.numel() * value.element_size()
+        names[key] = f"model-{count:05d}.safetensors"
+    if shard:
+        save_file(shard, str(directory / f"model-{count:05d}.safetensors"))
+    (directory / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": names}, indent=2) + "\n"
+    )
+    (directory / "rl_export.json").write_text(
+        json.dumps(
+            {
+                "source": str(native_checkpoint_path),
+                "tensor_count": len(weights),
+                "excluded": list(excluded),
+                "mapping": "verbatim native; loader explicitly omits frozen codec",
+                "recipe": config.train_config,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def _native_export_geometry(config, metadata):
@@ -220,11 +280,13 @@ def _native_export_geometry(config, metadata):
     if config.family == "bagpiper":
         tag = model["model_hf_tag"]
     else:
-        tag = recipe.get("transformer_conf", {}).get("hf_model_tag") or recipe.get("corelm_conf", {}).get(
-            "hf_model_tag"
-        )
+        tag = recipe.get("transformer_conf", {}).get("hf_model_tag") or recipe.get(
+            "corelm_conf", {}
+        ).get("hf_model_tag")
     if not tag:
-        raise ValueError("SpeechLM export requires the same backbone config as its native recipe")
+        raise ValueError(
+            "SpeechLM export requires the same backbone config as its native recipe"
+        )
     native = AutoConfig.from_pretrained(tag).to_dict()
     fields = (
         "hidden_size",
@@ -256,7 +318,9 @@ def _native_export_geometry(config, metadata):
         or native.get("hidden_act", "silu") != "silu"
         or native.get("attention_bias", False)
     ):
-        raise ValueError("The OpusLM SGLang backbone does not support this native activation/attention/RoPE config")
+        raise ValueError(
+            "The OpusLM SGLang backbone does not support this native activation/attention/RoPE config"
+        )
     target = metadata["text_config"] if config.family == "bagpiper" else metadata
     target.update(values)
     target["tie_word_embeddings"] = (
@@ -269,7 +333,9 @@ def _native_export_geometry(config, metadata):
         metadata["hidden_size"] = target["hidden_size"]
         audio = recipe.get("multimodal_io", {}).get("continuous_audio")
         if audio:
-            tag = config.adapter_options.get("audio_config_path", audio["encoder_hf_model_tag"])
+            tag = config.adapter_options.get(
+                "audio_config_path", audio["encoder_hf_model_tag"]
+            )
             audio_geometry = AutoConfig.from_pretrained(
                 tag, revision=config.adapter_options.get("audio_config_revision")
             ).thinker_config.audio_config.to_dict()
@@ -297,20 +363,44 @@ def _native_export_geometry(config, metadata):
 def request_factory(config, hf_dir, sources):
     """Create exact native multimodal prompts and preserve all codebooks."""
     from transformers import AutoTokenizer
-    metadata=json.loads((Path(hf_dir)/"config.json").read_text())["espnet_bagpiper"]
-    tokenizer=AutoTokenizer.from_pretrained(hf_dir,use_fast=True)
-    count=int(metadata["num_stream"])
-    requests,prefixes=[],[]
+
+    metadata = json.loads((Path(hf_dir) / "config.json").read_text())["espnet_bagpiper"]
+    tokenizer = AutoTokenizer.from_pretrained(hf_dir, use_fast=True)
+    count = int(metadata["num_stream"])
+    requests, prefixes = [], []
     for source in sources:
-        if source.get("task") != "tts_asr_wer" and ("audio" in source or "audio_array" in source) and not source.get("prompt_token_ids"):
-            _bagpiper_audio_source(config,metadata,source)
-        prefix=source.get("prompt_token_ids")
+        if (
+            source.get("task") != "tts_asr_wer"
+            and ("audio" in source or "audio_array" in source)
+            and not source.get("prompt_token_ids")
+        ):
+            _bagpiper_audio_source(config, metadata, source)
+        prefix = source.get("prompt_token_ids")
         if prefix is None:
-            primary=[1,5,7,*tokenizer.encode(source.get("prompt",source.get("reference","")),add_special_tokens=False),2,6]
-            prefix=[[value,*([0]*(count-1))] for value in primary]
-        source["prompt_token_ids"]=prefix
-        source["mode"]="text_audio" if source.get("task")=="tts_asr_wer" else "text_only"
-        source["sampling_extra_args"]={"mode":source["mode"],"phase":"text","cfg":1.0,"text_temperature":1.0,"audio_temperature":1.0,"audio_topk":0}
-        requests.append({"prompt_token_ids":[frame[0] for frame in prefix]})
+            primary = [
+                1,
+                5,
+                7,
+                *tokenizer.encode(
+                    source.get("prompt", source.get("reference", "")),
+                    add_special_tokens=False,
+                ),
+                2,
+                6,
+            ]
+            prefix = [[value, *([0] * (count - 1))] for value in primary]
+        source["prompt_token_ids"] = prefix
+        source["mode"] = (
+            "text_audio" if source.get("task") == "tts_asr_wer" else "text_only"
+        )
+        source["sampling_extra_args"] = {
+            "mode": source["mode"],
+            "phase": "text",
+            "cfg": 1.0,
+            "text_temperature": 1.0,
+            "audio_temperature": 1.0,
+            "audio_topk": 0,
+        }
+        requests.append({"prompt_token_ids": [frame[0] for frame in prefix]})
         prefixes.append(prefix)
-    return requests,prefixes
+    return requests, prefixes

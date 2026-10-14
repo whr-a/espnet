@@ -24,27 +24,34 @@ def test_secondary_audio_condition_and_unsampled_heads_gradient():
     core.lm_head = nn.Linear(2, 4, bias=False)
     core.head_emb = nn.Embedding(12, 2)
     with torch.no_grad():
-        core.emb.weight.copy_(torch.tensor([[9., 9.], [1., 0.], [0., 2.], [.5, -.5]]))
-        core.lm_head.weight.copy_(torch.tensor([[1., 0.], [0., 1.], [1., 1.], [-1., 0.]]))
+        core.emb.weight.copy_(
+            torch.tensor([[9.0, 9.0], [1.0, 0.0], [0.0, 2.0], [0.5, -0.5]])
+        )
+        core.lm_head.weight.copy_(
+            torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [-1.0, 0.0]])
+        )
         core.head_emb.weight.zero_()
-        core.head_emb.weight[0].copy_(torch.tensor([.25, .5]))
+        core.head_emb.weight[0].copy_(torch.tensor([0.25, 0.5]))
     core.decoders = nn.Module()
     core.decoders.model_type = "huggingface"
     core.decoders.model = IdentityDecoder()
     model = nn.Module()
     model.corelm = core
     policy = NativeSpeechLMPolicy(model)
-    contract = [[{"temperature": 1., "top_k": 0, "allowed_ranges": [[1, 4]]}] + [{}] * 8]
+    contract = [
+        [{"temperature": 1.0, "top_k": 0, "allowed_ranges": [[1, 4]]}] + [{}] * 8
+    ]
     source = {"sampling_contracts": contract}
     prefixes = np.empty(1, dtype=object)
     prefixes[0] = [[1, 2] + [0] * 7]
     batch = RolloutBatch(
-        {"responses": torch.tensor([[[2] + [0] * 8]]),
-         "response_mask": torch.ones((1, 1)),
-         "response_stream_mask": torch.tensor([[[True] + [False] * 8]]),
-         "response_lengths": torch.tensor([1])},
-        {"prompt_token_ids": prefixes,
-         "source": np.array([source], dtype=object)},
+        {
+            "responses": torch.tensor([[[2] + [0] * 8]]),
+            "response_mask": torch.ones((1, 1)),
+            "response_stream_mask": torch.tensor([[[True] + [False] * 8]]),
+            "response_lengths": torch.tensor([1]),
+        },
+        {"prompt_token_ids": prefixes, "source": np.array([source], dtype=object)},
     )
     result = policy(batch)
     # All pad embeddings are removed. The secondary input changes the sampled

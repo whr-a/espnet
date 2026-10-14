@@ -38,13 +38,17 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
     audio_dir.mkdir(parents=True, exist_ok=True)
     records = []
     for identity, source in waves.items():
-        target = audio_dir / (hashlib.sha256(identity.encode()).hexdigest()[:20] + ".wav")
+        target = audio_dir / (
+            hashlib.sha256(identity.encode()).hexdigest()[:20] + ".wav"
+        )
         if source.rstrip().endswith("|"):
             # Pipe commands are part of the user's recipe input. Preserve the
             # actual returned payload alongside the normalized waveform.
             import io
 
-            process = subprocess.run(source.rstrip()[:-1], shell=True, capture_output=True, check=True)
+            process = subprocess.run(
+                source.rstrip()[:-1], shell=True, capture_output=True, check=True
+            )
             target.with_suffix(".source").write_bytes(process.stdout)
             waveform, rate = sf.read(io.BytesIO(process.stdout), dtype="float32")
             source_hash = hashlib.sha256(process.stdout).hexdigest()
@@ -65,13 +69,19 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
             divisor = gcd(rate, target_rate)
             waveform = resample_poly(waveform, target_rate // divisor, rate // divisor)
         sf.write(target, waveform, target_rate, subtype="FLOAT")
-        records.append({
-            "id": identity, "audio": str(target), "reference": references[identity],
-            "sample_rate": target_rate, "source_sample_rate": rate, "channel_rule": channel,
-            "audio_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-            "source_audio_sha256": source_hash,
-            "source_audio": source,
-        })
+        records.append(
+            {
+                "id": identity,
+                "audio": str(target),
+                "reference": references[identity],
+                "sample_rate": target_rate,
+                "source_sample_rate": rate,
+                "channel_rule": channel,
+                "audio_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "source_audio_sha256": source_hash,
+                "source_audio": source,
+            }
+        )
     return records
 
 
@@ -87,14 +97,27 @@ def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
     )
     for record in records:
         record["reward_task"] = task
-    output.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records))
-    output.with_suffix(output.suffix + ".audit.json").write_text(json.dumps({
-        "rows": len(records), "task": task, "sample_rate": sample_rate,
-        "wav_scp": str(Path(wav_scp).resolve()), "text": str(Path(text).resolve()),
-        "wav_scp_sha256": hashlib.sha256(Path(wav_scp).read_bytes()).hexdigest(),
-        "text_sha256": hashlib.sha256(Path(text).read_bytes()).hexdigest(),
-        "manifest_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-    }, indent=2) + "\n")
+    output.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records)
+    )
+    output.with_suffix(output.suffix + ".audit.json").write_text(
+        json.dumps(
+            {
+                "rows": len(records),
+                "task": task,
+                "sample_rate": sample_rate,
+                "wav_scp": str(Path(wav_scp).resolve()),
+                "text": str(Path(text).resolve()),
+                "wav_scp_sha256": hashlib.sha256(
+                    Path(wav_scp).read_bytes()
+                ).hexdigest(),
+                "text_sha256": hashlib.sha256(Path(text).read_bytes()).hexdigest(),
+                "manifest_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
     return records
 
 
@@ -106,7 +129,9 @@ def main():
     parser.add_argument("--task", default="asr_wer")
     parser.add_argument("--sample-rate", type=int, default=16000)
     args = parser.parse_args()
-    prepare_kaldi_manifest(args.wav_scp, args.text, args.output, args.task, sample_rate=args.sample_rate)
+    prepare_kaldi_manifest(
+        args.wav_scp, args.text, args.output, args.task, sample_rate=args.sample_rate
+    )
 
 
 if __name__ == "__main__":

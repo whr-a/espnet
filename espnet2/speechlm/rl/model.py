@@ -49,4 +49,6 @@ class OriginalOpusARDelay(nn.Module):
 class OriginalOpusModel(nn.Module):
     def __init__(self, geometry, token_list, num_streams, share_embeddings=False):
         super().__init__()
-        self.corelm = OriginalOpusARDelay(geometry, token_list, num_streams, share_embeddings)
+        self.corelm = OriginalOpusARDelay(
+            geometry, token_list, num_streams, share_embeddings
+        )

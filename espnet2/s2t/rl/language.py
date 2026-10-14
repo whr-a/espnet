@@ -133,13 +133,16 @@ def resolve_owsm_language_symbol(tokens, language, *, translation=False):
         return exact
     names = {code: name for code, name in LANGUAGES.items()}
     groups = [
-        {short, full, names.get(short, short)} for short, full in (pair.split(":") for pair in _ISO_LANGUAGE_PAIRS)
+        {short, full, names.get(short, short)}
+        for short, full in (pair.split(":") for pair in _ISO_LANGUAGE_PAIRS)
     ]
     # OWSM v3+ distinguishes Mandarin from other Chinese languages.
     groups[next(i for i, group in enumerate(groups) if "zh" in group)].add("cmn")
     groups.extend(({"haw", "hawaiian"}, {"yue", "cantonese"}))
     aliases = next((group for group in groups if value in group), {value})
-    matches = sorted(f"<{prefix}{alias}>" for alias in aliases if f"<{prefix}{alias}>" in tokens)
+    matches = sorted(
+        f"<{prefix}{alias}>" for alias in aliases if f"<{prefix}{alias}>" in tokens
+    )
     if len(matches) == 1:
         return matches[0]
     if matches:

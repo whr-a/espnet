@@ -14,13 +14,19 @@ def _prefix(config, source, metadata):
     if "prompt_token_ids" in source:
         return list(source["prompt_token_ids"])
     model = metadata["espnet_config"].get("model_conf", {})
-    prefix = [ids[model.get("sym_sos", "<sos>")],
-              owsm_symbol_id(tokens, source.get("language", config.language), language=True),
-              owsm_symbol_id(tokens, source.get("task", config.task))]
+    prefix = [
+        ids[model.get("sym_sos", "<sos>")],
+        owsm_symbol_id(tokens, source.get("language", config.language), language=True),
+        owsm_symbol_id(tokens, source.get("task", config.task)),
+    ]
     if not source.get("predict_timestamps", config.predict_timestamps):
         prefix.append(ids["<notimestamps>"])
     if source.get("previous_token_ids"):
-        prefix = [ids[model.get("sym_sop", "<sop>")], *source["previous_token_ids"], *prefix]
+        prefix = [
+            ids[model.get("sym_sop", "<sop>")],
+            *source["previous_token_ids"],
+            *prefix,
+        ]
     return prefix
 
 
@@ -28,8 +34,14 @@ def _text(token_ids, model_path):
     import sentencepiece as spm
 
     tokens = (Path(model_path) / "tokens.txt").read_text().splitlines()
-    pieces = [tokens[token] for token in token_ids if not (tokens[token].startswith("<") and tokens[token].endswith(">"))]
-    processor = spm.SentencePieceProcessor(model_file=str(Path(model_path) / "bpe.model"))
+    pieces = [
+        tokens[token]
+        for token in token_ids
+        if not (tokens[token].startswith("<") and tokens[token].endswith(">"))
+    ]
+    processor = spm.SentencePieceProcessor(
+        model_file=str(Path(model_path) / "bpe.model")
+    )
     return processor.decode(pieces)
 
 
@@ -58,9 +70,19 @@ def generate(config, model_path, sources, step):
         log_level="info",
     )
     overrides = dict(config.sglang_engine_kwargs)
-    frozen = {"model_path", "dtype", "tp_size", "skip_tokenizer_init", "disable_cuda_graph", "disable_radix_cache", "chunked_prefill_size"}
+    frozen = {
+        "model_path",
+        "dtype",
+        "tp_size",
+        "skip_tokenizer_init",
+        "disable_cuda_graph",
+        "disable_radix_cache",
+        "chunked_prefill_size",
+    }
     if any(key in overrides and overrides[key] != defaults[key] for key in frozen):
-        raise ValueError("sglang_engine_kwargs cannot change the native OWSM execution contract")
+        raise ValueError(
+            "sglang_engine_kwargs cannot change the native OWSM execution contract"
+        )
     defaults.update(overrides)
     engine = Engine(**defaults)
     prefixes = [_prefix(config, source, metadata) for source in sources]
@@ -70,17 +92,26 @@ def generate(config, model_path, sources, step):
             raise ValueError("One rollout batch exceeds source-index carrier capacity")
         for group_index in range(config.group_size):
             inputs.append([source_index, *prefix])
-            sampling.append(dict(temperature=1.0, top_p=1.0, top_k=-1,
-                                 max_new_tokens=config.max_tokens,
-                                 stop_token_ids=[metadata["eos_token_id"]],
-                                 repetition_penalty=1.0,
-                                 presence_penalty=0.0,
-                                 frequency_penalty=0.0))
+            sampling.append(
+                dict(
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=-1,
+                    max_new_tokens=config.max_tokens,
+                    stop_token_ids=[metadata["eos_token_id"]],
+                    repetition_penalty=1.0,
+                    presence_penalty=0.0,
+                    frequency_penalty=0.0,
+                )
+            )
     try:
-        outputs = engine.generate(input_ids=inputs, sampling_params=sampling,
-                                  return_logprob=True,
-                                  logprob_start_len=[len(row)-1 for row in inputs],
-                                  top_logprobs_num=0)
+        outputs = engine.generate(
+            input_ids=inputs,
+            sampling_params=sampling,
+            return_logprob=True,
+            logprob_start_len=[len(row) - 1 for row in inputs],
+            top_logprobs_num=0,
+        )
     finally:
         engine.shutdown()
     if isinstance(outputs, dict):
@@ -96,15 +127,25 @@ def generate(config, model_path, sources, step):
         logprobs = output["meta_info"].get("output_token_logprobs")
         if logprobs is None or len(logprobs) != len(token_ids):
             raise RuntimeError("SGLang omitted actual sampled action logprobs")
-        if any(int(item[1]) != token for item, token in zip(logprobs, token_ids, strict=True)):
+        if any(
+            int(item[1]) != token
+            for item, token in zip(logprobs, token_ids, strict=True)
+        ):
             raise RuntimeError("SGLang output IDs and behavior logprob IDs disagree")
         probabilities = [float(item[0]) for item in logprobs]
         if not token_ids or not all(math.isfinite(value) for value in probabilities):
             raise RuntimeError("SGLang generated empty or invalid behavior traces")
-        generations.append(dict(source_id=source["id"], prompt_token_ids=prefixes[source_index],
-                                token_ids=token_ids, log_probs=probabilities,
-                                text=_text(token_ids, model_path),
-                                finish_reason=output["meta_info"].get("finish_reason"),
-                                rollout_backend="sglang", source_sha256=source_sha256,
-                                sglang_raw_response=output))
+        generations.append(
+            dict(
+                source_id=source["id"],
+                prompt_token_ids=prefixes[source_index],
+                token_ids=token_ids,
+                log_probs=probabilities,
+                text=_text(token_ids, model_path),
+                finish_reason=output["meta_info"].get("finish_reason"),
+                rollout_backend="sglang",
+                source_sha256=source_sha256,
+                sglang_raw_response=output,
+            )
+        )
     return generations

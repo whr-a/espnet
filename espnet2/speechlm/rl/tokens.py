@@ -37,17 +37,24 @@ def selected_log_probs(logits, labels, mask, temperature=1.0, top_k=0):
         raise ValueError("An active action is outside its stream vocabulary")
     # Avoid NaNs from ignored rows with no permitted token.
     selected_logits = flat_logits[active] / temperature
-    if selected_logits.numel() and not torch.isfinite(selected_logits).any(dim=-1).all():
+    if (
+        selected_logits.numel()
+        and not torch.isfinite(selected_logits).any(dim=-1).all()
+    ):
         raise ValueError("An active action has empty categorical support")
     if top_k > 0 and top_k < logits.shape[-1]:
         values, indices = selected_logits.topk(top_k, dim=-1)
-        selected_logits = torch.full_like(selected_logits, -torch.inf).scatter(-1, indices, values)
+        selected_logits = torch.full_like(selected_logits, -torch.inf).scatter(
+            -1, indices, values
+        )
     log_dist = selected_logits.log_softmax(dim=-1)
     logp_active = log_dist.gather(-1, valid_labels.unsqueeze(-1)).squeeze(-1)
     if not torch.isfinite(logp_active).all():
         raise ValueError("A sampled action is outside the declared sampling support")
     probabilities = log_dist.exp()
-    entropy_active = -(probabilities * log_dist.masked_fill(~torch.isfinite(log_dist), 0)).sum(-1)
+    entropy_active = -(
+        probabilities * log_dist.masked_fill(~torch.isfinite(log_dist), 0)
+    ).sum(-1)
     # index_copy is differentiable and does not evaluate invalid inactive labels.
     # Nonfinite masked logits must not contaminate inactive scores.
     zeros = flat_logits.new_zeros(flat_labels.shape)
@@ -74,7 +81,9 @@ def delay_interleave(codes, lengths, pad_ids):
     mask = torch.zeros_like(output, dtype=torch.bool)
     valid = torch.arange(t, device=codes.device)[None, :] < lengths[:, None]
     for stream in range(q):
-        output[:, stream : stream + t, stream] = torch.where(valid, codes[:, :, stream], pads[stream])
+        output[:, stream : stream + t, stream] = torch.where(
+            valid, codes[:, :, stream], pads[stream]
+        )
         mask[:, stream : stream + t, stream] = valid
     return output, mask
 
@@ -86,6 +95,8 @@ def delay_deinterleave(codes, lengths):
     t = codes.shape[1] - q + 1
     if ((lengths < 0) | (lengths > t)).any():
         raise ValueError("Invalid original codec lengths")
-    output = torch.stack([codes[:, stream : stream + t, stream] for stream in range(q)], -1)
+    output = torch.stack(
+        [codes[:, stream : stream + t, stream] for stream in range(q)], -1
+    )
     valid = torch.arange(t, device=codes.device)[None, :] < lengths[:, None]
     return output, valid

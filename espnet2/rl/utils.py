@@ -59,4 +59,3 @@ def owsm_symbol_id(token_list, value, *, language=False):
     from espnet2.s2t.rl.policy import owsm_symbol_id as implementation
 
     return implementation(token_list, value, language=language)
-

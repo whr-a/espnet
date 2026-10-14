@@ -35,4 +35,3 @@ class RolloutBatch:
     def save_to_disk(self, path):
         with Path(path).open("wb") as stream:
             pickle.dump(self, stream)
-

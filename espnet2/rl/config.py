@@ -82,7 +82,13 @@ class ESPnetRLConfig:
     def validate(self):
         if self.group_size < 2:
             raise ValueError("GRPO requires group_size >= 2")
-        for name in ("steps", "prompts_per_step", "micro_batch_size", "ppo_epochs", "max_tokens"):
+        for name in (
+            "steps",
+            "prompts_per_step",
+            "micro_batch_size",
+            "ppo_epochs",
+            "max_tokens",
+        ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
         if self.temperature != 1.0 or self.top_p != 1.0 or self.top_k != -1:
@@ -94,7 +100,9 @@ class ESPnetRLConfig:
         if self.rollout_backend not in ("sglang", "vllm"):
             raise ValueError("rollout_backend must be sglang or vllm")
         if not self.adapter_factory or not self.exporter:
-            raise ValueError("Recipe must supply its ESPnet adapter_factory and exporter")
+            raise ValueError(
+                "Recipe must supply its ESPnet adapter_factory and exporter"
+            )
         if self.rollout_backend == "sglang" and not self.sglang_generate_factory:
             raise ValueError("SGLang requires an architecture generation factory")
         if self.rollout_backend == "vllm" and not self.vllm_generate_factory:
@@ -102,7 +110,9 @@ class ESPnetRLConfig:
         if self.kl_type not in ("k1", "k2", "k3", "low_var_kl"):
             raise ValueError("Unsupported Miles KL estimator")
         if self.loss_agg_mode != "token-mean":
-            raise ValueError("Initial native trainer requires global token-mean reduction")
+            raise ValueError(
+                "Initial native trainer requires global token-mean reduction"
+            )
         if self.dtype not in ("float32", "bfloat16", "float16"):
             raise ValueError("dtype must be float32, bfloat16 or float16")
         if self.optimizer_device not in (None, "cpu"):

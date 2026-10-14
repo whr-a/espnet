@@ -42,7 +42,9 @@ def object_array(values):
     return result
 
 
-def load_audio(source: dict[str, Any], sample_rate: int, window_samples: int | None = None):
+def load_audio(
+    source: dict[str, Any], sample_rate: int, window_samples: int | None = None
+):
     """Use the same deterministic mono, rate and window contract as rollout."""
     if "audio_array" in source:
         waveform = np.asarray(source["audio_array"], dtype=np.float32)
@@ -50,9 +52,13 @@ def load_audio(source: dict[str, Any], sample_rate: int, window_samples: int | N
     else:
         import soundfile as sf
 
-        waveform, rate = sf.read(Path(source["audio"]), dtype="float32", always_2d=False)
+        waveform, rate = sf.read(
+            Path(source["audio"]), dtype="float32", always_2d=False
+        )
     if rate != sample_rate:
-        raise ValueError(f"Audio rate {rate} differs from model rate {sample_rate}; resample the manifest offline")
+        raise ValueError(
+            f"Audio rate {rate} differs from model rate {sample_rate}; resample the manifest offline"
+        )
     if waveform.ndim == 2:
         waveform = waveform.mean(axis=1)
     if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
@@ -60,7 +66,9 @@ def load_audio(source: dict[str, Any], sample_rate: int, window_samples: int | N
     if window_samples is not None:
         # Match the vLLM processor: long inputs need explicit offline segmentation.
         if len(waveform) > window_samples:
-            raise ValueError(f"Audio has {len(waveform)} samples, exceeding the OWSM window of {window_samples}")
+            raise ValueError(
+                f"Audio has {len(waveform)} samples, exceeding the OWSM window of {window_samples}"
+            )
         waveform = np.pad(waveform, (0, window_samples - len(waveform)))
     return waveform
 
@@ -81,11 +89,15 @@ class OWSMPolicy(NativeESPnetPolicy):
         self.model = model
         self.args = args
         if getattr(model, "decoder", None) is None:
-            raise ValueError("OWSM-CTC is a distinct policy; this backend requires an autoregressive decoder")
+            raise ValueError(
+                "OWSM-CTC is a distinct policy; this backend requires an autoregressive decoder"
+            )
         preprocessing = getattr(args, "preprocessor_conf", None) or {}
         self.sample_rate = int(preprocessing.get("fs", 16000))
         seconds = preprocessing.get("speech_length")
-        self.window_samples = int(seconds * self.sample_rate) if seconds is not None else None
+        self.window_samples = (
+            int(seconds * self.sample_rate) if seconds is not None else None
+        )
         self.token_list = list(getattr(model, "token_list", []))
         if not train_encoder:
             for name, parameter in self.model.named_parameters():
@@ -117,7 +129,9 @@ class OWSMPolicy(NativeESPnetPolicy):
                 mapped = mapped.replace(".embed.out.0.", ".embed.out.")
                 mapped = mapped.replace(".embed.out.1.", ".embed.pos_enc.")
             if mapped in normalized:
-                raise ValueError(f"Duplicate checkpoint key after normalization: {mapped}")
+                raise ValueError(
+                    f"Duplicate checkpoint key after normalization: {mapped}"
+                )
             normalized[mapped] = tensor
         model.load_state_dict(normalized, strict=True)
         # Never cast the whole model to bf16/fp16: restoring frontend buffers
@@ -143,20 +157,28 @@ class OWSMPolicy(NativeESPnetPolicy):
         # while explicitly crossing its fp32 frontend -> neural dtype boundary.
         # SpecAugment is excluded from all policy scoring, even in train mode.
         with torch.autocast(device_type=speech.device.type, enabled=False):
-            features, lengths = self.model._extract_feats(speech.float(), speech_lengths)
+            features, lengths = self.model._extract_feats(
+                speech.float(), speech_lengths
+            )
             if self.model.normalize is not None:
                 features, lengths = self.model.normalize(features, lengths)
         if self.model.preencoder is not None:
-            features, lengths = self.model.preencoder(self._cast_features(features, self.model.preencoder), lengths)
+            features, lengths = self.model.preencoder(
+                self._cast_features(features, self.model.preencoder), lengths
+            )
         features = self._cast_features(features, self.model.encoder)
         if self.model.encoder.interctc_use_conditioning:
-            encoded, lengths, _ = self.model.encoder(features, lengths, ctc=self.model.ctc)
+            encoded, lengths, _ = self.model.encoder(
+                features, lengths, ctc=self.model.ctc
+            )
         else:
             encoded, lengths, _ = self.model.encoder(features, lengths)
         if isinstance(encoded, tuple):
             encoded = encoded[0]
         if self.model.postencoder is not None:
-            encoded, lengths = self.model.postencoder(self._cast_features(encoded, self.model.postencoder), lengths)
+            encoded, lengths = self.model.postencoder(
+                self._cast_features(encoded, self.model.postencoder), lengths
+            )
         return encoded, lengths
 
     def build_prefix(self, source: dict[str, Any], config: Any):
@@ -168,7 +190,9 @@ class OWSMPolicy(NativeESPnetPolicy):
         ids = {token: index for index, token in enumerate(self.token_list)}
         prefix = [
             self.model.sos,
-            owsm_symbol_id(self.token_list, source.get("language", config.language), language=True),
+            owsm_symbol_id(
+                self.token_list, source.get("language", config.language), language=True
+            ),
             owsm_symbol_id(self.token_list, source.get("task", config.task)),
         ]
         if not source.get("predict_timestamps", config.predict_timestamps):
@@ -189,12 +213,17 @@ class OWSMPolicy(NativeESPnetPolicy):
         if all("encoder_features" in source for source in sources):
             # Explicit precomputed memory is useful for decoder-only training.
             # The manifest must identify how features were generated.
-            memories = [torch.as_tensor(s["encoder_features"], device=device) for s in sources]
+            memories = [
+                torch.as_tensor(s["encoder_features"], device=device) for s in sources
+            ]
             memory = pad_sequence(memories, batch_first=True)
             memory_lens = torch.tensor([len(s) for s in memories], device=device)
         else:
             speech = [
-                torch.as_tensor(load_audio(s, self.sample_rate, self.window_samples), device=device) for s in sources
+                torch.as_tensor(
+                    load_audio(s, self.sample_rate, self.window_samples), device=device
+                )
+                for s in sources
             ]
             speech_lens = torch.tensor([len(s) for s in speech], device=device)
             speech = pad_sequence(speech, batch_first=True)
@@ -209,11 +238,15 @@ class OWSMPolicy(NativeESPnetPolicy):
                 raise ValueError("Empty decoder prompt")
             decoder_inputs.append(torch.cat((prefix, row[: length - 1])))
         decoder_lens = torch.tensor([len(row) for row in decoder_inputs], device=device)
-        decoder_input = pad_sequence(decoder_inputs, batch_first=True, padding_value=self.model.eos)
+        decoder_input = pad_sequence(
+            decoder_inputs, batch_first=True, padding_value=self.model.eos
+        )
         logits, _ = self.model.decoder(memory, memory_lens, decoder_input, decoder_lens)
         # A prefix of P tokens predicts response[0] at decoder output P-1.
         positions = torch.arange(responses.size(1), device=device).unsqueeze(0)
-        offsets = torch.tensor([len(p) - 1 for p in prefixes], device=device).unsqueeze(1)
+        offsets = torch.tensor([len(p) - 1 for p in prefixes], device=device).unsqueeze(
+            1
+        )
         positions = (positions + offsets).clamp_max(logits.size(1) - 1)
         logits = logits.gather(1, positions[..., None].expand(-1, -1, logits.size(-1)))
         distribution = torch.log_softmax(logits.float(), dim=-1)

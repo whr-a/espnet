@@ -20,4 +20,3 @@ class NativeESPnetPolicy(nn.Module):
 
     def checkpoint_state_dict(self):
         return self.model.state_dict()
-
