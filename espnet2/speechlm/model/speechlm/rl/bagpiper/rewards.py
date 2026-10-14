@@ -73,7 +73,7 @@ class ASRWERReward:
         with torch.inference_mode(): ids=self.asr.generate(**inputs.to(self.asr.device),language="en",task="transcribe",max_new_tokens=256)
         hypothesis=self.processor.batch_decode(ids,skip_special_tokens=True)[0]
         value=wer(source["reference"],hypothesis)
-        target.with_suffix(".json").write_text(json.dumps({"source_id":source["id"],"reference":source["reference"],"hypothesis":hypothesis,"wer":value,"reward":-value,"waveform_sha256":digest,"sample_rate":rate,"asr_model":self.asr_tag,"asr_revision":self.asr_revision,"codec_frames":length,"generated_tokens":generation["token_ids"]},indent=2)+"\n")
+        Path(str(target)+".json").write_text(json.dumps({"source_id":source["id"],"reference":source["reference"],"hypothesis":hypothesis,"wer":value,"reward":-value,"waveform_sha256":digest,"sample_rate":rate,"asr_model":self.asr_tag,"asr_revision":self.asr_revision,"codec_frames":length,"generated_tokens":generation["token_ids"]},indent=2)+"\n")
         return -value
 
 

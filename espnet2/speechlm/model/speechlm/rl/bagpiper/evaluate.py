@@ -34,6 +34,9 @@ def main():
     generations=json.loads((directory/"responses.json").read_text())["generations"]
     reward=resolve_callable(cfg.reward_function)
     sources={item["id"]:item for item in requests}
+    if requests[0]["task"]=="tts_asr_wer":
+        from .rewards import ASRWERReward
+        reward=ASRWERReward(cfg)
     scored=[{"source_id":generation["source_id"],"reward":reward(sources[generation["source_id"]],generation),"text":generation["text"]} for generation in generations]
     values=[item["reward"] for item in scored]
     metric="wer" if requests[0]["task"]=="tts_asr_wer" else "choice_accuracy"
