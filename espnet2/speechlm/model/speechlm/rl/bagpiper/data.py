@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 QA_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
+TTS_TEMPLATE = "Please read the following text aloud verbatim: {text}"
 
 
 def _kaldi(path):
@@ -38,7 +39,7 @@ def prepare_kaldi(wav_scp, text, task, questions=None, choices=None, output_dir=
         key = record["id"]
         record.update(task=task, dataset="user_wav_scp")
         if task == "tts_asr_wer":
-            record["prompt"] = record["reference"]
+            record["prompt"] = TTS_TEMPLATE.format(text=record["reference"])
         else:
             if key not in question:
                 raise ValueError(f"Missing QA question for {key}")
@@ -64,7 +65,7 @@ def prepare_libritts(directory):
                 "id": wav.stem,
                 "audio": str(wav.resolve()),
                 "reference": reference,
-                "prompt": reference,
+                "prompt": TTS_TEMPLATE.format(text=reference),
                 "task": "tts_asr_wer",
                 "dataset": "LibriTTS",
             }
@@ -195,7 +196,7 @@ def main():
                 "template": (
                     QA_TEMPLATE
                     if args.task == "qa"
-                    else "native user text -> assistant text_audio"
+                    else TTS_TEMPLATE
                 ),
             },
             indent=2,
