@@ -2,7 +2,8 @@
 
 import pytest
 
-from espnet2.speechlm.rl.evaluate import summarize_wer
+from espnet2.rl.rollout import sha256
+from espnet2.speechlm.rl.evaluate import summarize_wer, validate_export_files
 
 
 def generation(source_id, text):
@@ -55,3 +56,47 @@ def test_empty_reference_and_punctuation_are_explicit():
         2,
     )
     assert result["wer_mean"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "/absolute",
+        "../outside",
+        "nested/../../outside",
+        "./config.json",
+        "nested//config.json",
+    ],
+)
+def test_export_rejects_escaping_or_noncanonical_recorded_paths(tmp_path, relative):
+    (tmp_path / "config.json").write_text("{}")
+    with pytest.raises(ValueError, match="Invalid recorded"):
+        validate_export_files(tmp_path, {relative: "0" * 64})
+
+
+def test_export_requires_complete_unchanged_regular_files(tmp_path):
+    root = tmp_path / "hf"
+    root.mkdir()
+    config = root / "config.json"
+    config.write_text("{}")
+    recorded = {"config.json": sha256(config)}
+    validate_export_files(root, recorded)
+    weights = root / "model.safetensors"
+    weights.write_bytes(b"weights")
+    with pytest.raises(ValueError, match="complete file set"):
+        validate_export_files(root, recorded)
+    recorded["model.safetensors"] = sha256(weights)
+    validate_export_files(root, recorded)
+    weights.write_bytes(b"modified weights")
+    with pytest.raises(ValueError, match="file changed"):
+        validate_export_files(root, recorded)
+
+
+def test_export_rejects_symlink_escape_even_with_matching_hash(tmp_path):
+    root = tmp_path / "hf"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"outside")
+    (root / "model.safetensors").symlink_to(outside)
+    with pytest.raises(ValueError, match="symlink"):
+        validate_export_files(root, {"model.safetensors": sha256(outside)})

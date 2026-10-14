@@ -93,6 +93,54 @@ def verify_log_probs(policy, batch, tolerance):
     return errors
 
 
+def validate_export_files(directory, recorded):
+    """Require a complete hash list of regular files contained in this export."""
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir() or not isinstance(recorded, dict) or not recorded:
+        raise ValueError("Existing inference export has no recorded files")
+    paths = {}
+    for relative, expected in recorded.items():
+        if (
+            not isinstance(relative, str)
+            or not relative
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+            or Path(relative).as_posix() != relative
+            or not isinstance(expected, str)
+            or len(expected) != 64
+            or any(character not in "0123456789abcdef" for character in expected)
+        ):
+            raise ValueError(f"Invalid recorded inference export path/hash: {relative}")
+        path = root / relative
+        if any(
+            parent.is_symlink()
+            for parent in (path, *path.parents)
+            if parent != root and parent.is_relative_to(root)
+        ):
+            raise ValueError(f"Inference export contains a symlink: {relative}")
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(root) or not resolved.is_file():
+            raise ValueError(
+                f"Inference export file is outside its directory: {relative}"
+            )
+        paths[relative] = resolved
+    actual = set()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(
+                f"Inference export contains a symlink: {path.relative_to(root)}"
+            )
+        if path.is_file():
+            actual.add(path.relative_to(root).as_posix())
+    if set(paths) != actual:
+        raise ValueError(
+            "Recorded inference export files differ from its complete file set"
+        )
+    for relative, path in paths.items():
+        if sha256(path) != recorded[relative]:
+            raise ValueError(f"Existing inference export file changed: {relative}")
+
+
 def export_checkpoint(rollout, checkpoint, step, existing_export=None):
     """Use a read-only native symlink; optionally reuse an audited HF export."""
     version = rollout.directory / f"policy-{step:06d}"
@@ -109,11 +157,7 @@ def export_checkpoint(rollout, checkpoint, step, existing_export=None):
             raise ValueError(
                 "Existing export native hash differs from its synchronization record"
             )
-        if not sync.get("hf_files"):
-            raise ValueError("Existing inference export has no recorded files")
-        for relative, expected in sync["hf_files"].items():
-            if sha256(existing / "hf" / relative) != expected:
-                raise ValueError(f"Existing inference export file changed: {relative}")
+        validate_export_files(existing / "hf", sync.get("hf_files"))
         (version / "hf").symlink_to(existing / "hf", target_is_directory=True)
     else:
         args = [
@@ -152,7 +196,7 @@ def export_checkpoint(rollout, checkpoint, step, existing_export=None):
 
 
 def run(args):
-    config = ESPnetRLConfig.from_yaml(args.config)
+    config = ESPnetRLConfig.load(args.config)
     if config.family not in ("opuslm", "opuslm_dialogue"):
         raise ValueError("This evaluator supports OpusLM Plain and Dialogue")
     if config.rollout_backend != "sglang":
@@ -253,7 +297,7 @@ def main():
     parser.add_argument(
         "--config",
         required=True,
-        help="Training recipe YAML, including original training manifest",
+        help="Effective frozen_config.json or training YAML, including original training manifest",
     )
     parser.add_argument(
         "--checkpoint",

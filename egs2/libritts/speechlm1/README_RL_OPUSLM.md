@@ -55,11 +55,17 @@ its sampled probabilities against the native model:
 
 ```bash
 python -m espnet2.speechlm.rl.evaluate \
-  --config conf/rl_opuslm_librispeech.yaml \
+  --config exp/rl_opuslm_librispeech/frozen_config.json \
   --checkpoint exp/rl_opuslm_librispeech/step-000100.native.pth \
   --manifest data/rl/dev_clean.jsonl --policy-step 100 \
   --output-dir exp/rl_opuslm_librispeech_eval --device cpu --rollout-gpus 1
 ```
+
+The effective `frozen_config.json` preserves training CLI overrides. YAML is
+also supported; when using it, include the exact effective training manifest
+and architecture assets. Relative paths in either config are resolved from the
+command's current directory. Run from the original recipe directory or freeze
+absolute paths before moving an evaluation to another working directory.
 
 Use the Dialogue config for the 1.7B Llama family. Dataset paths are independent
 of the recipe directory, so LibriSpeech is selected by the manifest. The
@@ -73,7 +79,10 @@ uses `errors/max(1, reference_words)` for each completion; corpus WER divides
 total errors by total reference words across all completions.
 
 `--export-dir /path/to/policy-000100` can reuse an existing inference export
-only after checking its native and every recorded HF file hash. `--responses`
+only after checking its native and every recorded HF file hash. This validation
+requires the recorded paths to be canonical relative paths, rejects
+parent traversal and symlinks, and verifies the complete HF file set.
+`--responses`
 audits existing real response records instead of generating again; it checks
 their checkpoint hash, policy version, completeness and native probabilities.
 Each evaluation uses a new immutable output directory.
