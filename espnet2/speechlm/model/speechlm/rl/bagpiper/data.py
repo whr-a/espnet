@@ -21,19 +21,20 @@ def _kaldi(path):
     return values
 
 
-def prepare_kaldi(wav_scp,text,task,questions=None,choices=None):
-    waves=_kaldi(wav_scp); transcripts=_kaldi(text)
-    if set(waves)!=set(transcripts): raise ValueError("wav.scp and text identities differ")
+def prepare_kaldi(wav_scp,text,task,questions=None,choices=None,output_dir=None):
+    from espnet2.rl.prepare import materialize_kaldi_audio
+    if output_dir is None:
+        raise ValueError("An output directory is required to freeze wav.scp audio")
+    records=materialize_kaldi_audio(wav_scp,text,Path(output_dir)/"audio",channel="first")
     question=_kaldi(questions) if questions else {}
     choice=json.loads(Path(choices).read_text()) if choices else {}
-    records=[]
-    for key,audio in waves.items():
-        record={"id":key,"audio":audio,"reference":transcripts[key],"task":task,"dataset":"user_wav_scp"}
-        if task=="tts_asr_wer": record["prompt"]=transcripts[key]
+    for record in records:
+        key=record["id"]
+        record.update(task=task,dataset="user_wav_scp")
+        if task=="tts_asr_wer": record["prompt"]=record["reference"]
         else:
             if key not in question: raise ValueError(f"Missing QA question for {key}")
             record.update(question=question[key],choices=choice.get(key,[]),prompt=QA_TEMPLATE.format(question=question[key],choices=choice.get(key,[])))
-        records.append(record)
     return records
 
 
@@ -89,11 +90,13 @@ def main():
     parser.add_argument("--limit",type=int); parser.add_argument("--hf-revision")
     args=parser.parse_args(); output=Path(args.output); output.parent.mkdir(parents=True,exist_ok=True)
     if output.exists(): raise FileExistsError(f"Refusing to replace frozen manifest {output}")
-    if args.dataset=="wav_scp": records=prepare_kaldi(args.wav_scp,args.text,args.task,args.questions,args.choices)
+    if args.dataset=="wav_scp": records=prepare_kaldi(args.wav_scp,args.text,args.task,args.questions,args.choices,output.parent)
     elif args.dataset=="libritts": records=prepare_libritts(args.input)
     else:
         source=args.input
         if source is None:
+            if args.dataset=="mmau":
+                raise ValueError("MMAU preparation requires its own official parquet via --input")
             if not args.hf_revision: raise ValueError("Remote AVQA download needs --hf-revision to freeze provenance")
             from datasets import load_dataset,Audio
             ds=load_dataset("gijs/avqa-processed",revision=args.hf_revision,split="train").cast_column("audio",Audio(decode=False))

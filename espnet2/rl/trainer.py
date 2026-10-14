@@ -312,6 +312,11 @@ def run(config):
     if distributed.is_initialized():
         distributed.barrier()
     sources = read_manifest(config.manifest)
+    # Reward implementations read the same effective configuration as the
+    # actor and rollout, including command-line overrides. This path is host
+    # metadata and does not become part of the model's prompt.
+    for source in sources:
+        source["reward_config"] = str(output / "frozen_config.json")
     if config.reward_function is None:
         # Reject missing supervision or an audio-only reward configuration
         # before loading models or occupying inference GPUs.

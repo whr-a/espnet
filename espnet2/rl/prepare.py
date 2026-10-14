@@ -19,8 +19,12 @@ def _kaldi(path):
     return rows
 
 
-def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
-    """Materialize pipe audio, normalize rate, and join references by utterance ID."""
+def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel="mean"):
+    """Resolve paths and pipes into auditable waveforms joined by utterance ID.
+
+    Keep the source rate when ``sample_rate`` is None. SpeechLM frontends can
+    then apply their own native resampler after selecting the first channel.
+    """
     import numpy as np
     import soundfile as sf
     from scipy.signal import resample_poly
@@ -28,22 +32,20 @@ def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
     waves, references = _kaldi(wav_scp), _kaldi(text)
     if waves.keys() != references.keys():
         raise ValueError("wav.scp and text must contain the same utterance IDs")
-    output = Path(output).resolve()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
-        raise FileExistsError(f"Refusing to overwrite prepared manifest: {output}")
-    sample_rate = int(kwargs.get("sample_rate", 16000))
-    audio_dir = output.parent / (output.stem + "_audio")
-    audio_dir.mkdir(exist_ok=True)
+    if channel not in ("mean", "first"):
+        raise ValueError("channel must be mean or first")
+    audio_dir = Path(audio_dir).resolve()
+    audio_dir.mkdir(parents=True, exist_ok=True)
     records = []
     for identity, source in waves.items():
         target = audio_dir / (hashlib.sha256(identity.encode()).hexdigest()[:20] + ".wav")
         if source.rstrip().endswith("|"):
-            # wav.scp pipes are recipe-provided executable commands. Save stdout
-            # before decoding so the actual source payload remains auditable.
+            # Pipe commands are part of the user's recipe input. Preserve the
+            # actual returned payload alongside the normalized waveform.
             import io
 
             process = subprocess.run(source.rstrip()[:-1], shell=True, capture_output=True, check=True)
+            target.with_suffix(".source").write_bytes(process.stdout)
             waveform, rate = sf.read(io.BytesIO(process.stdout), dtype="float32")
             source_hash = hashlib.sha256(process.stdout).hexdigest()
         else:
@@ -53,21 +55,38 @@ def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
             waveform, rate = sf.read(path, dtype="float32")
             source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
         if waveform.ndim == 2:
-            waveform = waveform.mean(-1)
+            waveform = waveform.mean(-1) if channel == "mean" else waveform[:, 0]
         if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
             raise ValueError(f"Invalid audio for {identity}")
-        if rate != sample_rate:
+        target_rate = int(sample_rate) if sample_rate is not None else rate
+        if rate != target_rate:
             from math import gcd
 
-            divisor = gcd(rate, sample_rate)
-            waveform = resample_poly(waveform, sample_rate // divisor, rate // divisor)
-        sf.write(target, waveform, sample_rate, subtype="FLOAT")
+            divisor = gcd(rate, target_rate)
+            waveform = resample_poly(waveform, target_rate // divisor, rate // divisor)
+        sf.write(target, waveform, target_rate, subtype="FLOAT")
         records.append({
             "id": identity, "audio": str(target), "reference": references[identity],
-            "reward_task": task, "sample_rate": sample_rate,
+            "sample_rate": target_rate, "source_sample_rate": rate, "channel_rule": channel,
             "audio_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
             "source_audio_sha256": source_hash,
+            "source_audio": source,
         })
+    return records
+
+
+def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
+    """Materialize pipe audio, normalize rate, and join references by utterance ID."""
+    output = Path(output).resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        raise FileExistsError(f"Refusing to overwrite prepared manifest: {output}")
+    sample_rate = int(kwargs.get("sample_rate", 16000))
+    records = materialize_kaldi_audio(
+        wav_scp, text, output.parent / (output.stem + "_audio"), sample_rate
+    )
+    for record in records:
+        record["reward_task"] = task
     output.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records))
     output.with_suffix(output.suffix + ".audit.json").write_text(json.dumps({
         "rows": len(records), "task": task, "sample_rate": sample_rate,

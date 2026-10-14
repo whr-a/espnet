@@ -541,6 +541,12 @@ def _build_current_native_model(recipe, options):
             intervals[name].append((start + lo, start + hi))
             weights.append(torch.ones(hi - lo) * weight)
         num_stream = max(num_stream, handler.num_stream())
+    # Apply the current recipe's recorded-layout check without constructing
+    # its supervised trainer or loading the model a second time.
+    from types import SimpleNamespace
+    from espnet2.speechlm.model.speechlm.speechlm_job import SpeechLMJobTemplate
+
+    SpeechLMJobTemplate._check_recorded_layout(SimpleNamespace(config=recipe), intervals)
     model_config = recipe["model"]
     if model_config.get("model_choice") != "parallel":
         raise ValueError("Initial native backend requires a complete parallel model, not a pruned PP stage")
@@ -553,6 +559,9 @@ def _build_current_native_model(recipe, options):
         model_config.get("model_conf", {}).get("attn_implementation", "sdpa"),
     )
     model = configure_moe_model(build_parallel_hf_class(tag)(geometry))
+    # Native SpeechLM rebuilds the expanded embedding with padding_idx=0.
+    # Preserve that gradient rule when constructing directly from geometry.
+    model.model.embed_tokens.padding_idx = 0
     model.num_stream = num_stream
     model.stream_emb = nn.Embedding(num_stream, geometry.hidden_size)
     model.multimodal_io_dict = nn.ModuleDict(io)

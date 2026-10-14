@@ -601,7 +601,11 @@ if [ "${stage}" -le 10 ] && [ "${stop_stage}" -ge 10 ] && [ -n "${rl_config}" ];
         ${python} -m espnet2.speechlm.rl.prepare --wav-scp "${rl_wav_scp}" \
             --text "${rl_text}" --output "${rl_manifest}" ${rl_prepare_args}
     fi
-    ${python} -m espnet2.bin.rl_train --config "${rl_config}"
+    rl_data_args=()
+    if [ -n "${rl_manifest}" ]; then
+        rl_data_args+=(--manifest "${rl_manifest}")
+    fi
+    ${python} -m espnet2.bin.rl_train --config "${rl_config}" "${rl_data_args[@]}"
 fi
 
 log "Successfully finished. [elapsed=${SECONDS}s]"

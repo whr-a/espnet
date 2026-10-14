@@ -328,21 +328,26 @@ When using the foundation model, also cite the
 
 ## Optional Miles RL stage
 
-This existing recipe keeps SFT as its default. `run.sh --rl` selects an optional
+This existing recipe keeps SFT as its default. `run.sh --stage 4` selects an optional
 post-training stage using a pinned Miles library and SGLang rollout. Architecture
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
 or vendored. Set the pretrained checkpoint, original training YAML, token assets,
 codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
 
 ```bash
-./run.sh --rl --data-input /path/to/libritts --rl-config conf/rl.yaml
+./run.sh --stage 4 --data-input /path/to/libritts --rl-config conf/rl.yaml
 # A user data directory is accepted directly:
 ./run.sh --rl --wav-scp data/rl/wav.scp --text data/rl/text
 # Existing frozen manifests can skip preparation:
 ./run.sh --rl --stage 2 --rl-config conf/rl.yaml
 ```
 
-Stages 1/2/3 prepare data, validate the configuration and train. AVQA preparation
+The RL wrapper performs data preparation, configuration validation and training.
+Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also
+available. `--manifest` selects the prepared file used by both validation and
+training. `--python` selects the native interpreter; rollout uses the separate
+`rollout_python` from the YAML. To download AVQA, omit `--data-input` and pass
+`--hf-revision` with its exact dataset commit. AVQA preparation
 uses the WEST default question/choice/`<answer>` format and supports the original
 HuggingFace parquet or existing cached parquet. LibriTTS uses `.normalized.txt`
 paired with WAV files. Custom QA inputs require `questions` keyed like `wav.scp`

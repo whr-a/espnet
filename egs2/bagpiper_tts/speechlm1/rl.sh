@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+recipe_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+espnet_root=$(cd -- "${recipe_dir}/../../.." && pwd)
+export PYTHONPATH="${espnet_root}${PYTHONPATH:+:${PYTHONPATH}}"
+cd -- "${recipe_dir}"
+python_cmd=${PYTHON:-python}
 stage=1
 stop_stage=3
 rl_config=conf/rl.yaml
-manifest=data/rl/train.jsonl
+manifest=
 dataset=libritts
 data_input=
 wav_scp=
 text=
 questions=
 choices=
-forbidden=
+hf_revision=
+limit=
 while [[ $# -gt 0 ]]; do
+    [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case "$1" in
         --stage) stage=$2 ;;
         --stop-stage) stop_stage=$2 ;;
@@ -23,10 +29,22 @@ while [[ $# -gt 0 ]]; do
         --text) text=$2 ;;
         --questions) questions=$2 ;;
         --choices) choices=$2 ;;
+        --hf-revision) hf_revision=$2 ;;
+        --limit) limit=$2 ;;
+        --python) python_cmd=$2 ;;
         *) echo "Unknown RL option $1" >&2; exit 2 ;;
     esac
     shift 2
 done
+if [[ -z "$manifest" ]]; then
+    manifest=$("${python_cmd}" - "$rl_config" <<'PYCONFIG'
+import sys
+import yaml
+with open(sys.argv[1]) as stream:
+    print(yaml.safe_load(stream)["manifest"])
+PYCONFIG
+)
+fi
 if (( stage <= 1 && stop_stage >= 1 )); then
     args=(--dataset "$dataset" --output "$manifest" --task tts_asr_wer)
     if [[ -n "$wav_scp" ]]; then
@@ -34,13 +52,16 @@ if (( stage <= 1 && stop_stage >= 1 )); then
         [[ -z "$questions" ]] || args+=(--questions "$questions")
         [[ -z "$choices" ]] || args+=(--choices "$choices")
     else
+        [[ -n "$data_input" ]] || { echo "--data-input or --wav-scp is required" >&2; exit 2; }
         args+=(--input "$data_input")
     fi
-    python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
+    [[ -z "$hf_revision" ]] || args+=(--hf-revision "$hf_revision")
+    [[ -z "$limit" ]] || args+=(--limit "$limit")
+    "${python_cmd}" -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
 fi
 if (( stage <= 2 && stop_stage >= 2 )); then
-    python -m espnet2.bin.rl_train --config "$rl_config" --validate-only
+    "${python_cmd}" -m espnet2.bin.rl_train --config "$rl_config" --manifest "$manifest" --validate-only
 fi
 if (( stage <= 3 && stop_stage >= 3 )); then
-    python -m espnet2.bin.rl_train --config "$rl_config"
+    "${python_cmd}" -m espnet2.bin.rl_train --config "$rl_config" --manifest "$manifest"
 fi

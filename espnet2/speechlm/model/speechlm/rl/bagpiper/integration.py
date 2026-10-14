@@ -90,8 +90,6 @@ def _bagpiper_audio_source(config, metadata, source):
     io = recipe["multimodal_io"]["continuous_audio"]
     tag = io.get("encoder_hf_model_tag", "Qwen/Qwen2.5-Omni-7B")
     options = config.adapter_options
-    if not True:
-        raise ValueError("Bagpiper precomputed native mel requires vllm_engine_kwargs.enable_mm_embeds=true")
     revision = options.get("audio_processor_revision")
     processor_source = options.get("audio_processor_path", tag)
     if revision is None and not Path(processor_source).is_dir():
