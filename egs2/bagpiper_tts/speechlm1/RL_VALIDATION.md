@@ -69,6 +69,11 @@ action event to its final candidate and audio record.
 
 These are small engineering checks. There is no initial-checkpoint TTS held-out
 comparison, and this is not a full LibriTTS result or evidence of a quality gain.
+Both training and held-out samples came from LibriTTS test-clean. Their local
+utterance identities are disjoint, but the run has not established isolation
+from the complete registered general benchmark components. Retain this as an
+engineering validation record; new training must check the current registered
+held-out media and connected-component protection metadata before freezing.
 The first SGLang adapter uses synchronous full-prefix FP32 inference; caching,
 throughput and tensor-parallel deployment remain future work.
 
