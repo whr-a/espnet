@@ -344,7 +344,7 @@ class NativeSpeechLMPolicy(nn.Module):
                 end = min(t, start + self.token_chunk_size)
                 targets = labels[:, start:end, stream]
                 active = stream_mask[:, start:end, stream]
-                if not active.any():
+                if self.bagpiper_config is not None and not active.any():
                     if phases is not None:
                         # Inactive codec streams still validate the current
                         # modality decision against the recorded action layout.
