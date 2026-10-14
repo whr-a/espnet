@@ -141,34 +141,67 @@ def _bagpiper_audio_source(config, metadata, source):
     if not encoded_length or not len(features):
         raise ValueError("SpeechLM waveform has no native encoder frames")
     count = int(metadata["num_stream"])
-    from transformers import AutoTokenizer
+    from espnet2.speechlm.model.speechlm.multimodal_io.text import HuggingFaceTextIO
+    from espnet2.speechlm.model.speechlm.speechlm_job import SpeechLMPreprocessor
 
-    tok = AutoTokenizer.from_pretrained(options["reference_assets"], use_fast=True)
+    # Keep the native recipe tokenizer, vocabulary offset and message markers.
+    # The exported tokenizer is used only for decoding generated text.
+    text_handler = HuggingFaceTextIO(**recipe["multimodal_io"]["text"])
+    handler.modality, handler.is_discrete = "audio", False
+    preprocessor = SpeechLMPreprocessor.__new__(SpeechLMPreprocessor)
+    preprocessor.is_train = False
+    preprocessor.multimodal_io = {"continuous_audio": handler, "text": text_handler}
+    preprocessor.audio_input = "continuous_audio"
+    preprocessor.audio_output = "discrete_audio"
+    preprocessor.loss_region = "assistant"
+    preprocessor.audio_cfg = 0.0
+    preprocessor.num_stream = count
+    preprocessor.pad_id = 0
+    specials = [
+        "<|pad|>",
+        "<|bos|>",
+        "<|eos|>",
+        "<|eot|>",
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|text|>",
+        "<|audio|>",
+        "<|image|>",
+        "<|video|>",
+        "<|toolcall|>",
+    ]
+    preprocessor.vocab = specials + [f"<|unused_{i}|>" for i in range(12, 256)]
+    preprocessor.vocab_intervals = {
+        "special_token": [(0, 256)],
+        "text": [(metadata["text_token_offset"], metadata["text_token_end"])],
+    }
     question = source.get("prompt", source.get("question", ""))
-    text_ids = tok.encode(question, add_special_tokens=False) if question else []
-    # Native role/modality marker remains an ordinary embedding before features.
-    primary = [
-        metadata["bos_token_id"],
-        metadata["user_token_id"],
-        metadata["audio_token_id"],
-        *([metadata["audio_token_id"]] * encoded_length),
-        *([metadata["text_token_id"], *text_ids] if text_ids else []),
-        metadata["eos_token_id"],
-        metadata["assistant_token_id"],
-    ]
-    source["prompt_token_ids"] = [[token, *([0] * (count - 1))] for token in primary]
-    source["vllm_prompt_token_ids"] = [
-        metadata["bos_token_id"],
-        metadata["user_token_id"],
-        metadata["audio_token_id"],
-        *([metadata["text_token_id"], *text_ids] if text_ids else []),
-        metadata["eos_token_id"],
-        metadata["assistant_token_id"],
-    ]
+    dialogue = [["user", "audio", (waveform[None], int(frontend.sampling_rate))]]
+    if question:
+        dialogue.append(["user", "text", question])
+    processed = preprocessor.preprocessing(
+        ("dialogue", source["id"], "rl"), {"dialogue": dialogue}
+    )
+    prefix = np.concatenate(
+        (processed["sequence"], preprocessor.special_token("<|assistant|>"))
+    )
+    source["prompt_token_ids"] = prefix.tolist()
+    primary = prefix[:, 0].tolist()
+    _, audio_start, native_encoder_length, native_features = processed["conti_feats"][0]
+    if native_encoder_length != encoded_length or not np.array_equal(
+        native_features, features
+    ):
+        raise ValueError(
+            "Native chat preprocessing changed the prepared audio features"
+        )
+    source["vllm_prompt_token_ids"] = (
+        primary[:audio_start] + primary[audio_start + encoded_length :]
+    )
     source["native_model_inputs"] = {
         "continuous_audio_feats": features[None].tolist(),
         "continuous_audio_lengths": [len(features)],
-        "continuous_audio_indices": [[0, 3, int(encoded_length)]],
+        "continuous_audio_indices": [[0, audio_start, int(encoded_length)]],
     }
     source["multi_modal_data"] = {
         "audio": {
@@ -193,6 +226,9 @@ def _bagpiper_audio_source(config, metadata, source):
         ).hexdigest(),
         "feature_length": len(features),
         "encoder_length": int(encoded_length),
+        "chat_template": "native SpeechLMPreprocessor/dialogue/user-audio,user-text/v1",
+        "text_tokenizer_source": recipe["multimodal_io"]["text"]["tokenizer_name"],
+        "native_prefix_sha256": hashlib.sha256(prefix.tobytes()).hexdigest(),
         "conditioning": "native recipe mel; trainable encoder/adaptor; SGLang precomputed feature input",
         **waveform_contract,
     }
