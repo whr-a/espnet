@@ -403,3 +403,37 @@ shared output paths.
   url       = {https://openreview.net/forum?id=FuHs64E3X6}
 }
 ```
+
+## Optional Miles RL stage
+
+This existing recipe keeps SFT as its default. `run.sh --rl` selects an optional
+post-training stage using a pinned Miles library and SGLang rollout. Architecture
+adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
+or vendored. Set the pretrained checkpoint, original training YAML, token assets,
+codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
+
+```bash
+./run.sh --rl --data-input /path/to/avqa --rl-config conf/rl.yaml
+# A user data directory is accepted directly:
+./run.sh --rl --wav-scp data/rl/wav.scp --text data/rl/text --questions data/rl/questions --choices data/rl/choices.json
+# Existing frozen manifests can skip preparation:
+./run.sh --rl --stage 2 --rl-config conf/rl.yaml
+```
+
+Stages 1/2/3 prepare data, validate the configuration and train. AVQA preparation
+uses the WEST default question/choice/`<answer>` format and supports the original
+HuggingFace parquet or existing cached parquet. LibriTTS uses `.normalized.txt`
+paired with WAV files. Custom QA inputs require `questions` keyed like `wav.scp`
+and optional `choices.json` mapping utterance IDs to choice arrays. All manifests
+have unique identities, references, input audio paths and SHA256 audit sidecars.
+
+TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
+result with a separately frozen ASR model and returns negative normalized WER.
+QA training uses exact normalized answer/choice accuracy. MMAU evaluation must
+freeze its own held-out manifest and retains raw generations before scoring.
+
+The first SGLang implementation is deliberately synchronous and uses full-prefix
+FP32 forward with TP=1. It records every primary and secondary action, mask,
+sampling contract and joint behavior log probability; it is not a throughput
+benchmark. Checkpoints, exports, nonzero gradients, probability agreement and
+held-out task metrics must all pass before claiming end-to-end acceptance.

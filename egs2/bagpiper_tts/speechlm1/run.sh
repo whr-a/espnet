@@ -16,6 +16,27 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+# The optional RL stage follows the existing supervised/export/inference stages.
+if [[ ${1:-} == --rl ]]; then
+    shift
+    exec ./rl.sh "$@"
+fi
+for ((i=1; i<=$#; i++)); do
+    if [[ ${!i} == --stage ]]; then
+        next=$((i + 1))
+        if [[ ${!next:-} == 4 ]]; then
+            rl_args=()
+            while (($#)); do
+                case $1 in
+                    --stage|--stop-stage|--stop_stage) shift 2 ;;
+                    *) rl_args+=("$1"); shift ;;
+                esac
+            done
+            exec ./rl.sh "${rl_args[@]}"
+        fi
+    fi
+done
+
 . ../../TEMPLATE/asr1/scripts/speechlm/stage_utils.sh
 
 stage=1
