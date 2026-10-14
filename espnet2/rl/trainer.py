@@ -17,6 +17,7 @@ import copy
 import json
 import os
 import random
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -311,6 +312,9 @@ class NativeGRPOTrainer:
                     batch.save_to_disk(output / f"rollout-{step:06d}.pkl")
                     payload = [batch, metrics, None]
                 except Exception as error:
+                    (output / f"rollout-{step:06d}.error.txt").write_text(
+                        traceback.format_exc()
+                    )
                     payload = [None, None, f"{type(error).__name__}: {error}"]
             else:
                 payload = [None, None, None]
@@ -337,6 +341,9 @@ class NativeGRPOTrainer:
                         self.config,
                     )
                 except Exception as error:
+                    (output / f"checkpoint-{step + 1:06d}.error.txt").write_text(
+                        traceback.format_exc()
+                    )
                     status[0] = f"{type(error).__name__}: {error}"
             if self.world_size > 1:
                 distributed.broadcast_object_list(status, src=0)
