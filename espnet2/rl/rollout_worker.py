@@ -26,7 +26,7 @@ def main():
     if config.rollout_backend == "sglang":
         callback = resolve_callable(config.sglang_generate_factory)
     else:
-        callback = resolve_callable(config.request_factory)
+        callback = resolve_callable(config.vllm_generate_factory)
     generations = callback(config, args.model, sources, args.step)
     result = {
         "policy_step": args.step,

@@ -75,6 +75,7 @@ class ESPnetRLConfig:
     adapter_factory: str | None = None
     exporter: str | None = None
     request_factory: str | None = None
+    vllm_generate_factory: str | None = None
     reward_function: str | None = None
     adapter_options: dict[str, Any] = field(default_factory=dict)
 
@@ -96,6 +97,8 @@ class ESPnetRLConfig:
             raise ValueError("Recipe must supply its ESPnet adapter_factory and exporter")
         if self.rollout_backend == "sglang" and not self.sglang_generate_factory:
             raise ValueError("SGLang requires an architecture generation factory")
+        if self.rollout_backend == "vllm" and not self.vllm_generate_factory:
+            raise ValueError("vLLM requires an architecture generation factory")
         if self.kl_type not in ("k1", "k2", "k3", "low_var_kl"):
             raise ValueError("Unsupported Miles KL estimator")
         if self.loss_agg_mode != "token-mean":
