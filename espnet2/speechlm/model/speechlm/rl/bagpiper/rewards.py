@@ -71,9 +71,18 @@ class ASRWERReward:
         frames=matrix[(matrix[:,0]>=base)&(matrix[:,0]<base+size)]
         if len(frames)<q:
             raise ValueError("TTS candidate has no decodable audio; preserve as runtime failure")
-        codes=torch.stack([(frames[:,s]-(base+s*size+1)).clamp(0,1023) for s in range(q)],-1)
-        length=len(codes)-q+1
-        aligned=torch.stack([codes[s:s+length,s] for s in range(q)],0)[None].to(self.codec.device)
+        # Native delay renderer shifts stream s by s frames. Reserved codec
+        # pad tokens are removed only where this fixed delay discards them;
+        # an invalid token in an actual aligned codebook frame is an error.
+        length=len(frames)-q+1
+        aligned=[]
+        for stream in range(q):
+            tokens=frames[stream:stream+length,stream]
+            offset=base+stream*size+1
+            if ((tokens<offset)|(tokens>=offset+1024)).any():
+                raise ValueError(f"Invalid sampled codec token in aligned stream {stream}; no clamping")
+            aligned.append(tokens-offset)
+        aligned=torch.stack(aligned,0)[None].to(self.codec.device)
         with torch.inference_mode(): waveform=self.codec.decode(aligned).audio_values.squeeze().cpu().float().numpy()
         if waveform.ndim!=1 or not waveform.size or not np.isfinite(waveform).all(): raise ValueError("Invalid generated WAV")
         rate=int(self.codec.config.sample_rate); digest=hashlib.sha256(waveform.tobytes()).hexdigest()

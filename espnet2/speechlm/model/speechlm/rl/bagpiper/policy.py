@@ -591,6 +591,13 @@ def factory(config, device):
                 parameter.requires_grad_(False)
     else:
         raise ValueError("Bagpiper adapter requires its current native SpeechLM recipe")
+    if config.adapter_options.get("reference_assets"):
+        import json
+        exported=json.loads((Path(config.adapter_options["reference_assets"])/"config.json").read_text())
+        geometry=_bagpiper_geometry(model)
+        for field in ("text_token_offset","text_token_end","codec_base_offset","codec_layer_size"):
+            if geometry[field] != exported[field]:
+                raise ValueError(f"Native recipe modality order differs from frozen token assets: {field} {geometry[field]} != {exported[field]}; preserve original YAML mapping order")
     model = model.to(device=device, dtype=getattr(torch, config.dtype)).eval()
     if recipe.get("model", {}).get("activation_checkpointing", False):
         model.model.gradient_checkpointing_enable()
