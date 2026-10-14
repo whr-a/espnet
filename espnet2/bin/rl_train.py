@@ -18,7 +18,7 @@ def main():
     parser.add_argument("--train-config")
     parser.add_argument("--validate-only", action="store_true")
     args = parser.parse_args()
-    config = ESPnetRLConfig.from_yaml(args.config)
+    config = ESPnetRLConfig.load(args.config)
     for field in (
         "manifest",
         "eval_manifest",
