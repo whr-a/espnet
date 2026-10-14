@@ -46,6 +46,7 @@ rl_text=
 rl_questions=
 rl_choices=
 rl_hf_revision=
+rl_qa_template=default
 
 
 # Launch
@@ -308,7 +309,7 @@ if (( stage <= 6 && stop_stage >= 6 && node_rank == 0 )); then
     if [[ -n ${rl_manifest} && -z ${rl_data_input} && -z ${rl_wav_scp} ]]; then
         rl_args+=(--stage 2)
     fi
-    for key in manifest data_input wav_scp text questions choices hf_revision; do
+    for key in manifest data_input wav_scp text questions choices hf_revision qa_template; do
         option=rl_${key}
         [[ -z ${!option} ]] || rl_args+=(--${key//_/-} "${!option}")
     done
