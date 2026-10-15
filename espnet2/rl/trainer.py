@@ -17,8 +17,8 @@ import copy
 import json
 import os
 import random
-import traceback
 import time
+import traceback
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -39,6 +39,7 @@ from .parallel import average_native_gradients, synchronize_native_model
 from .parallel_optimizer import CPUOffloadedAdamW
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
+from .scoring import score_native_batch
 from .types import validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
@@ -157,14 +158,26 @@ class NativeGRPOTrainer:
             results.append(scores.log_probs.detach().cpu())
         return torch.cat(results)
 
-    def prepare_batch(self, batch):
-        with torch.no_grad():
-            old = self._score_chunks(self.policy, batch)
-            reference = self._score_chunks(self.reference, batch)
+    def prepare_batch(self, batch, native_scores=None):
+        if native_scores is None:
+            with torch.no_grad():
+                old = self._score_chunks(self.policy, batch)
+                reference = self._score_chunks(self.reference, batch)
+        else:
+            if not isinstance(native_scores, (tuple, list)) or len(native_scores) != 2:
+                raise ValueError("Native scores require current and reference tensors")
+            old, reference = native_scores
         mask = batch.batch["response_mask"]
-        if old.shape != mask.shape or reference.shape != mask.shape:
+        if any(
+            not isinstance(value, torch.Tensor)
+            or value.shape != mask.shape
+            or value.requires_grad
+            or value.device.type != "cpu"
+            or not torch.isfinite(value).all()
+            for value in (old, reference)
+        ):
             raise ValueError(
-                "The ESPnet scorer must return exactly one probability per action"
+                "The ESPnet scorer must return finite detached CPU probabilities per action"
             )
         drift = ((old - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
         if not np.isfinite(drift) or drift > self.config.score_tolerance:
@@ -203,6 +216,7 @@ class NativeGRPOTrainer:
         behavior_version,
         learner_version,
         behavior_checkpoint_sha256,
+        native_scores=None,
     ):
         """Audit the behavior actor independently of the current learner.
 
@@ -256,20 +270,37 @@ class NativeGRPOTrainer:
             )
         elif behavior_policy is self.policy:
             raise ValueError("Stale rollout cannot be audited with the current actor")
-        with torch.no_grad():
-            old = self._score_chunks(self.policy, batch)
-            behavior = (
-                old
-                if behavior_policy is self.policy
-                else self._score_chunks(behavior_policy, batch)
-            )
-            reference = self._score_chunks(self.reference, batch)
+        if native_scores is None:
+            with torch.no_grad():
+                old = self._score_chunks(self.policy, batch)
+                behavior = (
+                    old
+                    if behavior_policy is self.policy
+                    else self._score_chunks(behavior_policy, batch)
+                )
+                reference = self._score_chunks(self.reference, batch)
+        else:
+            if not isinstance(native_scores, (tuple, list)) or len(native_scores) != 3:
+                raise ValueError(
+                    "Native async scores require current, behavior, reference"
+                )
+            old, behavior, reference = native_scores
         mask = batch.batch["response_mask"]
         for scores in (old, behavior, reference):
-            if scores.shape != mask.shape:
+            if (
+                not isinstance(scores, torch.Tensor)
+                or scores.shape != mask.shape
+                or not torch.isfinite(scores).all()
+                or scores.requires_grad
+                or scores.device.type != "cpu"
+            ):
                 raise ValueError(
-                    "Native async scores must preserve every sampled action"
+                    "Native async scores must be finite, detached CPU tensors preserving sampled actions"
                 )
+        if behavior_version == learner_version and not torch.equal(old, behavior):
+            raise ValueError(
+                "Current behavior native scores differ from learner scores"
+            )
         numerical_error = (
             ((behavior - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
         )
@@ -484,22 +515,46 @@ class NativeGRPOTrainer:
                     batch = collate_rollouts(
                         chosen, generations, self.config.group_size
                     )
-                    metrics = self.prepare_batch(batch)
+                    payload = [batch, None]
+                except Exception as error:
+                    (output / f"rollout-{step:06d}.error.txt").write_text(
+                        traceback.format_exc()
+                    )
+                    payload = [None, f"{type(error).__name__}: {error}"]
+            else:
+                payload = [None, None]
+            if self.world_size > 1:
+                group = self._object_collective_group()
+                distributed.broadcast_object_list(payload, src=0, group=group)
+            batch, error = payload
+            if error:
+                raise RuntimeError(
+                    f"Rollout/score stage failed at step {step}: {error}"
+                )
+            try:
+                old, _, reference = score_native_batch(self, batch)
+            except Exception:
+                (output / f"rollout-{step:06d}.rank-{self.rank}.error.txt").write_text(
+                    traceback.format_exc()
+                )
+                raise
+            payload = [None, None, None]
+            if self.rank == 0:
+                try:
+                    metrics = self.prepare_batch(batch, native_scores=(old, reference))
                     batch.save_to_disk(output / f"rollout-{step:06d}.pkl")
                     payload = [batch, metrics, None]
                 except Exception as error:
                     (output / f"rollout-{step:06d}.error.txt").write_text(
                         traceback.format_exc()
                     )
-                    payload = [None, None, f"{type(error).__name__}: {error}"]
-            else:
-                payload = [None, None, None]
+                    payload[2] = f"{type(error).__name__}: {error}"
             if self.world_size > 1:
-                distributed.broadcast_object_list(payload, src=0)
+                distributed.broadcast_object_list(payload, src=0, group=group)
             batch, metrics, error = payload
             if error:
                 raise RuntimeError(
-                    f"Rollout/score stage failed at step {step}: {error}"
+                    f"Reward/prepare stage failed at step {step}: {error}"
                 )
             update_start = time.monotonic()
             metrics.update(self.update_actor(batch))
@@ -538,11 +593,19 @@ class NativeGRPOTrainer:
                     )
                     status[0] = f"{type(error).__name__}: {error}"
             if self.world_size > 1:
-                distributed.broadcast_object_list(status, src=0)
+                distributed.broadcast_object_list(status, src=0, group=group)
             if status[0]:
                 raise RuntimeError(
                     f"Checkpoint stage failed at step {step + 1}: {status[0]}"
                 )
+
+    def _object_collective_group(self):
+        """Use Gloo for CPU rollout objects, avoiding GPU-sized serialization."""
+        if distributed.get_backend() == "gloo":
+            return None
+        if not hasattr(self, "_rollout_object_group"):
+            self._rollout_object_group = distributed.new_group(backend="gloo")
+        return self._rollout_object_group
 
 
 def run(config):

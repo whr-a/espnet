@@ -7,15 +7,16 @@ import time
 import traceback
 from pathlib import Path
 
+import ray
 import torch
 import torch.distributed as dist
-
 from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutput
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 
 from .config import ESPnetRLConfig
 from .rollout import CheckpointRollout, save_checkpoint, sha256
+from .scoring import score_native_batch
 from .trainer import NativeGRPOTrainer
 from .utils import build_policy
 
@@ -36,6 +37,38 @@ class ESPnetTrainRayActor(TrainRayActor):
             raise ValueError("The native short-run actor supports fresh GRPO only")
         self._init_common(args, role, with_ref=with_ref)
         config = ESPnetRLConfig(**args.espnet_config)
+        assigned = ray.get_gpu_ids()
+        visible = [
+            value
+            for value in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+            if value
+        ]
+        context = ray.get_runtime_context()
+        census = {
+            "rank": self._rank,
+            "world_size": self._world_size,
+            "ray_node_id": context.get_node_id(),
+            "ray_gpu_ids": assigned,
+            "cuda_visible_devices": visible,
+            "local_rank": int(os.environ["LOCAL_RANK"]),
+            "visible_gpu_count": torch.cuda.device_count(),
+            "current_device": torch.cuda.current_device(),
+            "pid": os.getpid(),
+        }
+        self.device_census = census
+        Path(config.output_dir, f"train-device-rank-{self._rank}.json").write_text(
+            json.dumps(census, indent=2) + "\n"
+        )
+        if (
+            len(assigned) != 1
+            or len(visible) != 1
+            or census["local_rank"] != 0
+            or census["visible_gpu_count"] != 1
+            or census["current_device"] != 0
+        ):
+            raise ValueError(
+                "Native Ray actor requires one assigned visible GPU at local rank zero"
+            )
         config.device = f"cuda:{os.environ['LOCAL_RANK']}"
         torch.manual_seed(config.seed)
         torch.backends.cuda.matmul.allow_tf32 = False
@@ -54,6 +87,9 @@ class ESPnetTrainRayActor(TrainRayActor):
 
     def _get_parallel_config(self):
         return self.train_parallel_config
+
+    def get_device_census(self):
+        return self.device_census
 
     def sleep(self):
         raise ValueError("The disaggregated learner stays resident")
@@ -74,7 +110,7 @@ class ESPnetTrainRayActor(TrainRayActor):
         if rollout_id != self.version:
             raise ValueError("Unexpected or repeated optimizer update")
         start = time.monotonic()
-        payload = [None, None, None]
+        payload = [None]
         if self._rank == 0:
             try:
                 with object_store.get_instance().get(rollout_data_ref) as data:
@@ -86,39 +122,84 @@ class ESPnetTrainRayActor(TrainRayActor):
                         raise ValueError(
                             "Behavior checkpoint file differs from rollout identity"
                         )
-                    behavior = None
-                    if version != self.version:
-                        config = copy.deepcopy(self.config)
-                        config.checkpoint = str(checkpoint)
-                        behavior = (
-                            build_policy(config, "cpu").eval().requires_grad_(False)
-                        )
-                    metrics = self.trainer.prepare_async_batch(
-                        batch,
-                        behavior,
-                        behavior_version=version,
-                        learner_version=self.version,
-                        behavior_checkpoint_sha256=actual_hash,
-                    )
-                    del behavior
-                batch.save_to_disk(
-                    Path(self.config.output_dir) / f"rollout-{rollout_id:06d}.pkl"
-                )
-                payload = [batch, metrics, None]
+                    if (
+                        type(version) is not int
+                        or version < 0
+                        or not 0
+                        <= self.version - version
+                        <= self.config.max_weight_staleness
+                    ):
+                        raise ValueError("Invalid behavior checkpoint staleness")
+                    payload[0] = {
+                        "batch": batch,
+                        "behavior_version": version,
+                        "behavior_checkpoint": str(checkpoint),
+                        "behavior_checkpoint_sha256": actual_hash,
+                        "error": None,
+                    }
             except Exception as error:
-                Path(
-                    self.config.output_dir, f"rollout-{rollout_id:06d}.error.txt"
-                ).write_text(traceback.format_exc())
-                payload[2] = f"{type(error).__name__}: {error}"
+                self._record_rollout_error(rollout_id)
+                payload[0] = {"error": f"{type(error).__name__}: {error}"}
+        self._broadcast_payload(payload)
+        data = payload[0]
+        if data["error"]:
+            raise RuntimeError(data["error"])
+        batch = data["batch"]
+        version = data["behavior_version"]
+        # Each actor scores only its native shard. CPU behavior replicas are
+        # loaded independently; rank-zero-only reward decoding avoids TTS races.
+        behavior = None
+        load_error = None
+        try:
+            if version != self.version:
+                config = copy.deepcopy(self.config)
+                config.checkpoint = data["behavior_checkpoint"]
+                behavior = build_policy(config, "cpu").eval().requires_grad_(False)
+        except Exception as error:
+            load_error = f"rank {self._rank}: {type(error).__name__}: {error}"
+            self._record_rollout_error(rollout_id)
         if self._world_size > 1:
             from miles.utils.distributed_utils import get_gloo_group
 
-            dist.broadcast_object_list(payload, src=0, group=get_gloo_group())
-        batch, metrics, error = payload
-        if error:
-            raise RuntimeError(error)
+            failures = [None] * self._world_size
+            dist.all_gather_object(failures, load_error, group=get_gloo_group())
+        else:
+            failures = [load_error]
+        failures = [failure for failure in failures if failure]
+        if failures:
+            raise RuntimeError("Behavior loading failed: " + "; ".join(failures))
+        try:
+            native_scores = score_native_batch(self.trainer, batch, behavior)
+        except Exception:
+            self._record_rollout_error(rollout_id)
+            raise
+        payload = [None]
+        if self._rank == 0:
+            try:
+                metrics = self.trainer.prepare_async_batch(
+                    batch,
+                    behavior,
+                    behavior_version=version,
+                    learner_version=self.version,
+                    behavior_checkpoint_sha256=data["behavior_checkpoint_sha256"],
+                    native_scores=native_scores,
+                )
+                batch.save_to_disk(
+                    Path(self.config.output_dir) / f"rollout-{rollout_id:06d}.pkl"
+                )
+                payload[0] = {"batch": batch, "metrics": metrics, "error": None}
+            except Exception as error:
+                self._record_rollout_error(rollout_id)
+                payload[0] = {"error": f"{type(error).__name__}: {error}"}
+        del behavior, native_scores
+        self._broadcast_payload(payload)
+        prepared = payload[0]
+        if prepared["error"]:
+            raise RuntimeError(prepared["error"])
+        batch, metrics = prepared["batch"], prepared["metrics"]
         metrics.update(self.trainer.update_actor(batch))
-        torch.cuda.synchronize()
+        if self.trainer.device.type == "cuda":
+            torch.cuda.synchronize(self.trainer.device)
         end = time.monotonic()
         self.version += 1
         if self._rank == 0:
@@ -141,6 +222,22 @@ class ESPnetTrainRayActor(TrainRayActor):
             self.last_metrics = metrics
         self.last_end = end
         return TrainStepOutput(TrainStepOutcome.NORMAL)
+
+    def _broadcast_payload(self, payload):
+        if self._world_size > 1:
+            from miles.utils.distributed_utils import get_gloo_group
+
+            dist.broadcast_object_list(payload, src=0, group=get_gloo_group())
+
+    def _record_rollout_error(self, rollout_id):
+        """Preserve failures without masking them with a logging-path exception."""
+        try:
+            suffix = "" if self._rank == 0 else f".rank-{self._rank}"
+            Path(
+                self.config.output_dir, f"rollout-{rollout_id:06d}{suffix}.error.txt"
+            ).write_text(traceback.format_exc())
+        except OSError:
+            pass
 
     def save_model(self, rollout_id, force_sync=False):
         if rollout_id + 1 != self.version:
