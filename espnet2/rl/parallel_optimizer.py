@@ -19,6 +19,9 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
     AdamW checkpoint keys. Every rank must call ``step`` together after gradient
     averaging. Only the owner may save or restore the complete optimizer.
     Frozen parameters and model buffers are never passed to this optimizer.
+    The CPU copy is always FP32, so a bfloat16 actor keeps FP32 master weights:
+    updates far below a low-precision parameter's resolution accumulate here
+    instead of rounding away on every step.
     """
 
     def __init__(
@@ -53,7 +56,8 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
         self._cpu_optimizer = None
         if self.rank == owner_rank:
             self._shadow = [
-                torch.nn.Parameter(p.detach().to("cpu", copy=True)) for p in parameters
+                torch.nn.Parameter(p.detach().to("cpu", torch.float32, copy=True))
+                for p in parameters
             ]
             # foreach allocates tensor-list intermediates at model scale.
             self._cpu_optimizer = torch.optim.AdamW(
@@ -81,7 +85,7 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
                     shadow.grad = (
                         None
                         if native.grad is None
-                        else native.grad.detach().to("cpu", copy=True)
+                        else native.grad.detach().to("cpu", torch.float32, copy=True)
                     )
                     if (
                         shadow.grad is not None
@@ -90,7 +94,8 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
                         raise FloatingPointError("Nonfinite CPU Adam gradient")
                 self._cpu_optimizer.step()
                 for native, shadow in zip(self._native, self._shadow, strict=True):
-                    # copy_ preserves native Parameter identity, device and storage.
+                    # copy_ preserves native Parameter identity, device, dtype
+                    # and storage; a low-precision actor gets the rounded master.
                     native.copy_(shadow)
                     if shadow in self._cpu_optimizer.state:
                         self.state[native] = self._cpu_optimizer.state[shadow]

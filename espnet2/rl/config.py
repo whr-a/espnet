@@ -204,6 +204,9 @@ class ESPnetRLConfig:
             raise ValueError("dtype must be float32, bfloat16 or float16")
         if self.optimizer_device not in (None, "cpu"):
             raise ValueError("optimizer_device must be null or cpu")
+        if self.dtype != "float32" and self.optimizer_device != "cpu":
+            # Only the CPU optimizer keeps FP32 master weights.
+            raise ValueError("A low-precision actor requires optimizer_device: cpu")
         if self.distributed_strategy not in ("ddp", "native_allreduce"):
             raise ValueError("distributed_strategy must be ddp or native_allreduce")
         if type(self.distributed_timeout_minutes) not in (

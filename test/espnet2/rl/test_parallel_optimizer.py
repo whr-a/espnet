@@ -302,6 +302,41 @@ class TestCPUOffloadDDP(unittest.TestCase):
         torch.testing.assert_close(original, oracle, rtol=0, atol=0)
         self.assertEqual(restored.param_groups[0]["lr"], 0.03)
 
+    def test_bfloat16_actor_accumulates_updates_in_fp32_master(self):
+        torch.set_num_threads(1)
+        native = nn.Parameter(torch.tensor([1.0, -0.5], dtype=torch.bfloat16))
+        master = nn.Parameter(native.detach().float())
+        offloaded = CPUOffloadedAdamW([native], lr=1e-4)
+        reference = torch.optim.AdamW(
+            [master], lr=1e-4, weight_decay=0.0, foreach=False
+        )
+        for _ in range(50):
+            native.grad = torch.tensor([1.0, -1.0], dtype=torch.bfloat16)
+            master.grad = native.grad.float()
+            offloaded.step()
+            reference.step()
+        # Each step moves the weights by about 1e-4, below bfloat16's 2**-7
+        # spacing at 1.0, yet 50 of them add up to a visible change.
+        self.assertEqual(native.dtype, torch.bfloat16)
+        torch.testing.assert_close(offloaded._shadow[0], master, rtol=0, atol=0)
+        torch.testing.assert_close(native, master.to(torch.bfloat16), rtol=0, atol=0)
+        self.assertNotEqual(native[0].item(), 1.0)
+        self.assertEqual(
+            offloaded.state_dict()["state"][0]["exp_avg"].dtype, torch.float32
+        )
+
+    def test_low_precision_actor_requires_the_cpu_optimizer(self):
+        config = ESPnetRLConfig(
+            adapter_factory="a:b",
+            exporter="c:d",
+            sglang_generate_factory="e:f",
+            dtype="bfloat16",
+        )
+        with self.assertRaisesRegex(ValueError, "optimizer_device: cpu"):
+            config.validate()
+        config.optimizer_device = "cpu"
+        config.validate()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
