@@ -17,6 +17,7 @@ from miles.utils import object_store
 from .config import ESPnetRLConfig
 from .rollout import CheckpointRollout, save_checkpoint, sha256
 from .scoring import score_native_batch
+from .timing import learner_timing
 from .trainer import NativeGRPOTrainer
 from .utils import build_policy
 
@@ -110,6 +111,7 @@ class ESPnetTrainRayActor(TrainRayActor):
         if rollout_id != self.version:
             raise ValueError("Unexpected or repeated optimizer update")
         start = time.monotonic()
+        start_wall = time.time()
         payload = [None]
         if self._rank == 0:
             try:
@@ -201,19 +203,22 @@ class ESPnetTrainRayActor(TrainRayActor):
         if self.trainer.device.type == "cuda":
             torch.cuda.synchronize(self.trainer.device)
         end = time.monotonic()
+        end_wall = time.time()
         self.version += 1
         if self._rank == 0:
-            wait = 0.0 if self.last_end is None else start - self.last_end
+            metrics.update(
+                learner_timing(
+                    start,
+                    end,
+                    self.last_end,
+                    warmup=self.version <= self.config.warmup_steps,
+                    start_wall=start_wall,
+                    end_wall=end_wall,
+                )
+            )
             metrics.update(
                 {
                     "step": self.version,
-                    "perf/train_time": end - start,
-                    "perf/train_wait_time": wait,
-                    "perf/step_time": end - start + wait,
-                    "perf/wait_time_ratio": wait / (end - start + wait),
-                    "perf/warmup": self.version <= self.config.warmup_steps,
-                    "perf/train_start_wall": time.time() - (end - start),
-                    "perf/train_end_wall": time.time(),
                     "runtime/train_world_size": self._world_size,
                 }
             )

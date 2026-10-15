@@ -15,6 +15,7 @@ import pytest
 from espnet2.bin.rl_train_async import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.rollout import sha256
+from espnet2.rl.process_identity import host_identity
 from espnet2.rl.rollout_replicas import (
     _process_start_ticks,
     run_owned_subprocess,
@@ -210,6 +211,7 @@ def test_owned_child_session_cleanup_leaves_unrelated_process_alive(tmp_path):
             time.sleep(0.01)
         receipt = json.loads((tmp_path / "process.json").read_text())
         assert receipt["pid"] == receipt["pgid"]
+        assert receipt["host_identity"] == host_identity()
         assert receipt["start_ticks"] == _process_start_ticks(receipt["pid"])
         assert terminate_owned_process(tmp_path)
         thread.join(timeout=10)
@@ -230,8 +232,34 @@ def test_stale_process_receipt_does_not_signal_reused_pid(tmp_path):
     )
     try:
         (tmp_path / "process.json").write_text(
-            json.dumps({"pid": other.pid, "pgid": other.pid, "start_ticks": "stale"})
+            json.dumps(
+                {
+                    "pid": other.pid,
+                    "pgid": other.pid,
+                    "start_ticks": "stale",
+                    "host_identity": host_identity(),
+                }
+            )
         )
+        assert not terminate_owned_process(tmp_path)
+        assert other.poll() is None
+    finally:
+        other.terminate()
+        other.wait(timeout=10)
+
+
+def test_shared_filesystem_receipt_does_not_signal_other_host_pid(tmp_path):
+    other = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
+    )
+    try:
+        receipt = {
+            "pid": other.pid,
+            "pgid": other.pid,
+            "start_ticks": _process_start_ticks(other.pid),
+            "host_identity": {**host_identity(), "hostname": "different-host"},
+        }
+        (tmp_path / "process.json").write_text(json.dumps(receipt))
         assert not terminate_owned_process(tmp_path)
         assert other.poll() is None
     finally:

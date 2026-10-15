@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from .rollout import sha256
+from .process_identity import host_identity
 
 
 def _process_start_ticks(pid):
@@ -26,6 +27,8 @@ def terminate_owned_process(directory):
     if not path.exists():
         return False
     receipt = json.loads(path.read_text())
+    if receipt.get("host_identity") != host_identity():
+        return False
     pid = receipt["pid"]
     if (
         receipt["start_ticks"] is None
@@ -67,6 +70,7 @@ def run_owned_subprocess(command, *, environment, directory, stream):
         "pgid": process.pid,
         "start_ticks": _process_start_ticks(process.pid),
         "command": command,
+        "host_identity": host_identity(),
     }
     try:
         Path(directory, "process.json").write_text(json.dumps(receipt) + "\n")

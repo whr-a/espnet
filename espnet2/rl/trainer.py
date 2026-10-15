@@ -37,9 +37,11 @@ from .miles_library import (
 )
 from .parallel import average_native_gradients, synchronize_native_model
 from .parallel_optimizer import CPUOffloadedAdamW
+from .process_identity import host_identity
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
 from .scoring import score_native_batch
+from .timing import learner_timing
 from .types import validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
@@ -500,8 +502,8 @@ class NativeGRPOTrainer:
             self.rollout = CheckpointRollout(self.config)
         if len({source["id"] for source in sources}) < self.config.prompts_per_step:
             raise ValueError("The prompt batch requires distinct source records")
+        last_end = None
         for step in range(self.config.steps):
-            step_start = time.monotonic()
             if self.rank == 0:
                 try:
                     chosen = [
@@ -523,6 +525,7 @@ class NativeGRPOTrainer:
                     payload = [None, f"{type(error).__name__}: {error}"]
             else:
                 payload = [None, None]
+            train_start, train_start_wall = time.monotonic(), time.time()
             if self.world_size > 1:
                 group = self._object_collective_group()
                 distributed.broadcast_object_list(payload, src=0, group=group)
@@ -556,23 +559,27 @@ class NativeGRPOTrainer:
                 raise RuntimeError(
                     f"Reward/prepare stage failed at step {step}: {error}"
                 )
-            update_start = time.monotonic()
             metrics.update(self.update_actor(batch))
             if self.device.type != "cpu":
                 get_torch_device().synchronize()
             update_end = time.monotonic()
+            update_end_wall = time.time()
             status = [None]
             if self.rank == 0:
                 try:
                     metrics["step"] = step + 1
-                    elapsed, wait = update_end - update_start, update_start - step_start
+                    metrics.update(
+                        learner_timing(
+                            train_start,
+                            update_end,
+                            last_end,
+                            warmup=step < self.config.warmup_steps,
+                            start_wall=train_start_wall,
+                            end_wall=update_end_wall,
+                        )
+                    )
                     metrics.update(
                         {
-                            "perf/train_time": elapsed,
-                            "perf/train_wait_time": wait,
-                            "perf/step_time": elapsed + wait,
-                            "perf/wait_time_ratio": wait / (elapsed + wait),
-                            "perf/warmup": step < self.config.warmup_steps,
                             "runtime/train_world_size": self.world_size,
                             "runtime/rollout_replicas": self.config.rollout_num_replicas,
                         }
@@ -592,6 +599,7 @@ class NativeGRPOTrainer:
                         traceback.format_exc()
                     )
                     status[0] = f"{type(error).__name__}: {error}"
+            last_end = update_end
             if self.world_size > 1:
                 distributed.broadcast_object_list(status, src=0, group=group)
             if status[0]:
@@ -645,6 +653,48 @@ def run(config):
         )
     if distributed.is_initialized():
         distributed.barrier()
+    if config.prompts_per_step == 32 and config.group_size == 8:
+        local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
+        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+        census = {
+            "rank": rank,
+            "world_size": (
+                distributed.get_world_size() if distributed.is_initialized() else 1
+            ),
+            "local_rank": local_rank,
+            "cuda_visible_devices": visible,
+            "visible_gpu_count": get_torch_device().device_count(),
+            "current_device": get_torch_device().current_device(),
+            "physical_gpu_id": (
+                visible[local_rank] if local_rank in range(len(visible)) else None
+            ),
+            "host_identity": host_identity(),
+            "pid": os.getpid(),
+        }
+        Path(output, f"train-device-rank-{rank}.json").write_text(
+            json.dumps(census, indent=2) + "\n"
+        )
+        if (
+            census["world_size"] != 4
+            or visible != ["0", "1", "2", "3"]
+            or census["visible_gpu_count"] != 4
+            or census["current_device"] != local_rank
+        ):
+            raise ValueError(
+                "Collocate native ranks require the four assigned training GPUs"
+            )
+        all_census = [None] * 4
+        distributed.all_gather_object(all_census, census)
+        if len({item["physical_gpu_id"] for item in all_census}) != 4 or any(
+            item["host_identity"] != census["host_identity"] for item in all_census
+        ):
+            raise ValueError(
+                "Collocate ranks do not occupy four distinct GPUs on one host"
+            )
+        if rank == 0:
+            Path(output, "train_census.json").write_text(
+                json.dumps(all_census, indent=2) + "\n"
+            )
     sources = read_manifest(config.manifest)
     # Reward implementations read the same effective configuration as the
     # actor and rollout, including command-line overrides. This path is host
