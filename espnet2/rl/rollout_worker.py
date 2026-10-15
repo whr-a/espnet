@@ -41,6 +41,18 @@ class FunctionEngine(RolloutEngine):
         return self.function(self.config, self.model_path, sources, rollout_id)
 
 
+def engine_class(config):
+    """The recipe's RolloutEngine class. The launchers resolve it first, so a
+    wrong name fails before a policy is built or exported."""
+    if config.rollout_backend != "sglang":
+        resolve_callable(config.vllm_generate_factory)
+        return FunctionEngine
+    engine = resolve_callable(config.sglang_engine)
+    if not (isinstance(engine, type) and issubclass(engine, RolloutEngine)):
+        raise TypeError(f"{config.sglang_engine} is not a RolloutEngine")
+    return engine
+
+
 class RolloutServer:
     """One engine and the integer policy version it currently holds."""
 
@@ -51,12 +63,7 @@ class RolloutServer:
     def load(self, model, version):
         start = time.monotonic()
         if self.engine is None:
-            build = (
-                resolve_callable(self.config.sglang_engine)
-                if self.config.rollout_backend == "sglang"
-                else FunctionEngine
-            )
-            self.engine = build(
+            self.engine = engine_class(self.config)(
                 self.config, model, directory=self.directory, replica=self.replica
             )
             action = "built"

@@ -41,6 +41,7 @@ from .parallel_optimizer import CPUOffloadedAdamW
 from .process_identity import host_identity
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
+from .rollout_worker import engine_class
 from .scoring import score_native_batch
 from .timing import learner_timing
 from .types import validate_token_scores
@@ -660,6 +661,7 @@ def run(config):
             backend.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
     config.validate()
+    engine_class(config)
     miles_evidence = verify_miles(config)
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import read_manifest, verify_data_admission
+from espnet2.rl.rollout_worker import engine_class
 
 
 def parser():
@@ -75,6 +76,7 @@ def main():
     config.validate()
     if config.execution_mode != "disagg_async":
         raise ValueError("This launcher requires execution_mode=disagg_async")
+    engine_class(config)
     if config.miles_source:
         sys.path.insert(0, config.miles_source)
     from espnet2.rl.miles_library import verify_miles

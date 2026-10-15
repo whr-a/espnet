@@ -488,3 +488,14 @@ def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
     assert len(calls) == 1 and calls[0][:2] == ["-m", "espnet2.bin.rl_launch"]
     assert "--validate-only" in calls[0]
     assert calls[0][calls[0].index("--rollout-node") + 1] == "rollout-node"
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted(ROOT.glob("egs2/*/*/conf/rl*.yaml")),
+    ids=lambda path: str(path.relative_to(ROOT / "egs2")),
+)
+def test_every_shipped_recipe_names_an_existing_rollout_engine(path):
+    from espnet2.rl.rollout_worker import engine_class
+
+    engine_class(ESPnetRLConfig.load(path))
