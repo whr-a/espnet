@@ -21,6 +21,17 @@ environment uses Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
 paths and Ray selectors are documented in
 [`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md).
 
+`conf/rl_opuslm_dialogue_librispeech_1gpu.yaml` trains Dialogue on one H100
+80GB, with the training rank and its rollout engine sharing the GPU;
+`conf/rl_opuslm_dialogue_librispeech_2gpu_async.yaml` and
+`conf/rl_opuslm_librispeech_2gpu_async.yaml` train on GPU 0 while GPU 1 rolls
+out, driven by the Miles async loop. Each runs 32×8 candidates per update and
+keeps one SGLang engine (`OpusLMEngine`) per rollout GPU for the whole run,
+loading every export in place; a batch's candidates go to the engine in one
+call. The comments in each file derive its memory settings. Plain has no
+one-GPU recipe: its FP32 policy and gradients (55.2 GiB) and the engine's own
+copy of the weights (27.6 GiB) do not fit in 80 GB together.
+
 For the earlier small synchronous profile, install Miles through
 `tools/installers/install_miles_rl.sh` and use
 `tools/installers/install_sglang_rl_env.sh` for a new inference environment, with
@@ -98,8 +109,9 @@ in the training YAML records the intended heldout set; training itself does not
 automatically run evaluation. References supervise WER and do not enter the
 native audio condition. The evaluator records source IDs, every group member,
 word-error and reference-word counts, completion-mean WER and corpus WER.
-Normalization is NFKC/casefold/whitespace with punctuation retained. The mean
-uses `errors/max(1, reference_words)` for each completion; corpus WER divides
+Normalization is NFKC, casefold and punctuation removal, the same
+`espnet2.rl.rewards.words` the training reward uses. The mean uses
+`errors/max(1, reference_words)` for each completion; corpus WER divides
 total errors by total reference words across all completions.
 
 `--export-dir /path/to/policy-000100` can reuse an existing inference export
