@@ -71,6 +71,7 @@ def run_owned_subprocess(command, *, environment, directory, stream):
         "start_ticks": _process_start_ticks(process.pid),
         "command": command,
         "host_identity": host_identity(),
+        "cuda_visible_devices": environment.get("CUDA_VISIBLE_DEVICES"),
     }
     try:
         Path(directory, "process.json").write_text(json.dumps(receipt) + "\n")
