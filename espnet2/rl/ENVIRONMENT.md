@@ -99,7 +99,9 @@ It failed at its first full backward with zero optimizer updates; its longer
 audio-conditioned sequences have no successful-gradient acceptance from the
 TTS Torch 2.13 run. The independently frozen QA006 native learner also used
 Torch 2.11.0+cu130 and Transformers 5.12.1, completing four optimizer updates;
-its complete checkpoint audit and final evaluation remain pending.
+its complete checkpoint audit and fresh final evaluation subsequently passed.
+The official local MMAU score remained 0/32 before and after; this historical
+small-batch result does not validate the new 32×8 profiles.
 Keep each run's actual interpreter and package paths with its frozen
 configuration rather than assuming every family used one profile.
 Native Torch 2.13 and Torchaudio 2.11 came from the existing host environment;
