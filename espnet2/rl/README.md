@@ -1,6 +1,8 @@
 # Optional Miles post-training stage
 
 Existing `egs2` recipes opt into `python -m espnet2.bin.rl_train --config CONFIG`.
+The new 32-prompt × 8-candidate, five-update dual-mode templates and data preparation
+are described in [SHORT_RUN_RECIPES.md](SHORT_RUN_RECIPES.md).
 ESPnet owns the native model, waveform preparation, architecture adapter,
 optimizer and checkpoints. Miles is an unmodified installed library pinned to
 official v0.1.2 (`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`). Its GRPO
