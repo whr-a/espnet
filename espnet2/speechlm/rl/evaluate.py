@@ -13,6 +13,7 @@ from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import CheckpointRollout, sha256
+from espnet2.rl.types import drift_gate
 from espnet2.rl.utils import build_policy
 
 
@@ -62,9 +63,13 @@ def summarize_wer(sources, generations, group_size):
 
 
 @torch.inference_mode()
-def verify_log_probs(policy, batch, tolerance):
-    """Compare actual saved SGLang actions with the final native checkpoint."""
-    errors = []
+def verify_log_probs(policy, batch, config):
+    """Compare actual saved SGLang actions with the final native checkpoint.
+
+    Returns every completion's largest difference and the training drift
+    gate's statistics over all of them, which pass its tolerances.
+    """
+    errors, native = [], []
     for index in range(len(batch)):
         item = batch.select_idxs([index])
         scores = policy(item)
@@ -80,11 +85,17 @@ def verify_log_probs(policy, batch, tolerance):
             or not torch.isfinite(scores.log_probs[mask.bool()]).all()
         ):
             raise ValueError("Native action scores/masks differ from the sampled batch")
-        error = float((scores.log_probs - expected).abs()[mask.bool()].max())
-        if error > tolerance:
-            raise ValueError(f"Native/SGLang logprob mismatch: {error} > {tolerance}")
-        errors.append(error)
-    return errors
+        errors.append(float((scores.log_probs - expected).abs()[mask.bool()].max()))
+        native.append(scores.log_probs.cpu())
+    drift = drift_gate(
+        torch.cat(native),
+        batch.batch["rollout_log_probs"],
+        batch.batch["response_mask"],
+        config,
+        "Native/SGLang",
+        "the evaluated checkpoint must be the one that generated",
+    )
+    return errors, drift
 
 
 def validate_export_files(directory, recorded):
@@ -261,12 +272,12 @@ def run(args):
         batch.save_to_disk(output / "rollout.pkl")
         policy = build_policy(config, config.device)
         policy.requires_grad_(False)
-        errors = verify_log_probs(policy, batch, config.score_tolerance)
+        errors, drift = verify_log_probs(policy, batch, config)
         summary = {
             "status": "passed",
             **evidence,
             **summarize_wer(sources, generations, config.group_size),
-            "logprob_max_error": max(errors),
+            **{f"logprob_{name}_error": value for name, value in drift.items()},
             "completion_logprob_errors": errors,
             "generation": (
                 "audited existing responses" if args.responses else "actual SGLang"

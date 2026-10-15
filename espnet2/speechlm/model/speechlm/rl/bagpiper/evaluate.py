@@ -13,7 +13,6 @@ against the native checkpoint; a greedy decode is not a sampled policy.
 
 import argparse
 import json
-import math
 import os
 import subprocess
 import traceback
@@ -27,6 +26,7 @@ from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
 from espnet2.rl.types import (
+    drift_gate,
     support_counts,
     support_mismatch_rate,
     validate_token_scores,
@@ -76,9 +76,12 @@ def validate_responses(result, sources, samples, native_hash, policy_step):
 
 
 @torch.inference_mode()
-def verify_native_log_probs(policy, batch, tolerance):
+def verify_native_log_probs(policy, batch, config):
+    """Every candidate's largest native/SGLang difference and the training
+    drift gate's statistics over all of them, gated as in training, as are
+    the frames the native policy gives another support than their rollout."""
     before = support_counts(policy)
-    errors = []
+    errors, native = [], []
     for index in range(len(batch)):
         item = batch.select_idxs([index])
         scores = policy(item)
@@ -86,13 +89,19 @@ def verify_native_log_probs(policy, batch, tolerance):
         validate_token_scores(scores, mask)
         expected = item.batch["rollout_log_probs"].to(scores.log_probs.device)
         active = mask.to(scores.log_probs.device).bool()
-        error = float((scores.log_probs - expected).abs()[active].max())
-        if not math.isfinite(error) or error > tolerance:
-            raise ValueError(f"Native/SGLang logprob mismatch: {error} > {tolerance}")
-        errors.append(error)
+        errors.append(float((scores.log_probs - expected).abs()[active].max()))
+        native.append(scores.log_probs.cpu())
+    drift = drift_gate(
+        torch.cat(native),
+        batch.batch["rollout_log_probs"],
+        batch.batch["response_mask"],
+        config,
+        "Native/SGLang",
+        "the evaluated checkpoint must be the one that generated",
+    )
     counts = [now - then for now, then in zip(support_counts(policy), before)]
     support_mismatch_rate(policy, counts, "native")
-    return errors
+    return errors, drift
 
 
 def verify_export(checkpoint, directory):
@@ -400,8 +409,10 @@ def run(args):
             batch = collate_rollouts(sources, generations, args.samples)
             batch.save_to_disk(directory / "rollout.pkl")
             policy = build_policy(cfg, cfg.device).requires_grad_(False)
-            errors = verify_native_log_probs(policy, batch, cfg.score_tolerance)
-            summary["native_logprob_max_error"] = max(errors)
+            _, drift = verify_native_log_probs(policy, batch, cfg)
+            summary.update(
+                {f"native_logprob_{name}_error": value for name, value in drift.items()}
+            )
         with (directory / "items.jsonl").open("w") as stream:
             for item in items:
                 stream.write(json.dumps(item, ensure_ascii=False) + "\n")

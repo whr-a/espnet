@@ -1,9 +1,18 @@
 """WER denominators and completeness for independent OpusLM evaluation."""
 
-import pytest
+from types import SimpleNamespace
 
+import pytest
+import torch
+
+from espnet2.rl.data import collate_rollouts
 from espnet2.rl.rollout import sha256
-from espnet2.speechlm.rl.evaluate import summarize_wer, validate_export_files
+from espnet2.rl.types import TokenScores
+from espnet2.speechlm.rl.evaluate import (
+    summarize_wer,
+    validate_export_files,
+    verify_log_probs,
+)
 
 
 def generation(source_id, text):
@@ -38,6 +47,28 @@ def test_sample_mean_differs_from_word_weighted_corpus():
         summarize_wer(sources, outputs[:-1], 2)
     with pytest.raises(ValueError, match="identity"):
         summarize_wer(sources, list(reversed(outputs)), 2)
+
+
+def test_native_verification_applies_both_training_drift_bounds():
+    sources = [{"id": "a", "reference": "a"}]
+    batch = collate_rollouts(sources, [generation("a", "a")] * 2, 2)
+
+    def policy(offset):
+        def score(item):
+            mask = item.batch["response_mask"]
+            return TokenScores(
+                item.batch["rollout_log_probs"] + offset, torch.zeros_like(mask), mask
+            )
+
+        return score
+
+    gate = SimpleNamespace(score_tolerance=0.03, score_mean_tolerance=None)
+    errors, drift = verify_log_probs(policy(0.02), batch, gate)
+    assert errors == pytest.approx([0.02, 0.02])
+    assert drift["max"] == drift["mean"] == pytest.approx(0.02)
+    gate.score_mean_tolerance = 0.01
+    with pytest.raises(RuntimeError, match="mean logprob disagreement"):
+        verify_log_probs(policy(0.02), batch, gate)
 
 
 def test_empty_reference_is_explicit_and_punctuation_is_not_an_error():

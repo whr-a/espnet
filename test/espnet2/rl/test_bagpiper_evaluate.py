@@ -79,11 +79,17 @@ def test_native_action_probability_and_mask_gate():
                 torch.full(shape, self.mask),
             )
 
-    assert verify_native_log_probs(Policy(), batch, 0.03) == [0, 0]
-    with pytest.raises(ValueError, match="logprob mismatch"):
-        verify_native_log_probs(Policy(probability=-1), batch, 0.03)
+    gate = Namespace(score_tolerance=0.03, score_mean_tolerance=None)
+    errors, drift = verify_native_log_probs(Policy(), batch, gate)
+    assert errors == [0, 0] and drift == {"max": 0, "mean": 0, "p99": 0}
+    with pytest.raises(RuntimeError, match="max logprob disagreement"):
+        verify_native_log_probs(Policy(probability=-1), batch, gate)
+    # The training gate's mean bound applies too.
+    gate.score_tolerance, gate.score_mean_tolerance = 1.0, 0.005
+    with pytest.raises(RuntimeError, match="mean logprob disagreement"):
+        verify_native_log_probs(Policy(probability=-0.51), batch, gate)
     with pytest.raises(ValueError, match="mask"):
-        verify_native_log_probs(Policy(mask=0), batch, 0.03)
+        verify_native_log_probs(Policy(mask=0), batch, gate)
 
 
 def export_tensors(native, root):

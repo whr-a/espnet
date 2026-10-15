@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch import nn
 
@@ -37,6 +38,33 @@ class NativeESPnetPolicy(nn.Module):
 
     def checkpoint_state_dict(self):
         return self.model.state_dict()
+
+
+def drift_gate(native, rollout, mask, config, source, hint):
+    """Check native against rollout log probabilities of the sampled actions.
+
+    The maximum catches a gross error in any one action; the optional mean
+    (score_mean_tolerance) catches a small systematic offset that a
+    low-precision engine's per-action noise would hide under any usable
+    maximum. Returns the max, mean and 99th percentile of the differences.
+    """
+    errors = (native - rollout).abs()[mask.bool()].double()
+    statistics = {
+        "max": errors.max().item(),
+        "mean": errors.mean().item(),
+        "p99": np.quantile(errors.numpy(), 0.99).item(),
+    }
+    for name, tolerance in (
+        ("max", config.score_tolerance),
+        ("mean", config.score_mean_tolerance),
+    ):
+        value = statistics[name]
+        if not np.isfinite(value) or (tolerance is not None and value > tolerance):
+            raise RuntimeError(
+                f"{source} {name} logprob disagreement {value:.6g} > "
+                f"{tolerance}; {hint}"
+            )
+    return statistics
 
 
 def support_counts(policy):

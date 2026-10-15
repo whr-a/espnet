@@ -44,7 +44,7 @@ from .rollout import CheckpointRollout, save_checkpoint
 from .rollout_worker import engine_class
 from .scoring import score_native_batch
 from .timing import learner_timing
-from .types import support_counts, validate_token_scores
+from .types import drift_gate, support_counts, validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
 
@@ -211,29 +211,14 @@ class NativeGRPOTrainer:
         return results
 
     def _drift_gate(self, native, batch, source, hint):
-        """Check native against rollout logprobs of the sampled actions.
-
-        The maximum catches a gross error in any one action; the optional mean
-        catches a small systematic offset that a low-precision engine's
-        per-action noise would hide under any usable maximum.
-        """
-        mask = batch.batch["response_mask"].bool()
-        errors = (native - batch.batch["rollout_log_probs"]).abs()[mask].double()
-        statistics = {
-            "max": errors.max().item(),
-            "mean": errors.mean().item(),
-            "p99": np.quantile(errors.numpy(), 0.99).item(),
-        }
-        for name, tolerance in (
-            ("max", self.config.score_tolerance),
-            ("mean", self.config.score_mean_tolerance),
-        ):
-            value = statistics[name]
-            if not np.isfinite(value) or (tolerance is not None and value > tolerance):
-                raise RuntimeError(
-                    f"{source} {name} logprob disagreement {value:.6g} > "
-                    f"{tolerance}; {hint}"
-                )
+        statistics = drift_gate(
+            native,
+            batch.batch["rollout_log_probs"],
+            batch.batch["response_mask"],
+            self.config,
+            source,
+            hint,
+        )
         return {
             f"rollout/logprob_{name}_error": value for name, value in statistics.items()
         }
