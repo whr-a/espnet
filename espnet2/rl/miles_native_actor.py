@@ -266,7 +266,8 @@ class ESPnetTrainRayActor(TrainRayActor):
     def export_async_snapshot(self):
         if self._rank != 0:
             return None
-        metadata = self.exporter.sync_weights(self.trainer.policy, self.version)
+        # Export only: the rollout actors load it onto the rollout GPUs.
+        metadata = self.exporter.export(self.trainer.policy, self.version)
         return {**metadata, "path": str(self.exporter.version.resolve())}
 
     def update_weights(self, info):

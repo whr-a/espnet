@@ -8,7 +8,7 @@ output_dir: exp/rl-think
 rollout_backend: sglang
 adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
 exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
-sglang_generate_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:generate
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
 reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_think_reward
 device: cuda:0
 reference_device: cuda:1

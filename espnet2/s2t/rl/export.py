@@ -86,7 +86,7 @@ def export_owsm(config, checkpoint, output):
         "torch_dtype": config.dtype,
         "espnet_config": native,
         "espnet_model_version": config.model_version,
-        "espnet_rollout_contract": "source-index-carrier/native-full-prefix/v1",
+        "espnet_rollout_contract": "rid-sources/native-full-prefix/v2",
         "native_checkpoint_sha256": hashlib.file_digest(
             Path(checkpoint).open("rb"), "sha256"
         ).hexdigest(),

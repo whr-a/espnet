@@ -3,9 +3,10 @@
 This version prioritizes exact native probabilities over KV throughput: each
 step recomputes every running request's full prefix with the native decoder,
 batched into padded calls exactly as the native scorer pads its candidates.
-It supports TP=1, full prefill and disabled radix cache/CUDA graph. The first
-input ID is an opaque source index that is stripped before native decoding;
-it never participates in the OWSM text context or response action mask.
+It supports TP=1, full prefill and disabled radix cache/CUDA graph. Input IDs
+are the real OWSM prefix. Each request ID is ``rollout:source:sample``; the
+rollout's sources are read from the file named by ``espnet_rollout_sources``,
+which the engine rewrites before every batch.
 """
 
 import argparse
@@ -36,10 +37,7 @@ class ESPnetOWSMForCausalLM(nn.Module):
             raise ValueError("Native OWSM SGLang requires TP=1")
         self.config = config
         self.directory = Path(config._name_or_path).resolve()
-        if (
-            config.espnet_rollout_contract
-            != "source-index-carrier/native-full-prefix/v1"
-        ):
+        if config.espnet_rollout_contract != "rid-sources/native-full-prefix/v2":
             raise ValueError("Unknown native OWSM rollout contract")
         self.target_device = torch.empty(0).device
         native = dict(config.espnet_config)
@@ -62,9 +60,8 @@ class ESPnetOWSMForCausalLM(nn.Module):
             finally:
                 torch.set_default_dtype(saved)
         self.policy.eval()
-        self.source_path = self.directory.parent / "requests.json"
-        self.sources = json.loads(self.source_path.read_text())
-        self.source_sha256 = hashlib.sha256(self.source_path.read_bytes()).hexdigest()
+        self.source_path = Path(config.espnet_rollout_sources)
+        self.rollout_id = self.sources = self.source_sha256 = None
         self.memory = {}
         self.request_prefixes = {}
 
@@ -91,20 +88,32 @@ class ESPnetOWSMForCausalLM(nn.Module):
             raise ValueError("The OWSM initial SGLang RL contract requires float32")
         self.policy.to(device=self.target_device, dtype=torch.float32)
         self.policy.eval()
-        native = self.directory.parent / "native.pt"
-        if (
-            hashlib.file_digest(native.open("rb"), "sha256").hexdigest()
-            != self.config.native_checkpoint_sha256
-        ):
-            raise ValueError("SGLang OWSM export and native checkpoint hash disagree")
+        # Every update is a complete policy and the encoder is trained, so
+        # nothing computed with the previous weights may survive it.
+        self.memory.clear()
+        self.request_prefixes.clear()
         return set(normalized)
+
+    def _load_sources(self, rids):
+        rollouts = {int(rid.split(":", 1)[0]) for rid in rids}
+        if len(rollouts) != 1:
+            raise ValueError("One SGLang batch mixes OWSM rollouts")
+        (rollout_id,) = rollouts
+        if rollout_id == self.rollout_id:
+            return
+        encoded = self.source_path.read_bytes()
+        record = json.loads(encoded)
+        if record["rollout_id"] != rollout_id:
+            raise ValueError("OWSM rollout sources belong to a different rollout")
+        self.rollout_id, self.sources = rollout_id, record["sources"]
+        self.source_sha256 = hashlib.sha256(encoded).hexdigest()
+        self.memory.clear()
+        self.request_prefixes.clear()
 
     def _memory(self, source_index, device):
         if source_index not in self.memory:
             if not 0 <= source_index < len(self.sources):
-                raise ValueError(
-                    "Opaque source index is outside the frozen request manifest"
-                )
+                raise ValueError("OWSM request names a source outside its rollout")
             audio = load_audio(
                 self.sources[source_index],
                 self.policy.sample_rate,
@@ -140,8 +149,11 @@ class ESPnetOWSMForCausalLM(nn.Module):
             )
         else:
             raise ValueError("Unsupported SGLang forward mode for native OWSM")
+        self._load_sources(forward_batch.rids)
         rows = []
-        for pool_id, chunk in zip(pool_ids, chunks, strict=True):
+        for pool_id, rid, chunk in zip(
+            pool_ids, forward_batch.rids, chunks, strict=True
+        ):
             if forward_batch.forward_mode.is_decode():
                 if pool_id not in self.request_prefixes:
                     raise RuntimeError(
@@ -150,8 +162,7 @@ class ESPnetOWSMForCausalLM(nn.Module):
                 source_index, prefix = self.request_prefixes[pool_id]
                 prefix = [*prefix, *chunk.tolist()]
             else:
-                carrier = chunk.tolist()
-                source_index, prefix = carrier[0], carrier[1:]
+                source_index, prefix = int(rid.split(":")[1]), chunk.tolist()
                 if not prefix:
                     raise ValueError("OWSM native decoder prefix is empty")
             self.request_prefixes[pool_id] = (source_index, prefix)

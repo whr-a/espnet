@@ -1,0 +1,305 @@
+"""Persistent rollout processes with a CPU stand-in for an architecture engine.
+
+Each test starts real worker interpreters over the real socket protocol. The
+engine below records what it was asked to do instead of running a model.
+"""
+
+import asyncio
+import json
+import os
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.rollout import CheckpointRollout, RolloutProcess
+
+ENGINE = """
+import json, os
+from espnet2.rl.engine import RolloutEngine
+
+
+class RecordingEngine(RolloutEngine):
+    def __init__(self, config, model_path, *, directory, replica=0):
+        super().__init__(config, model_path, directory=directory, replica=replica)
+        self.model = str(model_path)
+        self.record("build", self.model)
+
+    def record(self, *event):
+        with (self.directory / "events.jsonl").open("a") as stream:
+            stream.write(json.dumps(event) + "\\n")
+
+    def update(self, model_path):
+        self.model = str(model_path)
+        self.record("update", self.model)
+
+    def generate(self, sources, rollout_id):
+        self.record("generate", rollout_id)
+        if sources[0].get("fail") == "raise":
+            raise ValueError("deliberate engine failure")
+        if sources[0].get("fail") == "exit":
+            os._exit(3)
+        rows = [
+            dict(
+                source_id=source["id"],
+                prompt_token_ids=[1],
+                token_ids=[sample + 1],
+                log_probs=[-1.0],
+                model=self.model,
+                replica=self.replica,
+                gpu=os.environ["CUDA_VISIBLE_DEVICES"],
+                rank=os.environ.get("RANK"),
+            )
+            for source in sources
+            for sample in range(self.config.group_size)
+        ]
+        return rows[:-1] if sources[-1].get("fail") == "short" else rows
+
+    def close(self):
+        self.record("close")
+"""
+
+
+@pytest.fixture
+def config(tmp_path, monkeypatch):
+    (tmp_path / "recording_engine.py").write_text(ENGINE)
+    # The worker inherits this path after its own source paths.
+    monkeypatch.setenv(
+        "PYTHONPATH", os.pathsep.join([str(tmp_path), os.environ.get("PYTHONPATH", "")])
+    )
+    # A training rank's identity never reaches a rollout process.
+    monkeypatch.setenv("RANK", "5")
+    return ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="recording_engine:RecordingEngine",
+        rollout_python=sys.executable,
+        output_dir=str(tmp_path / "run"),
+        prompts_per_step=4,
+        group_size=2,
+    )
+
+
+def events(directory):
+    lines = (Path(directory) / "events.jsonl").read_text().splitlines()
+    return [json.loads(line) for line in lines]
+
+
+def test_one_engine_serves_every_load_and_generation(config, tmp_path):
+    directory = tmp_path / "run" / "replica-0"
+    process = RolloutProcess(config, "6", directory, 0)
+    sources = [{"id": "a"}, {"id": "b"}]
+    try:
+        process.load(tmp_path / "policy-000000" / "hf", 0)
+        first = process.generate(sources, 0)
+        process.load(tmp_path / "policy-000001" / "hf", 1)
+        second = process.generate(sources, 1)
+    finally:
+        process.close()
+    # Built once from the first export, updated in place by the second.
+    assert [event[0] for event in events(directory)] == [
+        "build",
+        "generate",
+        "update",
+        "generate",
+        "close",
+    ]
+    assert events(directory)[2][1] == str(tmp_path / "policy-000001" / "hf")
+    assert [row["source_id"] for row in first] == ["a", "a", "b", "b"]
+    assert {row["policy_version"] for row in first} == {0}
+    assert {row["policy_version"] for row in second} == {1}
+    assert second[0]["model"].endswith("policy-000001/hf")
+    assert {row["gpu"] for row in first} == {"6"} and first[0]["rank"] is None
+    # Requests and answers of every rollout stay for audit.
+    assert json.loads((directory / "requests-000001.json").read_text()) == sources
+    recorded = json.loads((directory / "responses-000001.json").read_text())
+    assert recorded["rollout_id"] == 1 and recorded["policy_version"] == 1
+    assert process.process.returncode == 0
+    process.close()  # Closing twice is harmless.
+
+
+def test_engine_errors_reach_the_client_and_the_worker_keeps_serving(config, tmp_path):
+    process = RolloutProcess(config, "0", tmp_path / "replica-0", 0)
+    try:
+        with pytest.raises(RuntimeError, match="Load a policy before generation"):
+            process.generate([{"id": "a"}], 0)
+        process.load(tmp_path / "hf", 3)
+        with pytest.raises(RuntimeError, match="deliberate engine failure"):
+            process.generate([{"id": "a", "fail": "raise"}], 1)
+        assert len(process.generate([{"id": "a"}], 2)) == 2
+    finally:
+        process.close()
+    assert process.process.returncode == 0
+
+
+def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):
+    process = RolloutProcess(config, "0", tmp_path / "replica-0", 0)
+    try:
+        process.load(tmp_path / "hf", 0)
+        with pytest.raises(RuntimeError, match="exited") as failure:
+            process.generate([{"id": "a", "fail": "exit"}], 0)
+        # The log tail names what the worker did last.
+        assert "rollout engine built for policy 0" in str(failure.value)
+        with pytest.raises(RuntimeError, match="exited"):
+            process.load(tmp_path / "hf", 1)
+    finally:
+        process.close()
+    assert process.process.returncode == 3
+
+
+def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
+    config.rollout_gpus = "0,1,2"
+    rollout = CheckpointRollout(config)
+    export = rollout.directory / "policy-000000"
+    sources = [{"id": f"p{index}"} for index in range(7)]
+    with pytest.raises(RuntimeError, match="synchronized"):
+        rollout.generate(sources, 0)
+    try:
+        rollout.load(export, 0)
+        generations = rollout.generate(sources, 0)
+        with pytest.raises(ValueError, match="own prompt shard"):
+            rollout.generate(sources[:2], 1)
+        with pytest.raises(ValueError, match="complete prompt group"):
+            rollout.generate([*sources[:6], {"id": "p6", "fail": "short"}], 2)
+    finally:
+        rollout.close()
+    assert rollout.processes == []
+    # Every source keeps its complete group in the original order, and each
+    # replica sampled only its own strided shard on its own GPU.
+    assert [row["source_id"] for row in generations] == [
+        source["id"] for source in sources for _ in range(2)
+    ]
+    assert {row["source_id"]: (row["replica"], row["gpu"]) for row in generations} == {
+        f"p{index}": (index % 3, str(index % 3)) for index in range(7)
+    }
+    for replica in range(3):
+        directory = rollout.directory / f"replica-{replica}"
+        requests = json.loads((directory / "requests-000000.json").read_text())
+        assert requests == sources[replica::3]
+        assert events(directory)[0] == ["build", str((export / "hf").resolve())]
+
+
+class Actor:
+    """A rollout actor handle whose calls answer like RolloutActor."""
+
+    def __init__(self, replica, node="rollout", gpu=None):
+        self.identity = {
+            "replica": replica,
+            "node": node,
+            "gpu_ids": [replica if gpu is None else gpu],
+            "gpu": str(replica if gpu is None else gpu),
+        }
+        self.calls, self.version = [], None
+        for name in ("load", "generate", "close"):
+            setattr(self, name, SimpleNamespace(remote=self._remote(name)))
+
+    def _remote(self, name):
+        async def call(*args):
+            self.calls.append((name, *args))
+            if name == "load":
+                self.version = args[1]
+                return {**self.identity, "version": self.version}
+            if name == "generate":
+                sources, rollout_id = args
+                generations = [
+                    dict(
+                        source_id=source["id"],
+                        prompt_token_ids=[1],
+                        token_ids=[sample + 1],
+                        log_probs=[-1.0],
+                        policy_version=self.version,
+                    )
+                    for source in sources
+                    for sample in range(2)
+                ]
+                return {
+                    **self.identity,
+                    "version": self.version,
+                    "rollout_id": rollout_id,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "generations": generations,
+                }
+
+        return call
+
+
+def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
+    tmp_path, monkeypatch
+):
+    pytest.importorskip("miles")
+    from miles.utils import object_store
+
+    from espnet2.rl.miles_components import NativeComponents
+
+    config = ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+        execution_mode="disagg_async",
+        output_dir=str(tmp_path),
+        steps=2,
+        prompts_per_step=4,
+        group_size=2,
+        train_gpus="0",
+        rollout_gpus="0,1",
+    )
+    stored = []
+    monkeypatch.setattr(
+        object_store,
+        "_INSTANCE",
+        SimpleNamespace(put=lambda value: stored.append(value)),
+    )
+    sources = [{"id": f"p{index}"} for index in range(4)]
+    components = NativeComponents(config, sources, "train", "rollout")
+    actors = components.rollout.actors = [Actor(0), Actor(1)]
+    policy = {
+        "step": 0,
+        "path": str(tmp_path / "policy-000000"),
+        "native_sha256": "f" * 64,
+        "hf_files": {},
+    }
+
+    class Trainer:
+        async def call(self, name):
+            assert name == "export_async_snapshot"
+            return [policy]
+
+    async def run():
+        await components.update_weights(None, Trainer(), None, None, rollout_id=None)
+        await components.rollout.get(0)
+        # A placement that does not match the recipe is refused.
+        actors[1].identity["node"] = "elsewhere"
+        with pytest.raises(ValueError, match="distinct GPUs"):
+            await components.rollout.get(1)
+        actors[1].identity["node"] = "rollout"
+        await components.rollout.dispose()
+
+    killed = []
+    monkeypatch.setattr(
+        "espnet2.rl.miles_components.ray.kill",
+        lambda actor, no_restart: killed.append(actor),
+    )
+    asyncio.run(run())
+    for replica, actor in enumerate(actors):
+        assert actor.calls[0] == ("load", str(tmp_path / "policy-000000" / "hf"), 0)
+        assert actor.calls[1] == ("generate", sources[replica::2], 0)
+        assert actor.calls[-1] == ("close",)
+    assert killed == actors
+    (acknowledgment,) = [
+        json.loads(line)
+        for line in (tmp_path / "weight_ack.jsonl").read_text().splitlines()
+    ]
+    assert [reply["replica"] for reply in acknowledgment["rollout_ack"]] == [0, 1]
+    assert {reply["version"] for reply in acknowledgment["rollout_ack"]} == {0}
+    (payload,) = stored
+    generations = payload["batch"].non_tensor_batch["generation"]
+    assert [row["source_id"] for row in generations] == [
+        source["id"] for source in sources for _ in range(2)
+    ]
+    assert {row["behavior_policy_version"] for row in generations} == {0}
+    assert {row["behavior_checkpoint_sha256"] for row in generations} == {"f" * 64}
+    timing = json.loads((tmp_path / "rollout_timing.jsonl").read_text())
+    assert [replica["gpu"] for replica in timing["replicas"]] == ["0", "1"]

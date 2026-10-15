@@ -38,9 +38,11 @@ Preparation creates an audited manifest and training freezes its config.
 
 The first SGLang implementation executes the exact native ESPnet encoder and
 recomputes the decoder prefix within the SGLang model runner. SGLang schedules
-requests, samples tokens and returns actual action log probabilities. The
-opaque audio-source carrier ID is removed before native decoding. TP=1,
-FP32, disabled radix cache, full prefill and disabled CUDA graphs are required.
+requests, samples tokens and returns actual action log probabilities. Requests
+carry the real decoder prefix; each request ID names its audio source, which the
+model reads from the rollout's source file. One engine per rollout GPU lives for
+the whole run and loads every update's export in place. TP=1, FP32, disabled
+radix cache, full prefill and disabled CUDA graphs are required.
 This implementation has lower decoding throughput than the earlier vLLM KV
 implementation. OWSM-CTC requires a separate non-autoregressive policy.
 

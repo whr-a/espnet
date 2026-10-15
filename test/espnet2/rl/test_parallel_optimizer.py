@@ -80,7 +80,7 @@ def _config(output, micro_batch_size=4, strategy="ddp"):
         max_grad_norm=0.7,
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
     )
 
 

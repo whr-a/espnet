@@ -11,13 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Inference subprocess isolation and immutable checkpoint synchronization."""
+"""Persistent inference processes and immutable checkpoint synchronization."""
 
 import hashlib
 import json
 import os
 import shutil
+import signal
+import socket
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 import torch
@@ -31,11 +35,191 @@ def sha256(path):
     return digest.hexdigest()
 
 
-class CheckpointRollout:
-    """Each sampling subprocess loads the exact newly exported actor version.
+def subprocess_environment(config, gpus):
+    """An inference interpreter's environment: its devices and source paths."""
+    environment = dict(os.environ)
+    paths = [str(Path(__file__).resolve().parents[2])]
+    if config.rollout_backend == "sglang" and config.sglang_source:
+        paths.insert(0, str(Path(config.sglang_source).resolve() / "python"))
+    elif config.vllm_source:
+        paths.insert(0, str(Path(config.vllm_source).resolve()))
+    if config.miles_source:
+        paths.append(str(Path(config.miles_source).resolve()))
+    environment["PYTHONPATH"] = os.pathsep.join(
+        paths + [environment.get("PYTHONPATH", "")]
+    )
+    environment["CUDA_VISIBLE_DEVICES"] = gpus
+    if config.rollout_backend == "vllm":
+        environment["VLLM_USE_V2_MODEL_RUNNER"] = "0"
+        environment["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+    if config.dtype == "float32":
+        environment["TRITON_F32_DEFAULT"] = "ieee"
+        environment["NVIDIA_TF32_OVERRIDE"] = "0"
+        environment["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
+    # A subprocess is an independent GPU consumer, never a torchrun rank.
+    training_identity = {
+        "RANK",
+        "LOCAL_RANK",
+        "WORLD_SIZE",
+        "LOCAL_WORLD_SIZE",
+        "MASTER_ADDR",
+        "MASTER_PORT",
+        "GROUP_RANK",
+        "ROLE_RANK",
+        "ROLE_WORLD_SIZE",
+    }
+    for name in list(environment):
+        if name in training_identity or name.startswith("TORCHELASTIC_"):
+            # torchrun injects these after the outer launcher is cleaned.
+            # USE_AGENT_STORE=True makes even an explicit TP1 tcp:// rank0
+            # a TCPStore client, leaving its own rendezvous without a server.
+            environment.pop(name)
+    return environment
 
-    Keeping inference in its own interpreter avoids forcing native ESPnet to use
-    the inference fork's torch/transformers ABI. No serving group is touched.
+
+class RolloutProcess:
+    """One rollout worker interpreter that holds its engine for a whole run.
+
+    The worker runs in its own session on ``gpu`` and logs to
+    ``directory/rollout.log``. Requests and generations of every rollout stay
+    in ``directory`` for audit.
+    """
+
+    def __init__(self, config, gpu, directory, replica):
+        self.config, self.replica = config, replica
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=False)
+        self.version = None
+        frozen = self.directory / "config.json"
+        frozen.write_text(json.dumps(config.to_dict(), indent=2) + "\n")
+        self.log = self.directory / "rollout.log"
+        # A socket pair rather than a socket path: run directories exceed the
+        # 107-byte AF_UNIX limit.
+        ours, theirs = socket.socketpair()
+        try:
+            with self.log.open("w") as stream:
+                self.process = subprocess.Popen(
+                    [
+                        config.rollout_python,
+                        "-m",
+                        "espnet2.rl.rollout_worker",
+                        "--config",
+                        str(frozen.resolve()),
+                        "--fd",
+                        str(theirs.fileno()),
+                        "--replica",
+                        str(replica),
+                        "--directory",
+                        str(self.directory.resolve()),
+                    ],
+                    env=subprocess_environment(config, str(gpu)),
+                    stdout=stream,
+                    stderr=subprocess.STDOUT,
+                    pass_fds=(theirs.fileno(),),
+                    start_new_session=True,
+                )
+        except BaseException:
+            ours.close()
+            raise
+        finally:
+            theirs.close()
+        self.connection = Connection(ours.detach())
+
+    def _call(self, **request):
+        try:
+            self.connection.send(request)
+            reply = self.connection.recv()
+        except (EOFError, OSError) as error:
+            raise RuntimeError(
+                f"Rollout replica {self.replica} exited "
+                f"(status {self.process.poll()}) during {request['op']}; "
+                f"last lines of {self.log}:\n{self._tail()}"
+            ) from error
+        if "error" in reply:
+            raise RuntimeError(
+                f"Rollout replica {self.replica} failed {request['op']}:\n"
+                + reply["error"]
+            )
+        return reply
+
+    def _tail(self, lines=40):
+        try:
+            text = self.log.read_text(errors="replace")
+        except OSError:
+            return ""
+        return "\n".join(text.splitlines()[-lines:])
+
+    def load(self, model, version):
+        """Build the engine from the first export; load later ones in place."""
+        self._call(op="load", model=str(Path(model).resolve()), version=version)
+        self.version = version
+
+    def generate(self, sources, rollout_id):
+        requests = self.directory / f"requests-{rollout_id:06d}.json"
+        responses = self.directory / f"responses-{rollout_id:06d}.json"
+        requests.write_text(json.dumps(sources) + "\n")
+        self._call(
+            op="generate",
+            requests=str(requests),
+            output=str(responses),
+            rollout_id=rollout_id,
+        )
+        result = json.loads(responses.read_text())
+        if result["rollout_id"] != rollout_id or any(
+            generation["policy_version"] != self.version
+            for generation in result["generations"]
+        ):
+            raise RuntimeError(
+                f"Rollout replica {self.replica} answered for another rollout "
+                "or policy version"
+            )
+        return result["generations"]
+
+    def close(self, timeout=120):
+        """Close politely, then stop whatever is left of the worker's session."""
+        if self.connection.closed:
+            return
+        if self.process.poll() is None:
+            try:
+                self.connection.send({"op": "close"})
+                if self.connection.poll(timeout):
+                    self.connection.recv()
+                self.process.wait(timeout=timeout)
+            except (EOFError, OSError, subprocess.TimeoutExpired):
+                pass
+        try:
+            # SGLang's scheduler children share the worker's session.
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except OSError:
+            pass  # Nothing is left of it.
+        self.process.wait()
+        self.connection.close()
+
+
+def merge_generations(sources, shards, group_size):
+    """Restore the source order of complete prompt groups from every shard."""
+    grouped = {}
+    expected = {source["id"] for source in sources}
+    for generations in shards:
+        for generation in generations:
+            identity = generation["source_id"]
+            if identity not in expected:
+                raise ValueError("Rollout replica returned an unknown source")
+            grouped.setdefault(identity, []).append(generation)
+    if set(grouped) != expected or any(
+        len(group) != group_size for group in grouped.values()
+    ):
+        raise ValueError("Rollout replicas must return every complete prompt group")
+    return [generation for source in sources for generation in grouped[source["id"]]]
+
+
+class CheckpointRollout:
+    """Rank zero's rollout: one persistent engine process per rollout GPU.
+
+    Each update exports the exact actor version and loads that export into
+    every process in place. Keeping inference in its own interpreter avoids
+    forcing native ESPnet to use the inference fork's torch/transformers ABI.
+    No serving group is touched.
     """
 
     def __init__(self, config):
@@ -43,8 +227,9 @@ class CheckpointRollout:
         self.directory = Path(config.output_dir) / "rollout"
         self.directory.mkdir(parents=True, exist_ok=True)
         self.version = None
+        self.processes = []
 
-    def sync_weights(self, policy, step):
+    def export(self, policy, step):
         directory = self.directory / f"policy-{step:06d}"
         staging = self.directory / f".policy-{step:06d}.tmp"
         if directory.exists() or staging.exists():
@@ -71,11 +256,10 @@ class CheckpointRollout:
             "--output",
             str((staging / "hf").resolve()),
         ]
-        environment = self._environment()
         with (staging / "export.log").open("w") as stream:
             subprocess.run(
                 args,
-                env=environment,
+                env=self._environment(),
                 stdout=stream,
                 stderr=subprocess.STDOUT,
                 check=True,
@@ -93,108 +277,50 @@ class CheckpointRollout:
         self.version = directory
         return metadata
 
-    def _environment(self):
-        environment = dict(os.environ)
-        paths = [str(Path(__file__).resolve().parents[2])]
-        if self.config.rollout_backend == "sglang" and self.config.sglang_source:
-            paths.insert(0, str(Path(self.config.sglang_source).resolve() / "python"))
-        elif self.config.vllm_source:
-            paths.insert(0, str(Path(self.config.vllm_source).resolve()))
-        if self.config.miles_source:
-            paths.append(str(Path(self.config.miles_source).resolve()))
-        environment["PYTHONPATH"] = os.pathsep.join(
-            paths + [environment.get("PYTHONPATH", "")]
-        )
-        environment["CUDA_VISIBLE_DEVICES"] = self.config.rollout_gpus
-        if self.config.rollout_backend == "vllm":
-            environment["VLLM_USE_V2_MODEL_RUNNER"] = "0"
-            environment["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-        if self.config.dtype == "float32":
-            environment["TRITON_F32_DEFAULT"] = "ieee"
-            environment["NVIDIA_TF32_OVERRIDE"] = "0"
-            environment["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
-        # A subprocess is an independent GPU consumer, never a torchrun rank.
-        training_identity = {
-            "RANK",
-            "LOCAL_RANK",
-            "WORLD_SIZE",
-            "LOCAL_WORLD_SIZE",
-            "MASTER_ADDR",
-            "MASTER_PORT",
-            "GROUP_RANK",
-            "ROLE_RANK",
-            "ROLE_WORLD_SIZE",
-        }
-        for name in list(environment):
-            if name in training_identity or name.startswith("TORCHELASTIC_"):
-                # torchrun injects these after the outer launcher is cleaned.
-                # USE_AGENT_STORE=True makes even an explicit TP1 tcp:// rank0
-                # a TCPStore client, leaving its own rendezvous without a server.
-                environment.pop(name)
-        return environment
+    def sync_weights(self, policy, step):
+        metadata = self.export(policy, step)
+        self.load(self.version, step)
+        return metadata
+
+    def load(self, export, step):
+        """Load one export into every process, starting them the first time."""
+        if not self.processes:
+            # vLLM is one tensor-parallel engine over every rollout GPU.
+            gpus = (
+                [self.config.rollout_gpus]
+                if self.config.rollout_backend == "vllm"
+                else self.config.rollout_device_ids
+            )
+            self.processes = [
+                RolloutProcess(
+                    self.config, gpu, self.directory / f"replica-{replica}", replica
+                )
+                for replica, gpu in enumerate(gpus)
+            ]
+        self._each(lambda process: process.load(Path(export) / "hf", step))
 
     def generate(self, sources, step):
-        if self.version is None:
+        if not self.processes:
             raise RuntimeError("Weights must be synchronized before rollout")
-        if self.config.rollout_replicas > 1:
-            from concurrent.futures import ThreadPoolExecutor
+        count = len(self.processes)
+        if len(sources) < count:
+            raise ValueError("Each rollout replica requires its own prompt shard")
+        shards = self._each(
+            lambda process: process.generate(sources[process.replica :: count], step)
+        )
+        return merge_generations(sources, shards, self.config.group_size)
 
-            from .rollout_replicas import merge_generations, run_replica
+    def _each(self, call):
+        with ThreadPoolExecutor(max_workers=len(self.processes)) as executor:
+            return list(executor.map(call, self.processes))
 
-            gpus = self.config.rollout_device_ids
-            count = self.config.rollout_replicas
-            if len(sources) < count:
-                raise ValueError("Each SGLang replica requires its own prompt shard")
-            with ThreadPoolExecutor(max_workers=count) as executor:
-                futures = [
-                    executor.submit(
-                        run_replica,
-                        self.config,
-                        self.version,
-                        sources[replica::count],
-                        step,
-                        replica,
-                        gpus[replica],
-                        sha256(self.version / "native.pt"),
-                    )
-                    for replica in range(count)
-                ]
-                results = [future.result() for future in futures]
-            return merge_generations(sources, results, self.config.group_size)
-        requests = self.version / "requests.json"
-        responses = self.version / "responses.json"
-        requests.write_text(json.dumps(sources) + "\n")
-        args = [
-            self.config.rollout_python,
-            "-m",
-            "espnet2.rl.rollout_worker",
-            "--config",
-            str(Path(self.config.output_dir) / "frozen_config.json"),
-            "--model",
-            str((self.version / "hf").resolve()),
-            "--requests",
-            str(requests.resolve()),
-            "--output",
-            str(responses.resolve()),
-            "--step",
-            str(step),
-        ]
-        with (self.version / "generation.log").open("w") as stream:
-            subprocess.run(
-                args,
-                env=self._environment(),
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                check=True,
-            )
-        result = json.loads(responses.read_text())
-        if result["policy_step"] != step or result["native_sha256"] != sha256(
-            self.version / "native.pt"
-        ):
-            raise RuntimeError(
-                "Rollout consumed a stale or different policy checkpoint"
-            )
-        return result["generations"]
+    def close(self):
+        if self.processes:
+            self._each(RolloutProcess.close)
+        self.processes = []
+
+    def _environment(self):
+        return subprocess_environment(self.config, self.config.rollout_gpus)
 
 
 def save_checkpoint(path, policy, optimizer, step, config):

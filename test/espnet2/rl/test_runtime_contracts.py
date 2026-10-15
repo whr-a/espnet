@@ -1,12 +1,6 @@
 """CPU contract checks; these do not establish H100 training or placement."""
 
-import asyncio
 import json
-import os
-import subprocess
-import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,21 +10,14 @@ from espnet2.bin.rl_train_async import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import verify_data_admission
 from espnet2.rl.engine import engine_kwargs
-from espnet2.rl.process_identity import host_identity
 from espnet2.rl.rollout import sha256
-from espnet2.rl.rollout_replicas import (
-    _process_start_ticks,
-    run_owned_subprocess,
-    run_replica,
-    terminate_owned_process,
-)
 
 
 def configuration(**kwargs):
     defaults = dict(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
         prompts_per_step=32,
         group_size=8,
         steps=5,
@@ -118,6 +105,7 @@ def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
     sized.validate()
     settings = engine_kwargs(sized, 3, defaults={"mem_fraction_static": 0.65})
     assert settings["mem_fraction_static"] == 0.2
+    # One seed per replica for the engine's whole life.
     assert settings["random_seed"] == sized.seed + 3
     assert settings["tp_size"] == 1
     assert settings["disable_cuda_graph"] is True
@@ -129,7 +117,7 @@ def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
         ]
         == 0.65
     )
-    # Model identity, dtype, one device per replica and a step-advancing seed
+    # Model identity, dtype, one device per replica and the replica's seed
     # are frozen for every family, not per family.
     repeated = configuration(sglang_engine_kwargs={"dtype": "float32", "tp_size": 1})
     assert (
@@ -138,8 +126,7 @@ def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
     changed = configuration(sglang_engine_kwargs={"dtype": "bfloat16"})
     with pytest.raises(ValueError, match="native execution contract"):
         engine_kwargs(changed, 0, defaults={"dtype": "float32"})
-    # A constant seed would make every group's candidates identical, which
-    # leaves GRPO without a signal.
+    # A recipe-wide seed would make every replica repeat the same candidates.
     pinned = configuration(sglang_engine_kwargs={"random_seed": 7})
     with pytest.raises(ValueError, match="native execution contract"):
         engine_kwargs(pinned, 3)
@@ -199,127 +186,6 @@ def test_node_resolution_allows_one_node_that_holds_both_roles():
             train_ranks=8,
             rollout_replicas=8,
         )
-
-
-def test_replica_keeps_rollout_id_distinct_from_behavior_version(tmp_path, monkeypatch):
-    policy = tmp_path / "policy-000000"
-    (policy / "hf").mkdir(parents=True)
-    (policy / "native.pt").write_bytes(b"native actor zero")
-    (policy / "hf/config.json").write_text("{}")
-    observed = {}
-
-    def child(command, *, environment, directory, stream):
-        observed.update(command=command, gpu=environment["CUDA_VISIBLE_DEVICES"])
-        output = command[command.index("--output") + 1]
-        Path(output).write_text(
-            json.dumps(
-                {
-                    "policy_step": 0,
-                    "rollout_id": 1,
-                    "native_sha256": sha256(policy / "native.pt"),
-                    "generations": [],
-                }
-            )
-        )
-
-    monkeypatch.setattr("espnet2.rl.rollout_replicas.run_owned_subprocess", child)
-    config = configuration(output_dir=str(tmp_path / "run"))
-    result = run_replica(
-        config,
-        policy,
-        [{"id": "p"}],
-        1,
-        0,
-        "7",
-        sha256(policy / "native.pt"),
-        policy_version=0,
-    )
-    assert observed["command"][observed["command"].index("--step") + 1] == "1"
-    assert observed["command"][observed["command"].index("--policy-version") + 1] == "0"
-    assert observed["gpu"] == "7"
-    assert result["behavior_version"] == 0 and result["rollout_id"] == 1
-
-
-def test_owned_child_session_cleanup_leaves_unrelated_process_alive(tmp_path):
-    errors = []
-    unrelated = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
-    )
-
-    def run():
-        try:
-            with (tmp_path / "child.log").open("w") as stream:
-                run_owned_subprocess(
-                    [sys.executable, "-c", "import time; time.sleep(60)"],
-                    environment=dict(os.environ),
-                    directory=tmp_path,
-                    stream=stream,
-                )
-        except subprocess.CalledProcessError as error:
-            errors.append(error)
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 10
-        while not (tmp_path / "process.json").exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        receipt = json.loads((tmp_path / "process.json").read_text())
-        assert receipt["pid"] == receipt["pgid"]
-        assert receipt["host_identity"] == host_identity()
-        assert receipt["start_ticks"] == _process_start_ticks(receipt["pid"])
-        assert terminate_owned_process(tmp_path)
-        thread.join(timeout=10)
-        assert not thread.is_alive() and len(errors) == 1
-        assert unrelated.poll() is None
-        assert not terminate_owned_process(tmp_path)
-    finally:
-        unrelated.terminate()
-        unrelated.wait(timeout=10)
-        if thread.is_alive():
-            terminate_owned_process(tmp_path)
-            thread.join(timeout=10)
-
-
-def test_stale_process_receipt_does_not_signal_reused_pid(tmp_path):
-    other = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
-    )
-    try:
-        (tmp_path / "process.json").write_text(
-            json.dumps(
-                {
-                    "pid": other.pid,
-                    "pgid": other.pid,
-                    "start_ticks": "stale",
-                    "host_identity": host_identity(),
-                }
-            )
-        )
-        assert not terminate_owned_process(tmp_path)
-        assert other.poll() is None
-    finally:
-        other.terminate()
-        other.wait(timeout=10)
-
-
-def test_shared_filesystem_receipt_does_not_signal_other_host_pid(tmp_path):
-    other = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True
-    )
-    try:
-        receipt = {
-            "pid": other.pid,
-            "pgid": other.pid,
-            "start_ticks": _process_start_ticks(other.pid),
-            "host_identity": {**host_identity(), "hostname": "different-host"},
-        }
-        (tmp_path / "process.json").write_text(json.dumps(receipt))
-        assert not terminate_owned_process(tmp_path)
-        assert other.poll() is None
-    finally:
-        other.terminate()
-        other.wait(timeout=10)
 
 
 def test_ray_object_store_roundtrip_uses_actual_reference_and_cpu_batch():

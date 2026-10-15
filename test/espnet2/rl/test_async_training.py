@@ -17,7 +17,7 @@ def configuration(**kwargs):
     return ESPnetRLConfig(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
         **kwargs,
     )
 
@@ -233,17 +233,15 @@ def test_async_cannot_enter_synchronous_driver():
 
 
 def test_replica_merge_keeps_groups_and_rejects_partial_or_duplicate_results():
-    from espnet2.rl.rollout_replicas import merge_generations
+    from espnet2.rl.rollout import merge_generations
 
     sources = [{"id": f"p{i}"} for i in range(32)]
     results = [
-        {
-            "generations": [
-                {"source_id": source["id"], "sample": sample}
-                for source in sources[replica::8]
-                for sample in range(8)
-            ]
-        }
+        [
+            {"source_id": source["id"], "sample": sample}
+            for source in sources[replica::8]
+            for sample in range(8)
+        ]
         for replica in range(8)
     ]
     merged = merge_generations(sources, results, 8)

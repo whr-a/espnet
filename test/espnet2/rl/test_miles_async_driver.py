@@ -100,7 +100,7 @@ def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
             rollout_gpus="0,1,2,3,4,5,6,7",
             adapter_factory="unused:factory",
             exporter="unused:exporter",
-            sglang_generate_factory="unused:generate",
+            sglang_engine="unused:Engine",
         )
         components = Components()
         driver, evidence = load_async_loop(config, components)

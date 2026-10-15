@@ -8,7 +8,7 @@ execution_mode: sync
 rollout_backend: sglang
 adapter_factory: espnet2.s2t.rl.policy:build_policy
 exporter: espnet2.s2t.rl.export:export_owsm
-sglang_generate_factory: espnet2.s2t.rl.sglang_rollout:generate
+sglang_engine: espnet2.s2t.rl.sglang_rollout:OWSMEngine
 reward_function: null
 dtype: float32
 train_encoder: true

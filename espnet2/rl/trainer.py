@@ -725,5 +725,8 @@ def run(config):
     try:
         trainer.train(sources)
     finally:
+        if trainer.rollout is not None:
+            # The rollout processes hold their engines until training ends.
+            trainer.rollout.close()
         if distributed.is_initialized():
             distributed.destroy_process_group()

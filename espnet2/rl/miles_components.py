@@ -1,4 +1,4 @@
-"""ESPnet Ray deployment, rollout isolation, and weight acknowledgements."""
+"""ESPnet Ray deployment, persistent rollout actors and weight publication."""
 
 import asyncio
 import copy
@@ -13,64 +13,47 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from .data import collate_rollouts
 from .miles_native_actor import ESPnetTrainRayActor
-from .rollout import sha256
+from .rollout import RolloutProcess, merge_generations
 
 
-def replica_generation(
-    config, policy_path, sources, rollout_id, replica, expected_hash, policy_version
-):
-    """One GPU and one payload directory per engine, with complete prompt groups."""
-    from .config import ESPnetRLConfig
+class RolloutActor:
+    """One rollout GPU: a rollout process that holds its engine for the run."""
 
-    config = ESPnetRLConfig(**config)
-    from .rollout_replicas import run_replica
+    def __init__(self, config, replica):
+        from .config import ESPnetRLConfig
 
-    result = run_replica(
-        config,
-        policy_path,
-        sources,
-        rollout_id,
-        replica,
-        os.environ["CUDA_VISIBLE_DEVICES"],
-        expected_hash,
-        policy_version=policy_version,
-    )
-    result.update(
-        node=ray.get_runtime_context().get_node_id(), gpu_ids=ray.get_gpu_ids()
-    )
-    return result
-
-
-def cleanup_rollout_processes(output_dir):
-    """Run on the rollout node and clean only sessions recorded by this run."""
-    from concurrent.futures import ThreadPoolExecutor
-
-    from .rollout_replicas import terminate_owned_process
-
-    directories = [
-        path.parent
-        for path in Path(output_dir, "rollout_batches").glob(
-            "batch-*/replica-*/process.json"
+        config = ESPnetRLConfig(**config)
+        self.identity = {
+            "replica": replica,
+            "node": ray.get_runtime_context().get_node_id(),
+            "gpu_ids": ray.get_gpu_ids(),
+            "gpu": os.environ["CUDA_VISIBLE_DEVICES"],
+        }
+        self.process = RolloutProcess(
+            config,
+            os.environ["CUDA_VISIBLE_DEVICES"],
+            Path(config.output_dir, "rollout_batches", f"replica-{replica}"),
+            replica,
         )
-    ]
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        return list(executor.map(terminate_owned_process, directories))
 
+    def load(self, model, version):
+        self.process.load(model, version)
+        return {**self.identity, "version": version}
 
-def acknowledge_policy(policy):
-    """The rollout node verifies shared files before publication."""
-    path = Path(policy["path"])
-    if sha256(path / "native.pt") != policy["native_sha256"]:
-        raise ValueError("Rollout node received a different native checkpoint")
-    for relative, expected in policy["hf_files"].items():
-        if sha256(path / "hf" / relative) != expected:
-            raise ValueError("Rollout export differs from its frozen file manifest")
-    return {
-        "node_id": ray.get_runtime_context().get_node_id(),
-        "version": policy["step"],
-        "native_sha256": policy["native_sha256"],
-        "export_file_count": len(policy["hf_files"]),
-    }
+    def generate(self, sources, rollout_id):
+        start = time.time()
+        generations = self.process.generate(sources, rollout_id)
+        return {
+            **self.identity,
+            "version": self.process.version,
+            "rollout_id": rollout_id,
+            "start": start,
+            "end": time.time(),
+            "generations": generations,
+        }
+
+    def close(self):
+        self.process.close()
 
 
 class NativeTrainerGroup:
@@ -103,11 +86,38 @@ class NativeTrainerGroup:
 class NativeRolloutExecutor:
     def __init__(self, components):
         self.components = components
+        self.actors = []
         self.policy = None
         self.in_flight = False
         self._active_get_task = None
-        self._tasks = []
         self.disposed = False
+
+    def check_placement(self, replies, version):
+        """Every reply names its own GPU on the rollout node and the policy."""
+        replicas = self.components.rollout_replicas
+        if (
+            len(replies) != replicas
+            or any(
+                reply["node"] != self.components.rollout_node
+                or len(reply["gpu_ids"]) != 1
+                or reply["gpu"] != str(reply["gpu_ids"][0])
+                for reply in replies
+            )
+            or len({tuple(reply["gpu_ids"]) for reply in replies}) != replicas
+        ):
+            raise ValueError(
+                f"Rollout replicas did not occupy {replicas} distinct GPUs "
+                "on the requested node"
+            )
+        if self.components.train_node == self.components.rollout_node:
+            # Ray device ids are per node, so this comparison only means
+            # anything when both roles sit on the same one.
+            occupied = self.components.train_gpu_ids
+            held = {str(gpu) for reply in replies for gpu in reply["gpu_ids"]}
+            if occupied & held:
+                raise ValueError("A rollout replica landed on a training GPU")
+        if any(reply["version"] != version for reply in replies):
+            raise ValueError("A rollout replica holds a different policy version")
 
     async def get(self, rollout_id):
         from miles.utils import object_store
@@ -130,61 +140,25 @@ class NativeRolloutExecutor:
                     f"A rollout requires {config.prompts_per_step} distinct prompts"
                 )
             policy = dict(self.policy)
-            tasks = self._tasks = []
-            replicas = self.components.rollout_replicas
-            for replica in range(replicas):
-                subset = sources[replica::replicas]
-                task = (
-                    ray.remote(num_gpus=1, num_cpus=2, max_retries=0)(
-                        replica_generation
-                    )
-                    .options(
-                        scheduling_strategy=NodeAffinitySchedulingStrategy(
-                            node_id=self.components.rollout_node, soft=False
-                        )
-                    )
-                    .remote(
-                        config.to_dict(),
-                        policy["path"],
-                        subset,
-                        rollout_id,
-                        replica,
-                        policy["native_sha256"],
-                        policy["step"],
-                    )
-                )
-                tasks.append(task)
-            results = await asyncio.gather(*tasks)
-            self._tasks = []
-            if (
-                any(
-                    result["node"] != self.components.rollout_node
-                    or len(result["gpu_ids"]) != 1
-                    or result["gpu"] != str(result["gpu_ids"][0])
-                    for result in results
-                )
-                or len({tuple(result["gpu_ids"]) for result in results}) != replicas
-            ):
-                raise ValueError(
-                    f"Rollout replicas did not occupy {replicas} distinct GPUs "
-                    "on the requested node"
-                )
-            if self.components.train_node == self.components.rollout_node:
-                # Ray device ids are per node, so this comparison only means
-                # anything when both roles sit on the same one.
-                occupied = self.components.train_gpu_ids
-                held = {str(gpu) for item in results for gpu in item["gpu_ids"]}
-                if occupied & held:
-                    raise ValueError("A rollout replica landed on a training GPU")
-            from .rollout_replicas import merge_generations
-
+            replicas = len(self.actors)
+            results = await asyncio.gather(
+                *[
+                    actor.generate.remote(sources[replica::replicas], rollout_id)
+                    for replica, actor in enumerate(self.actors)
+                ]
+            )
+            self.check_placement(results, policy["step"])
             for result in results:
                 for generation in result["generations"]:
                     generation.update(
                         behavior_policy_version=policy["step"],
                         behavior_checkpoint_sha256=policy["native_sha256"],
                     )
-            generations = merge_generations(sources, results, config.group_size)
+            generations = merge_generations(
+                sources,
+                [result["generations"] for result in results],
+                config.group_size,
+            )
             batch = collate_rollouts(sources, generations, config.group_size)
             if len(batch) != config.global_candidate_batch_size:
                 raise ValueError(
@@ -220,34 +194,11 @@ class NativeRolloutExecutor:
                 sample_indices=list(range(len(batch))),
             )
         finally:
-            if self._tasks:
-                for task in self._tasks:
-                    ray.cancel(task, force=False, recursive=True)
-                await self._cleanup_processes()
-                try:
-                    await asyncio.wait_for(
-                        asyncio.gather(*self._tasks, return_exceptions=True), timeout=10
-                    )
-                except asyncio.TimeoutError:
-                    for task in self._tasks:
-                        ray.cancel(task, force=True, recursive=True)
-                self._tasks = []
             self.in_flight = False
             self._active_get_task = None
 
     async def save(self, rollout_id):
         return None
-
-    async def _cleanup_processes(self):
-        await ray.remote(num_cpus=0.2, max_retries=0)(
-            cleanup_rollout_processes
-        ).options(
-            scheduling_strategy=NodeAffinitySchedulingStrategy(
-                node_id=self.components.rollout_node, soft=False
-            )
-        ).remote(
-            self.components.config.output_dir
-        )
 
     async def dispose(self):
         if self.disposed:
@@ -256,12 +207,21 @@ class NativeRolloutExecutor:
         task = self._active_get_task
         if task is not None:
             task.cancel()
-        for ref in self._tasks:
-            ray.cancel(ref, force=False, recursive=True)
-        # Cleanup remains on the exact rollout node and checks PID/start time.
-        await self._cleanup_processes()
-        if task is not None:
             await asyncio.gather(task, return_exceptions=True)
+        try:
+            # An actor answers in order, so a close waits for its generation.
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *[actor.close.remote() for actor in self.actors],
+                    return_exceptions=True,
+                ),
+                timeout=180,
+            )
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            for actor in self.actors:
+                ray.kill(actor, no_restart=True)
 
 
 class NativeInferenceController:
@@ -318,6 +278,18 @@ class NativeComponents:
                     object_store._INSTANCE = self._previous_object_store
 
     async def create_rollout_components(self, args):
+        # One actor per rollout GPU for the whole run; each starts its rollout
+        # process now and builds the engine from the first published policy.
+        self.rollout.actors = [
+            ray.remote(num_gpus=1, num_cpus=2, max_restarts=0)(RolloutActor)
+            .options(
+                scheduling_strategy=NodeAffinitySchedulingStrategy(
+                    node_id=self.rollout_node, soft=False
+                )
+            )
+            .remote(self.config.to_dict(), replica)
+            for replica in range(self.rollout_replicas)
+        ]
         return self.inference, self.rollout, None
 
     async def create_training_models(self, args, rollout_executor):
@@ -391,26 +363,14 @@ class NativeComponents:
         policy = results[0]
         if any(value is not None for value in results[1:]):
             raise ValueError("Only rank 0 can publish an actor")
-        checkpoint = Path(policy["path"], "native.pt")
-        if sha256(checkpoint) != policy["native_sha256"]:
-            raise ValueError("Published actor checksum mismatch")
-        acknowledgment = (
-            await ray.remote(num_cpus=1)(acknowledge_policy)
-            .options(
-                scheduling_strategy=NodeAffinitySchedulingStrategy(
-                    node_id=self.rollout_node, soft=False
-                )
-            )
-            .remote(policy)
+        # Each actor loads the export in place; its reply is the acknowledgment.
+        acknowledgments = await asyncio.gather(
+            *[
+                actor.load.remote(str(Path(policy["path"], "hf")), policy["step"])
+                for actor in self.rollout.actors
+            ]
         )
-        if acknowledgment["node_id"] != self.rollout_node:
-            raise ValueError("Weight acknowledgment did not run on the rollout node")
-        if (
-            acknowledgment["version"] != policy["step"]
-            or acknowledgment["native_sha256"] != policy["native_sha256"]
-            or acknowledgment["export_file_count"] != len(policy["hf_files"])
-        ):
-            raise ValueError("Weight acknowledgment differs from the published version")
+        self.rollout.check_placement(acknowledgments, policy["step"])
         self.rollout.policy = policy
         with Path(self.config.output_dir, "weight_ack.jsonl").open("a") as stream:
             stream.write(
@@ -420,7 +380,7 @@ class NativeComponents:
                         "sha256": policy["native_sha256"],
                         "rollout_id": rollout_id,
                         "safe_point": True,
-                        "rollout_ack": acknowledgment,
+                        "rollout_ack": acknowledgments,
                         "ack_time": time.time(),
                     }
                 )

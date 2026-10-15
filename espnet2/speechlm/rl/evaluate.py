@@ -249,7 +249,11 @@ def run(args):
         else:
             rollout = CheckpointRollout(config)
             export_checkpoint(rollout, checkpoint, args.policy_step, args.export_dir)
-            generations = rollout.generate(sources, args.policy_step)
+            try:
+                rollout.load(rollout.version, args.policy_step)
+                generations = rollout.generate(sources, args.policy_step)
+            finally:
+                rollout.close()
         (output / "responses.json").write_text(
             json.dumps({**evidence, "generations": generations}, indent=2) + "\n"
         )

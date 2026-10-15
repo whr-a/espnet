@@ -6,7 +6,7 @@ manifest: data/rl/librispeech_train.jsonl
 output_dir: exp/rl_opuslm_dialogue_librispeech
 adapter_factory: espnet2.speechlm.rl.policy:factory
 exporter: espnet2.speechlm.rl.integration:exporter
-sglang_generate_factory: espnet2.speechlm.rl.integration:sglang_generate
+sglang_engine: espnet2.speechlm.rl.integration:OpusLMEngine
 reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
 rollout_backend: sglang
 sglang_source: /path/to/pinned/sglang

@@ -34,7 +34,7 @@ def frozen_config(tmp_path, mode, *, small=False, name=None, **overrides):
     config = ESPnetRLConfig(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
         execution_mode=mode,
         prompts_per_step=2 if small else 32,
         group_size=4 if small else 8,

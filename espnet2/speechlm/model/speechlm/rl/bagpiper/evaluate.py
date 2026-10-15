@@ -13,7 +13,7 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
-from espnet2.rl.rollout import CheckpointRollout, sha256
+from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, sha256
 from espnet2.rl.types import validate_token_scores
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
@@ -243,30 +243,23 @@ def run(args):
             evidence["exact_native_export_tensors"] = export[
                 "exact_native_export_tensors"
             ]
-            command = [
-                cfg.rollout_python,
-                "-m",
-                "espnet2.rl.rollout_worker",
-                "--config",
-                str(directory / "frozen_config.json"),
-                "--model",
-                str(directory / "hf"),
-                "--requests",
-                str(directory / "requests.json"),
-                "--output",
-                str(directory / "responses.json"),
-                "--step",
-                str(args.policy_step),
-            ]
-            with (directory / "generation.log").open("w") as handle:
-                subprocess.run(
-                    command,
-                    env=rollout._environment(),
-                    check=True,
-                    stdout=handle,
-                    stderr=subprocess.STDOUT,
-                )
-            result = json.loads((directory / "responses.json").read_text())
+            process = RolloutProcess(
+                cfg, cfg.rollout_gpus, rollout.directory / "replica-0", 0
+            )
+            try:
+                process.load(directory / "hf", args.policy_step)
+                generations = process.generate(sources, args.policy_step)
+            finally:
+                process.close()
+            result = {
+                "policy_step": args.policy_step,
+                "native_sha256": evidence["checkpoint_sha256"],
+                "rollout_backend": "sglang",
+                "generations": generations,
+            }
+            (directory / "responses.json").write_text(
+                json.dumps(result, indent=2) + "\n"
+            )
         generations, batch = validate_responses(
             result, sources, cfg, evidence["checkpoint_sha256"], args.policy_step
         )

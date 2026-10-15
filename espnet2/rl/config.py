@@ -30,7 +30,8 @@ class ESPnetRLConfig:
     rollout_backend: str = "sglang"
     sglang_source: str = ""
     sglang_engine_kwargs: dict[str, Any] = field(default_factory=dict)
-    sglang_generate_factory: str | None = None
+    # module:Class of the architecture's espnet2.rl.engine.RolloutEngine.
+    sglang_engine: str | None = None
     miles_source: str = ""
     miles_commit: str = "a22fd824191c64ba7c5d6c531f125406e4ce9cc6"
     eval_manifest: str | None = None
@@ -189,8 +190,8 @@ class ESPnetRLConfig:
             raise ValueError(
                 "Recipe must supply its ESPnet adapter_factory and exporter"
             )
-        if self.rollout_backend == "sglang" and not self.sglang_generate_factory:
-            raise ValueError("SGLang requires an architecture generation factory")
+        if self.rollout_backend == "sglang" and not self.sglang_engine:
+            raise ValueError("SGLang requires an architecture rollout engine")
         if self.rollout_backend == "vllm" and not self.vllm_generate_factory:
             raise ValueError("vLLM requires an architecture generation factory")
         if self.kl_type not in ("k1", "k2", "k3", "low_var_kl"):

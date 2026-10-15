@@ -91,7 +91,7 @@ def config(root, mode="disagg_async"):
         steps=2,
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
         reward_function=f"{__name__}:counting_reward",
     )
 

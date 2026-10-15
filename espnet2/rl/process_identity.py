@@ -1,4 +1,4 @@
-"""Host identity for process receipts on a filesystem shared across nodes."""
+"""Host identity for training-rank records on a filesystem shared across nodes."""
 
 import os
 import socket

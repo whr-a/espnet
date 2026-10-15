@@ -1,20 +1,130 @@
-"""Run the architecture's actual inference engine in an isolated interpreter."""
+"""Serve the architecture's actual inference engine for a whole run.
+
+The client is ``espnet2.rl.rollout.RolloutProcess``; it talks over one end of
+a socket pair whose other end is this process's ``--fd``. ``load`` builds the
+engine from the first export and loads every later one in place,
+``generate`` answers one batch through JSON files in ``--directory`` and
+``close`` shuts the engine down. Each request is answered with
+``{"ok": True, ...}`` or ``{"error": traceback}``.
+"""
 
 import argparse
 import json
+import time
+import traceback
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 from .config import ESPnetRLConfig
-from .rollout import sha256
+from .engine import RolloutEngine
 from .utils import resolve_callable
+
+
+class FunctionEngine(RolloutEngine):
+    """A per-call generation function: the optional OWSM vLLM backend."""
+
+    def __init__(self, config, model_path, *, directory, replica=0):
+        super().__init__(config, model_path, directory=directory, replica=replica)
+        self.function = resolve_callable(config.vllm_generate_factory)
+        self.model_path = str(model_path)
+
+    def update(self, model_path):
+        self.model_path = str(model_path)
+
+    def generate(self, sources, rollout_id):
+        # The function reads nothing but the export directory it is given.
+        return self.function(self.config, self.model_path, sources, rollout_id)
+
+
+class RolloutServer:
+    """One engine and the integer policy version it currently holds."""
+
+    def __init__(self, config, directory, replica):
+        self.config, self.directory, self.replica = config, directory, replica
+        self.engine = self.version = None
+
+    def load(self, model, version):
+        start = time.monotonic()
+        if self.engine is None:
+            build = (
+                resolve_callable(self.config.sglang_engine)
+                if self.config.rollout_backend == "sglang"
+                else FunctionEngine
+            )
+            self.engine = build(
+                self.config, model, directory=self.directory, replica=self.replica
+            )
+            action = "built"
+        else:
+            self.engine.update(model)
+            action = "updated"
+        self.version = version
+        print(
+            f"rollout engine {action} for policy {version} from {model} "
+            f"in {time.monotonic() - start:.1f} s",
+            flush=True,
+        )
+        return {"version": version}
+
+    def generate(self, requests, output, rollout_id):
+        if self.engine is None:
+            raise RuntimeError("Load a policy before generation")
+        start = time.monotonic()
+        sources = json.loads(Path(requests).read_text())
+        generations = self.engine.generate(sources, rollout_id)
+        for generation in generations:
+            generation["policy_version"] = self.version
+        result = {
+            "rollout_id": rollout_id,
+            "policy_version": self.version,
+            "rollout_backend": self.config.rollout_backend,
+            "generations": generations,
+        }
+        Path(output).write_text(json.dumps(result, allow_nan=False) + "\n")
+        print(
+            f"rollout {rollout_id}: {len(generations)} generations with policy "
+            f"{self.version} in {time.monotonic() - start:.1f} s",
+            flush=True,
+        )
+        return {"version": self.version}
+
+    def close(self):
+        engine, self.engine = self.engine, None
+        if engine is not None:
+            engine.close()
+
+
+def serve(connection, server):
+    """Answer requests until ``close`` or until the client goes away."""
+    try:
+        while True:
+            try:
+                request = connection.recv()
+            except EOFError:
+                return
+            operation = request.pop("op")
+            try:
+                if operation not in ("load", "generate", "close"):
+                    raise ValueError(f"Unknown rollout operation {operation!r}")
+                reply = {"ok": True, **(getattr(server, operation)(**request) or {})}
+            except Exception:
+                reply = {"error": traceback.format_exc()}
+            try:
+                connection.send(reply)
+            except OSError:
+                return  # The client died while this request ran.
+            if operation == "close":
+                return
+    finally:
+        server.close()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    for name in ("config", "model", "requests", "output"):
-        parser.add_argument(f"--{name}", required=True)
-    parser.add_argument("--step", type=int, required=True)
-    parser.add_argument("--policy-version", type=int)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--fd", type=int, required=True)
+    parser.add_argument("--replica", type=int, required=True)
+    parser.add_argument("--directory", required=True)
     args = parser.parse_args()
     config = ESPnetRLConfig(**json.loads(Path(args.config).read_text()))
     config.validate()
@@ -23,22 +133,8 @@ def main():
     if config.dtype == "float32":
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-    sources = json.loads(Path(args.requests).read_text())
-    if config.rollout_backend == "sglang":
-        callback = resolve_callable(config.sglang_generate_factory)
-    else:
-        callback = resolve_callable(config.vllm_generate_factory)
-    generations = callback(config, args.model, sources, args.step)
-    result = {
-        "policy_step": (
-            args.step if args.policy_version is None else args.policy_version
-        ),
-        "rollout_id": args.step,
-        "native_sha256": sha256(Path(args.model).parent / "native.pt"),
-        "rollout_backend": config.rollout_backend,
-        "generations": generations,
-    }
-    Path(args.output).write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
+    with Connection(args.fd) as connection:
+        serve(connection, RolloutServer(config, Path(args.directory), args.replica))
 
 
 if __name__ == "__main__":

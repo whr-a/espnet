@@ -31,7 +31,8 @@ contain VCS dependency URLs; optional source libraries follow `tools/installers`
 
 SGLang runs in a separate interpreter configured with `rollout_python` and
 `sglang_source`. The user's fork is https://github.com/whr-a/sglang. Each recipe
-declares its architecture's generation factory, native scorer and exact exporter.
+declares its architecture's rollout engine (`sglang_engine: module:Class`, an
+`espnet2.rl.engine.RolloutEngine`), native scorer and exact exporter.
 `make sglang_rl.done` accepts `SGLANG_SOURCE` and `SGLANG_REVISION` for a reviewed
 checkout; use a dedicated environment matching its reviewed dependency profile
 in [ENVIRONMENT.md](ENVIRONMENT.md).
@@ -43,12 +44,14 @@ QA recipes additionally supply questions and labels through their architecture
 preparer. TTS rewards consume the actual complete generation record, including
 codec actions and waveform metadata; forced stream padding remains masked.
 
-Each training update exports immutable native and inference checkpoints, starts
-a fresh real SGLang process, saves actual actions/behavior logprobs, validates
-native action probabilities, then performs a native AdamW update. Exports,
-requests, raw responses, rewards, masks and optimizer state are retained. Use a
-new output directory for every run. This initial implementation does not resume
-partially completed runs or silently switch to another inference backend.
+Each rollout GPU runs one inference process for the whole run, which builds
+the real SGLang engine from the first export. Each training update exports
+immutable native and inference checkpoints, loads that export into every engine
+in place, saves actual actions/behavior logprobs, validates native action
+probabilities, then performs a native AdamW update. Exports, requests, raw
+responses, rewards, masks and optimizer state are retained. Use a new output
+directory for every run. This initial implementation does not resume partially
+completed runs or silently switch to another inference backend.
 
 Multi-rank trainers create their ESPnet Gloo object group collectively before
 rank zero starts rollout. Rollout payloads, native scoring results, behavior-load

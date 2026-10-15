@@ -127,7 +127,7 @@ def _delayed_training(rank, root):
             micro_batch_size=32,
             adapter_factory="unused:factory",
             exporter="unused:exporter",
-            sglang_generate_factory="unused:generate",
+            sglang_engine="unused:Engine",
         )
         rollout = _DelayedRollout() if rank == 0 else None
         trainer = NativeGRPOTrainer(_Policy(), cfg, rollout=rollout)
@@ -214,7 +214,7 @@ class TestRolloutObjectCollectives(unittest.TestCase):
         cfg = ESPnetRLConfig(
             adapter_factory="unused:factory",
             exporter="unused:exporter",
-            sglang_generate_factory="unused:generate",
+            sglang_engine="unused:Engine",
         )
         self.assertEqual(cfg.distributed_timeout_minutes, 4320)
         for invalid in (0, -1, float("nan"), float("inf"), True, "4320"):

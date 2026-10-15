@@ -153,6 +153,6 @@ def test_full_checkpoints_follow_the_miles_save_cadence(tmp_path, monkeypatch):
         ESPnetRLConfig(
             adapter_factory="a:b",
             exporter="a:b",
-            sglang_generate_factory="a:b",
+            sglang_engine="a:b",
             save_interval=0,
         ).validate()

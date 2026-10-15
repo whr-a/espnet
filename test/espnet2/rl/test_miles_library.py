@@ -23,7 +23,7 @@ def test_frozen_json_configuration_retains_scientific_numeric_types(tmp_path):
         learning_rate=1e-6,
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
     )
     path = tmp_path / "frozen_config.json"
     path.write_text(json.dumps(config.to_dict()))
@@ -220,7 +220,7 @@ def test_clip_fraction_includes_all_microbatches():
         micro_batch_size=1,
         adapter_factory="unused:factory",
         exporter="unused:exporter",
-        sglang_generate_factory="unused:generate",
+        sglang_engine="unused:Engine",
         kl_coef=0.0,
     )
     metrics = NativeGRPOTrainer(Scorer(), config).update_actor(batch)
