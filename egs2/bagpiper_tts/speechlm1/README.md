@@ -368,6 +368,16 @@ and SHA256 audit sidecars.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
+It scores the whole batch at once on `reward_device` (default: the learner's
+device): each candidate's codes are decoded alone, then the ASR transcribes
+`asr_batch_size` (default 64) waveforms together. A candidate with no
+decodable audio (fewer than eight codec frames) or an invalid codec token in
+an aligned frame gets WER 1 (reward -1); `reward/no_audio` and
+`reward/invalid_codec` log their fractions next to `reward/wer`. Each update
+writes every transcript to `reward_audit/batch-NNNNNN.jsonl` and the WAV and
+JSON of four evenly spaced candidates. Prepare manifests with `--max-words 25`
+to keep utterances whose audio fits the 1536-token budget, and with
+`--shuffle-seed 42` so that each update draws new prompts across the corpus.
 LibriTTS and `wav.scp` use one shared verbatim reading instruction and preserve
 the reference separately for WER. The native text preprocessor and rollout prefix
 are identical. The starter configuration uses two candidates per prompt and a
@@ -375,23 +385,25 @@ are identical. The starter configuration uses two candidates per prompt and a
 Freeze the native recipe's `activation_checkpointing: true`; the RL scorer
 recomputes native decoder layers and 32-token score blocks in evaluation mode.
 
-Prepare a separate held-out LibriTTS split, and set `eval_manifest` to that
-JSONL in the frozen RL configuration. Evaluate the final native checkpoint:
+Prepare a separate held-out LibriTTS split and evaluate a native checkpoint
+with it; the evaluator exports the checkpoint and decodes every prompt with the
+recipe's rollout engine (greedy and 2,048 new tokens by default;
+`--temperature 1 --samples 8` samples the RL policy instead):
 
 ```bash
 PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
-  --dataset libritts --input /path/to/heldout-libritts \
-  --task tts_asr_wer --output data/rl/eval.jsonl
+  --dataset libritts --input /path/to/heldout-libritts --max-words 25 \
+  --shuffle-seed 42 --limit 200 --task tts_asr_wer --output data/rl/eval.jsonl
 PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-  --config conf/rl.yaml --checkpoint exp/rl/step-000002.native.pth \
+  --config exp/rl/frozen_config.json --manifest data/rl/eval.jsonl \
+  --checkpoint exp/rl/step-000002.native.pth --policy-step 2 \
   --output exp/rl/heldout
 ```
 
-The evaluation refuses train/eval identity overlap and scores every frozen group
-candidate. It preserves generated codec actions, WAV files, ASR transcripts,
-WER, checkpoint identity and native/rollout probability checks. `value` is the
-unweighted mean WER over all candidates; its prompt and candidate denominators
-are reported separately.
+The evaluation refuses train/eval identity overlap and scores every candidate
+with the training reward's ASR. `items.jsonl` keeps each transcript, WER and
+decoding status, `reward_audit/` every WAV and its codec actions, and
+`summary.json` the mean and corpus WER, failure counts and checkpoint identity.
 
 The first SGLang implementation is deliberately synchronous and uses full-prefix
 FP32 forward with TP=1. It records every primary and secondary action, mask,

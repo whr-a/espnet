@@ -462,59 +462,49 @@ sampled rollout. The learner executes the native model on those same features.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
-QA training uses WEST's exact-answer and full-match answer-format functions,
-with equal normalized weights: `0.5 * (accuracy + format)`. WEST's default
-implementation adds the two scores with weights of one; this recipe's reward
-range is 0 to 1, rather than 0 to 2. It uses Miles' normalized GRPO advantages
-and KL objective. MMAU uses the official token-set match. MMAU evaluation must
-freeze its own held-out manifest and retains raw generations before scoring.
+QA training (`rewards:qa_reward`, protocol `qa_west_bagpiper_v1`) keeps WEST's
+equal accuracy and format weights, `0.5 * accuracy + 0.5 * format`, but lets
+the native caption-and-reasoning responses earn them: accuracy is the official
+MMAU token-set match of the first `<answer>` block (across lines), else of the
+line after the last answer cue ("final answer", "correct answer", "answer is",
+"choice is", "answer:"), else of the whole response; format is exactly one
+answer block anywhere. Accuracy, format and the extraction path are logged as
+`reward/acc`, `reward/format` and `reward/path_{tag,cue,text}`.
+`rewards:qa_west_reward` is WEST's default reward exactly (exact-string answer,
+whole response one answer tag). It uses Miles' normalized GRPO advantages and
+KL objective. Prepare the AVQA training manifest with `--shuffle-seed 42`:
+prompts are taken in manifest order, so the shuffle gives each update new
+prompts drawn across the corpus.
 
-For engineering validation, prepare MMAU separately with an immutable dataset
-revision or an existing parquet. Choose the sample limit before starting the
-round; `--limit 8` creates the small verification subset used by this recipe.
+MMAU evaluation follows WEST's `decode_mmau.py`: it exports the checkpoint,
+builds the recipe's `sglang_engine` from it, decodes every prompt greedily with
+up to 2,048 new tokens and each clip cut to its first 30 s, and applies the
+official matcher to WEST's extraction (`west_*`) and to the v1 reward's
+(`v1_*`). Preparing MMAU from a parquet carries its `task` (and, for the
+official parquet, category, sub-category and difficulty) into each record, and
+the summary reports accuracy per category as well.
 
 ```bash
 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
-    --dataset mmau --input /path/to/mmau.parquet --limit 8 \
+    --dataset mmau --input /path/to/mmau.parquet \
     --output data/rl/mmau.jsonl --task qa
-# Set eval_manifest: data/rl/mmau.jsonl in the frozen RL YAML.
 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-    --config conf/rl.yaml --checkpoint /path/to/initial-native.pth \
-    --output exp/rl/mmau-before
-python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-    --config conf/rl.yaml --checkpoint exp/rl/step-000002.native.pth \
-    --output exp/rl/mmau-after
+    --config exp/rl/frozen_config.json --manifest data/rl/mmau.jsonl \
+    --checkpoint exp/rl/step-000050.native.pth --policy-step 50 \
+    --output exp/rl/mmau-050
 ```
 
-Evaluation uses every configured candidate: eight prompts with `group_size: 4`
-produce 32 responses and a denominator of 32. The official MMAU token-set matcher
-requires all answer words and excludes words unique to incorrect choices. It
-does not use the training format reward. Each generation and score is retained;
-raw responses, manifest and checkpoint hashes, prompt count, and response count
-are included in the audit. This subset is an engineering check, not a full
-MMAU-mini benchmark. A successful two-update run does not imply a metric gain.
-
-The evaluator rejects training/held-out ID overlap, checks response checkpoint
-hash, backend and policy version, and verifies every sampled action's probability
-against the specified final native checkpoint. Its export must match every native
-tensor except the nonpolicy `vocab_weight`. `--device cpu` is the default for
-this independent probability gate. Use effective `frozen_config.json` with
-`--manifest` to select a separately prepared held-out set without losing training
-CLI overrides. Each evaluation writes its own completion status and failure
-traceback. Existing real outputs can be audited without generating again:
-
-```bash
-python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-    --config exp/rl/frozen_config.json --checkpoint /path/to/evaluated-native.pth \
-    --manifest data/rl/mmau.jsonl --responses /path/to/eval/responses.json \
-    --export-dir /path/to/eval/hf --policy-step -1 --device cpu \
-    --output exp/rl/mmau-saved-audit
-```
-
-Use the saved response's actual `policy_step`; no new generation occurs in this
-mode. `--export-dir` additionally checks the existing HF export against the
-native checkpoint. Relative config paths resolve from the command's current
-directory, so run from the original recipe or freeze absolute paths.
+Each evaluation writes `items.jsonl` (response, both extracted answers and
+matches, categories) and `summary.json` (accuracies, counts, truncations,
+per-category results and the checkpoint, manifest and config hashes), and its
+own completion status and failure traceback. The evaluator rejects
+training/held-out ID overlap and requires the export to match every native
+tensor except the nonpolicy `vocab_weight`. `--temperature 1 --samples 4
+--verify-native` instead samples the RL policy and verifies every sampled
+action's probability against the native checkpoint. `--responses` scores
+existing outputs again without generation; give the saved `policy_step`.
+Relative config paths resolve from the command's current directory, so run
+from the original recipe or freeze absolute paths.
 
 The first SGLang implementation is deliberately synchronous and uses full-prefix
 FP32 forward with TP=1. It records every primary and secondary action, mask,
