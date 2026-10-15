@@ -329,7 +329,7 @@ class TestCPUOffloadDDP(unittest.TestCase):
         config = ESPnetRLConfig(
             adapter_factory="a:b",
             exporter="c:d",
-            sglang_generate_factory="e:f",
+            sglang_engine="e:f",
             dtype="bfloat16",
         )
         with self.assertRaisesRegex(ValueError, "optimizer_device: cpu"):
