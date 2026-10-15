@@ -144,6 +144,41 @@ def test_launcher_geometry_follows_the_recipe_train_gpus(
         ]
 
 
+def test_single_rank_launches_inside_a_platform_distributed_environment(
+    tmp_path, monkeypatch
+):
+    """A pytorch job pod exports WORLD_SIZE; one rank must still launch.
+
+    The stale variables are dropped from the child environment, so only a
+    nested torchrun is refused.
+    """
+    for name, value in (
+        ("WORLD_SIZE", "2"),
+        ("RANK", "0"),
+        ("LOCAL_RANK", "0"),
+        ("MASTER_ADDR", "10.0.0.1"),
+        ("MASTER_PORT", "29500"),
+    ):
+        monkeypatch.setenv(name, value)
+    one = frozen_config(tmp_path, "sync", train_gpus="0", rollout_gpus="0", name="one")
+    command, environment = launch_command(
+        parser().parse_args(["--config", str(one)]), python="pinned-python"
+    )
+    assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
+    assert "torch.distributed.run" not in command
+    assert environment["CUDA_VISIBLE_DEVICES"] == "0"
+    for name in ("WORLD_SIZE", "RANK", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
+        assert name not in environment
+    # Several ranks would mean nesting torchrun inside the pod's launcher.
+    many = frozen_config(
+        tmp_path, "sync", train_gpus="0,1", rollout_gpus="0", name="many"
+    )
+    with pytest.raises(ValueError, match="existing distributed launcher"):
+        launch_command(
+            parser().parse_args(["--config", str(many)]), python="pinned-python"
+        )
+
+
 def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
     tmp_path, monkeypatch
 ):

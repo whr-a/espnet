@@ -54,7 +54,11 @@ def launch_command(args, *, python=sys.executable):
         ):
             raise ValueError("Ray node selectors require a disagg_async config")
         if not args.validate_only:
-            if int(environment.get("WORLD_SIZE", "1")) != 1:
+            # A platform job may already export a distributed environment.
+            # Training never inherits it: the variables are dropped here and
+            # re-created only by the torchrun this launcher starts itself.
+            # Nesting one launcher inside another is what has to be refused.
+            if config.train_ranks > 1 and int(environment.get("WORLD_SIZE", "1")) != 1:
                 raise ValueError(
                     "Invoke rl_launch once outside an existing distributed launcher"
                 )
