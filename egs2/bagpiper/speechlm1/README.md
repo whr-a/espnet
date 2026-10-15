@@ -480,7 +480,9 @@ MMAU evaluation follows WEST's `decode_mmau.py`: it exports the checkpoint,
 builds the recipe's `sglang_engine` from it, decodes every prompt greedily with
 up to 2,048 new tokens and each clip cut to its first 30 s, and applies the
 official matcher to WEST's extraction (`west_*`) and to the v1 reward's
-(`v1_*`). Preparing MMAU from a parquet carries its `task` (and, for the
+(`v1_*`). The engine runs in the evaluator's own process, so run it with the
+recipe's `rollout_python`; its context grows by the extra new tokens and its
+running requests shrink in proportion, within the recipe's KV budget. Preparing MMAU from a parquet carries its `task` (and, for the
 official parquet, category, sub-category and difficulty) into each record, and
 the summary reports accuracy per category as well.
 
@@ -502,7 +504,8 @@ training/held-out ID overlap and requires the export to match every native
 tensor except the nonpolicy `vocab_weight`. `--temperature 1 --samples 4
 --verify-native` instead samples the RL policy and verifies every sampled
 action's probability against the native checkpoint. `--responses` scores
-existing outputs again without generation; give the saved `policy_step`.
+existing outputs again without generation under the sampling and audio cut
+they were decoded with; give the saved `policy_step`.
 Relative config paths resolve from the command's current directory, so run
 from the original recipe or freeze absolute paths.
 

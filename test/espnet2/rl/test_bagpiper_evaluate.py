@@ -2,7 +2,10 @@
 
 import json
 import os
+import sys
 from argparse import Namespace
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -271,9 +274,15 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
     )
 
     def export(command, env, **kwargs):
-        assert command[command.index("--checkpoint") + 1] == str(checkpoint)
         assert "WORLD_SIZE" not in env
-        export_tensors(checkpoint, tmp_path / "evaluation" / "hf")
+        if "-c" in command:  # the rollout interpreter's environment
+            return SimpleNamespace(stdout=prefix + "\n")
+        assert command[command.index("--checkpoint") + 1] == str(checkpoint)
+        export_tensors(
+            checkpoint, Path(command[command.index("--output") + 1]).parent / "hf"
+        )
+
+    prefix = sys.prefix
 
     def arguments(output, **changes):
         return Namespace(
@@ -334,9 +343,43 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
     assert json.loads((output / "completion.json").read_text())["status"] == (
         "Succeeded"
     )
-    # Saved responses are scored again without generating.
-    again = evaluate.run(arguments("again", responses=str(output / "responses.json")))
+    # Saved responses are scored again without generating, under the decoding
+    # they record.
+    saved = str(output / "responses.json")
+    again = evaluate.run(arguments("again", responses=saved))
     assert again["v1_correct"] == 1 and len(FakeEngine.calls) == 3
+    assert again["sampling"] == greedy and again["audio_seconds"] == 1.0
+    for index, changes in enumerate(({"max_new_tokens": 1536}, {"audio_seconds": 3})):
+        with pytest.raises(ValueError, match="responses were decoded with"):
+            evaluate.run(arguments(f"other-{index}", responses=saved, **changes))
     with pytest.raises(ValueError, match="sampled actions"):
         evaluate.run(arguments("never", verify_native=True))
     assert not (tmp_path / "never").exists()
+    # Sampled responses saved without their features cannot be verified.
+    evaluate.run(arguments("sampled", temperature=1.0))
+    with pytest.raises(ValueError, match="no native features"):
+        evaluate.run(
+            arguments(
+                "verified",
+                temperature=1.0,
+                verify_native=True,
+                responses=str(tmp_path / "sampled" / "responses.json"),
+            )
+        )
+    # The engine runs in the evaluator's own process: its environment and
+    # SGLang must be the recipe's.
+    prefix = "/another/environment"
+    with pytest.raises(ValueError, match="rollout_python"):
+        evaluate.run(arguments("elsewhere"))
+
+
+def test_the_engine_process_must_import_the_recipe_sglang(tmp_path):
+    import sglang
+
+    config = SimpleNamespace(rollout_python=sys.executable, sglang_source="")
+    evaluate.check_interpreter(config, dict(os.environ))
+    config.sglang_source = str(Path(sglang.__file__).parents[2])
+    evaluate.check_interpreter(config, dict(os.environ))
+    config.sglang_source = str(tmp_path)
+    with pytest.raises(ValueError, match="sglang_source"):
+        evaluate.check_interpreter(config, dict(os.environ))

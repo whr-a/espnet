@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import traceback
 from collections import Counter
 from pathlib import Path
@@ -154,6 +155,8 @@ def clip_audio(sources, directory, seconds):
 
     clipped = 0
     for index, source in enumerate(sources):
+        if source.get("prompt_token_ids"):
+            raise ValueError("A prepared prompt keeps the audio it was made from")
         info = sf.info(source["audio"])
         limit = int(seconds * info.samplerate)
         if info.frames > limit:
@@ -166,6 +169,32 @@ def clip_audio(sources, directory, seconds):
             source.update(audio=str(path), clipped_from=source["audio"])
             clipped += 1
     return clipped
+
+
+def check_interpreter(config, environment):
+    """The engine runs in this process, so it must be the recipe's rollout
+    interpreter and import the recipe's SGLang."""
+    prefix = subprocess.run(
+        [config.rollout_python, "-c", "import sys; print(sys.prefix)"],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if prefix != sys.prefix:
+        raise ValueError(
+            f"Run the evaluator with the recipe's rollout_python, the environment "
+            f"{prefix}, not {sys.prefix}"
+        )
+    if config.sglang_source:
+        import sglang
+
+        imported = Path(sglang.__file__).resolve()
+        if not imported.is_relative_to(Path(config.sglang_source).resolve()):
+            raise ValueError(
+                f"This process imports SGLang from {imported.parent}, not from "
+                f"the recipe's sglang_source {config.sglang_source}"
+            )
 
 
 def generate(config, sources, directory, sampling, batch_size):
@@ -344,6 +373,23 @@ def run(args):
     try:
         if args.responses:
             result = read_json(args.responses)
+            # The decoding is the saved responses', which may not record it.
+            for name in ("sampling", "audio_seconds"):
+                saved = result.get(name)
+                if saved is not None and saved != protocol[name]:
+                    raise ValueError(
+                        f"The saved responses were decoded with {name} {saved}, "
+                        f"not {protocol[name]}"
+                    )
+                protocol[name] = saved
+            if args.verify_native and not all(
+                "data" in generation.get("prepared_native_source", {})
+                for generation in result["generations"]
+            ):
+                raise ValueError(
+                    "The saved responses hold no native features to verify; "
+                    "decode them with --verify-native"
+                )
             protocol.update(
                 saved_responses=str(Path(args.responses).resolve()),
                 saved_responses_sha256=sha256(args.responses),
@@ -353,6 +399,7 @@ def run(args):
             environment = subprocess_environment(
                 cfg, os.environ.get("CUDA_VISIBLE_DEVICES", "0")
             )
+            check_interpreter(cfg, environment)
             os.environ.clear()
             os.environ.update(environment)
             with (directory / "export.log").open("w") as handle:
@@ -390,6 +437,7 @@ def run(args):
                 "native_sha256": protocol["checkpoint_sha256"],
                 "rollout_backend": "sglang",
                 "sampling": sampling,
+                "audio_seconds": protocol["audio_seconds"],
                 "generations": (
                     generations
                     if args.verify_native

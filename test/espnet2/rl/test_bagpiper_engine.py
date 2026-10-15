@@ -533,6 +533,9 @@ class FakeEngine:
         self.model.audio_tower = self.core.multimodal_io_dict["continuous_audio"].tower
         self.model.audio_adaptor = self.core.adaptor["continuous_audio"]
 
+    def shutdown(self):
+        pass
+
     def get_server_info(self):
         return {
             "max_total_num_tokens": self.pool,
@@ -623,12 +626,12 @@ def rollout_sources():
     ]
 
 
-def build_engine(native, tmp_path, monkeypatch, **overrides):
+def fake_sglang(native, monkeypatch):
+    """Serve BagpiperEngine from FakeEngine on the tiny native model."""
     import sglang
     import transformers
 
-    core, export = native
-    FakeEngine.core = core
+    FakeEngine.core = native[0]
     for name in ("SGLANG_RETURN_ORIGINAL_LOGPROB", "TRITON_F32_DEFAULT"):
         monkeypatch.delenv(name, raising=False)  # restored after the test
     monkeypatch.delenv("NVIDIA_TF32_OVERRIDE", raising=False)
@@ -640,6 +643,10 @@ def build_engine(native, tmp_path, monkeypatch, **overrides):
             decode=lambda ids, **_: " ".join(map(str, ids))
         ),
     )
+
+
+def build_engine(native, tmp_path, monkeypatch, **overrides):
+    fake_sglang(native, monkeypatch)
     config = ESPnetRLConfig(
         family="bagpiper",
         adapter_factory="a:b",
@@ -651,7 +658,7 @@ def build_engine(native, tmp_path, monkeypatch, **overrides):
     )
     directory = tmp_path / "replica-0"
     directory.mkdir()
-    return rollout_module.BagpiperEngine(config, export, directory=directory)
+    return rollout_module.BagpiperEngine(config, native[1], directory=directory)
 
 
 def test_records_are_scored_by_the_learner_under_their_supports(
@@ -841,3 +848,47 @@ def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypa
     (tmp_path / "small").mkdir()
     with pytest.raises(ValueError, match="never retracts"):
         build_engine(native, tmp_path / "small", monkeypatch)
+
+
+def test_held_out_evaluation_decodes_through_the_engine(native, tmp_path, monkeypatch):
+    """The evaluator's generate on BagpiperEngine itself: greedy and sampled
+    candidates in rollouts of one prompt each, records that MMAU scoring and
+    the native verification accept."""
+    from espnet2.speechlm.model.speechlm.rl.bagpiper import evaluate
+
+    core, export = native
+    fake_sglang(native, monkeypatch)
+    config = ESPnetRLConfig(
+        family="bagpiper",
+        adapter_factory="a:b",
+        exporter="c:d",
+        sglang_engine="espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:"
+        "BagpiperEngine",
+        group_size=1,
+        max_tokens=10,
+    )
+    sources = rollout_sources()
+    sources[0].update(reference="20 2", choices=["20 2", "7"])
+    greedy = evaluate.generate(
+        config, sources, export.parent, {"temperature": 0.0, "max_new_tokens": 10}, 1
+    )
+    assert [g["source_id"] for g in greedy] == ["qa", "tts"]
+    for generation in greedy:
+        assert generation["sampling_contract"] == {"temperature": 0.0, "top_k": 0}
+        assert len(generation["support"]) == len(generation["token_ids"]) <= 10
+    items, summary = evaluate.score_mmau(sources[:1], greedy[:1], 1)
+    assert summary["count"] == 1 and items[0]["text"] == greedy[0]["text"]
+    # Sampled candidates are the behavior policy the native checkpoint verifies.
+    sampled = tmp_path / "sampled"
+    sampled.mkdir()
+    (sampled / "hf").symlink_to(export, target_is_directory=True)
+    config.group_size = 4
+    torch.manual_seed(2)
+    generations = evaluate.generate(
+        config, sources, sampled, {"temperature": 1.0, "max_new_tokens": 10}, 1
+    )
+    policy = NativeSpeechLMPolicy(core, GEOMETRY, token_chunk_size=4)
+    errors, drift = evaluate.verify_native_log_probs(
+        policy, collate_rollouts(sources, generations, 4), config
+    )
+    assert len(errors) == 8 and drift["max"] < 1e-4
