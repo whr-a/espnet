@@ -297,7 +297,11 @@ def select_records(rows, protected, forbidden, count, audit, role):
                         changed = True
                         blocked[kind].update(new)
     decoded = set(audit.get("train_decoded", []))
-    for row in sorted(rows, key=lambda item: str(item["id"])):
+    # Hash order spreads any prefix of the selection across speakers and
+    # chapters instead of taking consecutive utterances of one recording.
+    for row in sorted(
+        rows, key=lambda item: hashlib.sha256(str(item["id"]).encode()).hexdigest()
+    ):
         keys = row["boundary_keys"]
         hits = {
             k: sorted(set(v) & (protected[k] | forbidden[k] | blocked[k]))
@@ -345,8 +349,8 @@ def freeze_selection(args):
         raise ValueError(
             "A train-partition heldout must retain its true native train split"
         )
-    if args.train_count != 32 or args.heldout_count < 1:
-        raise ValueError("This short-run contract requires exactly 32 training prompts")
+    if args.train_count < 1 or args.heldout_count < 1:
+        raise ValueError("Select at least one training and one heldout prompt")
     output = Path(args.output_dir)
     if output.exists():
         raise FileExistsError("Refusing to replace a frozen data directory")
@@ -390,7 +394,7 @@ def freeze_selection(args):
             "train": file_hash(args.train_candidates),
             "heldout": file_hash(args.heldout_candidates),
         },
-        "selection": "sorted source ID; exclude all registered keys and linked components; independent raw/decoded audio",
+        "selection": "SHA256-ordered source ID; exclude all registered keys and linked components; independent raw/decoded audio",
         "verified_protection_scope": {
             "specialist_records": protection["specialist_records"],
             "registered_audio_count": protection["registered_audio_count"],
@@ -405,7 +409,9 @@ def freeze_selection(args):
             ],
         },
     }
-    selected, train_keys = select_records(train, protected, empty, 32, audit, "train")
+    selected, train_keys = select_records(
+        train, protected, empty, args.train_count, audit, "train"
+    )
     audit["train_decoded"] = [r["decoded_audio_sha256"] for r in selected]
     for row in heldout:
         if row["normalized_audio_sha256"] in {
@@ -417,12 +423,12 @@ def freeze_selection(args):
     )
     output.mkdir(parents=True)
     hashes = {}
-    for role, rows in (("train32", selected), ("heldout", evaluation)):
+    for role, rows in (("train", selected), ("heldout", evaluation)):
         for row in rows:
             row["provenance"] = {
                 "dataset": args.source_dataset,
                 "revision": args.source_revision,
-                "split": args.train_split if role == "train32" else args.heldout_split,
+                "split": args.train_split if role == "train" else args.heldout_split,
                 "source_id": row["id"],
             }
         path = output / (role + ".jsonl")
@@ -430,7 +436,7 @@ def freeze_selection(args):
         hashes[role] = file_hash(path)
     audit.update(
         manifest_sha256=hashes,
-        counts={"train": 32, "heldout": len(evaluation)},
+        counts={"train": len(selected), "heldout": len(evaluation)},
         protection_bindings=protection["bindings"],
     )
     (output / "admission.json").write_text(
