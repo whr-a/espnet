@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from .batch import RolloutBatch
@@ -92,12 +93,61 @@ def verify_data_admission(config, path):
     return admission
 
 
+def prepared_sha256(source_id, data, digests=None):
+    """SHA256 of a source's prepared native inputs.
+
+    Canonical JSON in which a numpy array enters by its dtype, shape and the
+    SHA256 of its bytes rather than one number at a time. ``digests`` keeps
+    the entries of arrays already seen, by identity, across calls.
+    """
+    digests = {} if digests is None else digests
+
+    def array(value):
+        if not isinstance(value, np.ndarray):
+            raise TypeError(f"Prepared native inputs cannot hold {type(value)}")
+        if id(value) not in digests:
+            contiguous = np.ascontiguousarray(value)
+            digests[id(value)] = value, {
+                "dtype": contiguous.dtype.str,
+                "shape": list(contiguous.shape),
+                "sha256": hashlib.sha256(contiguous).hexdigest(),
+            }
+        return digests[id(value)][1]
+
+    encoded = json.dumps(
+        {"source_id": source_id, "data": data},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=array,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _shared_arrays(value, memo):
+    """A deepcopy memo under which copies share the numpy arrays of ``value``.
+
+    Native feature arrays are hashed by their bytes and never written, so the
+    candidates of one prompt can hold the same one.
+    """
+    if isinstance(value, np.ndarray):
+        memo[id(value)] = value
+    elif isinstance(value, dict):
+        for item in value.values():
+            _shared_arrays(item, memo)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            _shared_arrays(item, memo)
+    return memo
+
+
 def collate_rollouts(sources, generations, group_size):
     """Generations carry exactly the actions sampled by the inference worker."""
     if len(generations) != len(sources) * group_size:
         raise ValueError("Incomplete rollout groups")
     repeated_sources = []
     raw_generations = []
+    digests = {}
     prefixes, actions, action_masks, log_probs, ids, texts, stream_masks = (
         [],
         [],
@@ -150,23 +200,25 @@ def collate_rollouts(sources, generations, group_size):
                 raise ValueError(
                     "Inference preparation attempted to replace source identity or supervision"
                 )
-            encoded = json.dumps(
-                {"source_id": prepared["source_id"], "data": payload},
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode()
-            if hashlib.sha256(encoded).hexdigest() != prepared["sha256"]:
+            digest = prepared_sha256(prepared["source_id"], payload, digests)
+            if digest != prepared["sha256"]:
                 raise ValueError(
                     "Prepared native source hash differs from rollout evidence"
                 )
-            sample_source.update(copy.deepcopy(payload))
-        # Per-frame records of how the engine sampled, for the native scorer.
-        for name in ("sampling_contracts", "codec_frame_mask", "support"):
+            sample_source.update(copy.deepcopy(payload, _shared_arrays(payload, {})))
+        # Records of how the engine sampled, for the native scorer.
+        for name in (
+            "sampling_contract",
+            "sampling_contracts",
+            "codec_frame_mask",
+            "support",
+        ):
             if name in generation:
                 sample_source[name] = generation[name]
         repeated_sources.append(sample_source)
-        raw_generations.append(copy.deepcopy(generation))
+        # Every rollout decodes fresh records that are only read from here on;
+        # a deep copy would cost seconds per batch of frame lists.
+        raw_generations.append(generation)
         if action.ndim == 2:
             if generation.get("stream_mask") is None:
                 raise ValueError("Multistream rollout requires a sampling mask")

@@ -148,18 +148,50 @@ class NativeGRPOTrainer:
             global_batch_info={},
         )
 
-    def _score_chunks(self, policy, batch):
-        results = []
-        scoring_device = next(policy.parameters()).device
-        for start in range(0, len(batch), self.config.micro_batch_size):
-            subset = batch.select_idxs(
-                np.arange(start, min(len(batch), start + self.config.micro_batch_size))
+    def _micro_batches(self, batch):
+        """Candidate indices of each micro-batch of ``batch``.
+
+        At most micro_batch_size candidates each. With micro_batch_tokens,
+        candidates are taken in order of prompt+response length, and a
+        micro-batch also keeps its count times its longest length (its
+        right-padded size) within that budget.
+        """
+        size, budget = self.config.micro_batch_size, self.config.micro_batch_tokens
+        if budget is None:
+            return [
+                np.arange(start, min(len(batch), start + size))
+                for start in range(0, len(batch), size)
+            ]
+        lengths = [
+            len(prompt) + length
+            for prompt, length in zip(
+                batch.non_tensor_batch["prompt_token_ids"],
+                batch.batch["response_lengths"].tolist(),
+                strict=True,
             )
+        ]
+        parts, part = [], []
+        for index in sorted(range(len(batch)), key=lengths.__getitem__):
+            if part and (
+                len(part) == size or (len(part) + 1) * lengths[index] > budget
+            ):
+                parts.append(np.array(part))
+                part = []
+            part.append(index)
+        if part:
+            parts.append(np.array(part))
+        return parts
+
+    def _score_chunks(self, policy, batch):
+        results = torch.zeros(batch.batch["response_mask"].shape)
+        scoring_device = next(policy.parameters()).device
+        for indices in self._micro_batches(batch):
+            subset = batch.select_idxs(indices)
             subset.to(scoring_device)
             scores = policy(subset)
             validate_token_scores(scores, subset.batch["response_mask"])
-            results.append(scores.log_probs.detach().cpu())
-        return torch.cat(results)
+            results[torch.as_tensor(indices)] = scores.log_probs.detach().cpu()
+        return results
 
     def prepare_batch(self, batch, native_scores=None):
         if native_scores is None:
@@ -366,14 +398,11 @@ class NativeGRPOTrainer:
         metrics = {"actor/loss": 0.0, "actor/kl_loss": 0.0, "actor/entropy": 0.0}
         for _ in range(self.config.ppo_epochs):
             self.optimizer.zero_grad(set_to_none=True)
-            for start in range(0, len(local), self.config.micro_batch_size):
-                part = local.select_idxs(
-                    np.arange(
-                        start, min(len(local), start + self.config.micro_batch_size)
-                    )
-                )
+            parts = self._micro_batches(local)
+            for number, indices in enumerate(parts):
+                part = local.select_idxs(indices)
                 part.to(self.device)
-                final_microbatch = start + self.config.micro_batch_size >= len(local)
+                final_microbatch = number == len(parts) - 1
                 synchronization = (
                     self.actor.no_sync()
                     if isinstance(self.actor, DistributedDataParallel)

@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.connection import Connection
 from pathlib import Path
 
+import numpy as np
 import torch
 
 
@@ -33,6 +34,50 @@ def sha256(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def write_json(path, value, **options):
+    """Write JSON with every distinct numpy array in a binary sidecar.
+
+    The array becomes ``{"__ndarray__": "<stem>.<n>.npy", "sha256": ...}``,
+    written once however often it occurs (a prompt's features are shared by
+    all its candidates).
+    """
+    path, stored = Path(path), {}
+
+    def sidecar(item):
+        if not isinstance(item, np.ndarray):
+            raise TypeError(
+                f"Object of type {type(item).__name__} is not JSON serializable"
+            )
+        if id(item) not in stored:
+            name = f"{path.stem}.{len(stored)}.npy"
+            np.save(path.with_name(name), item, allow_pickle=False)
+            stored[id(item)] = {
+                "__ndarray__": name,
+                "sha256": sha256(path.with_name(name)),
+            }
+        return stored[id(item)]
+
+    path.write_text(json.dumps(value, default=sidecar, **options) + "\n")
+
+
+def read_json(path):
+    """Read write_json output; the references to one sidecar share its array."""
+    path, loaded = Path(path), {}
+
+    def array(item):
+        name = item.get("__ndarray__")
+        if name is None or set(item) != {"__ndarray__", "sha256"}:
+            return item
+        if name not in loaded:
+            sidecar = path.with_name(name)
+            if Path(name).name != name or sha256(sidecar) != item["sha256"]:
+                raise ValueError(f"Array sidecar {sidecar} differs from its record")
+            loaded[name] = np.load(sidecar, allow_pickle=False)
+        return loaded[name]
+
+    return json.loads(path.read_text(), object_hook=array)
 
 
 def subprocess_environment(config, gpus):
@@ -157,14 +202,14 @@ class RolloutProcess:
     def generate(self, sources, rollout_id):
         requests = self.directory / f"requests-{rollout_id:06d}.json"
         responses = self.directory / f"responses-{rollout_id:06d}.json"
-        requests.write_text(json.dumps(sources) + "\n")
+        write_json(requests, sources)
         self._call(
             op="generate",
             requests=str(requests),
             output=str(responses),
             rollout_id=rollout_id,
         )
-        result = json.loads(responses.read_text())
+        result = read_json(responses)
         if result["rollout_id"] != rollout_id or any(
             generation["policy_version"] != self.version
             for generation in result["generations"]

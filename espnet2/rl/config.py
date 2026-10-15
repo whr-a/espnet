@@ -61,6 +61,9 @@ class ESPnetRLConfig:
     tis_clip_low: float = 0.5
     tis_clip: float = 2.0
     micro_batch_size: int = 1
+    # With a token budget, micro-batches take candidates in order of length
+    # and hold at most micro_batch_tokens right-padded prompt+response tokens.
+    micro_batch_tokens: int | None = None
     ppo_epochs: int = 1
     learning_rate: float = 1e-6
     weight_decay: float = 0.0
@@ -178,6 +181,8 @@ class ESPnetRLConfig:
         ):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
+        if self.micro_batch_tokens is not None and self.micro_batch_tokens < 1:
+            raise ValueError("micro_batch_tokens must be positive")
         if self.temperature != 1.0 or self.top_p != 1.0 or self.top_k != -1:
             raise ValueError(
                 "The first native backend requires temperature=1, top_p=1, top_k=-1 so engine raw "

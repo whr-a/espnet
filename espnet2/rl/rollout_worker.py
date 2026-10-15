@@ -3,7 +3,8 @@
 The client is ``espnet2.rl.rollout.RolloutProcess``; it talks over one end of
 a socket pair whose other end is this process's ``--fd``. ``load`` builds the
 engine from the first export and loads every later one in place,
-``generate`` answers one batch through JSON files in ``--directory`` and
+``generate`` answers one batch through JSON files in ``--directory`` (numpy
+arrays in binary sidecars, espnet2.rl.rollout.write_json) and
 ``close`` shuts the engine down. Each request is answered with
 ``{"ok": True, ...}`` or ``{"error": traceback}``.
 """
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from .config import ESPnetRLConfig
 from .engine import RolloutEngine
+from .rollout import read_json, write_json
 from .utils import resolve_callable
 
 
@@ -70,7 +72,7 @@ class RolloutServer:
         if self.engine is None:
             raise RuntimeError("Load a policy before generation")
         start = time.monotonic()
-        sources = json.loads(Path(requests).read_text())
+        sources = read_json(requests)
         generations = self.engine.generate(sources, rollout_id)
         if self.config.execution_mode == "sync" and self.config.collocated:
             # The training rank on this GPU needs the memory until next time.
@@ -83,7 +85,7 @@ class RolloutServer:
             "rollout_backend": self.config.rollout_backend,
             "generations": generations,
         }
-        Path(output).write_text(json.dumps(result, allow_nan=False) + "\n")
+        write_json(output, result, allow_nan=False)
         print(
             f"rollout {rollout_id}: {len(generations)} generations with policy "
             f"{self.version} in {time.monotonic() - start:.1f} s",

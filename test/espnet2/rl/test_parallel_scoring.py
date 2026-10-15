@@ -73,7 +73,7 @@ def _trainer(rank=0, world_size=1):
     trainer.policy = NativeScoringOracle(0.02)
     trainer.reference = NativeScoringOracle(-0.04).requires_grad_(False)
     trainer.config = SimpleNamespace(
-        micro_batch_size=5, distributed_timeout_minutes=1.5
+        micro_batch_size=5, micro_batch_tokens=None, distributed_timeout_minutes=1.5
     )
     return trainer
 

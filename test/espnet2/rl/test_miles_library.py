@@ -172,7 +172,7 @@ def test_trainer_rejects_native_scorer_action_identity_drift(changed_mask):
             )
 
     trainer = NativeGRPOTrainer.__new__(NativeGRPOTrainer)
-    trainer.config = SimpleNamespace(micro_batch_size=1)
+    trainer.config = SimpleNamespace(micro_batch_size=1, micro_batch_tokens=None)
     if changed_mask:
         with pytest.raises(ValueError, match="differs from the sampled-action mask"):
             trainer._score_chunks(Scorer(), batch)
