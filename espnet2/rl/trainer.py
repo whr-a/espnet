@@ -44,7 +44,7 @@ from .rollout import CheckpointRollout, save_checkpoint
 from .rollout_worker import engine_class
 from .scoring import score_native_batch
 from .timing import learner_timing
-from .types import validate_token_scores
+from .types import support_counts, validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
 
@@ -139,6 +139,8 @@ class NativeGRPOTrainer:
             ),
         )
         self.rollout = rollout
+        # Set by every distributed scoring pass (espnet2.rl.scoring).
+        self.support_metrics = {}
         from types import SimpleNamespace
 
         self.actor_config = SimpleNamespace(
@@ -184,10 +186,17 @@ class NativeGRPOTrainer:
         return parts
 
     def _score_chunks(self, policy, batch):
+        """Native log probabilities of the batch's actions.
+
+        Also leaves in ``support_pass`` this pass's frames that a policy
+        scoring under recorded supports (Bagpiper) would have put under another
+        support, and all frames it scored: ``[0, 0]`` for other families.
+        """
         if isinstance(policy, AbstractContextManager):
             # A weight snapshot lends its values to a module for this pass.
             with policy as module:
                 return self._score_chunks(module, batch)
+        before = support_counts(policy)
         results = torch.zeros(batch.batch["response_mask"].shape)
         scoring_device = next(policy.parameters()).device
         for indices in self._micro_batches(batch):
@@ -196,6 +205,9 @@ class NativeGRPOTrainer:
             scores = policy(subset)
             validate_token_scores(scores, subset.batch["response_mask"])
             results[torch.as_tensor(indices)] = scores.log_probs.detach().cpu()
+        self.support_pass = [
+            now - then for now, then in zip(support_counts(policy), before)
+        ]
         return results
 
     def _drift_gate(self, native, batch, source, hint):
@@ -254,6 +266,7 @@ class NativeGRPOTrainer:
             "check checkpoint version, prefix, audio frontend and sampling distribution",
         )
         _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
+        metrics.update(self.support_metrics)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,
@@ -366,6 +379,7 @@ class NativeGRPOTrainer:
             behavior, batch, "Behavior native/SGLang", "the generating actor must match"
         )
         _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
+        metrics.update(self.support_metrics)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,

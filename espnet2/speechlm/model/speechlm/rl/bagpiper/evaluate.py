@@ -26,7 +26,11 @@ from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
-from espnet2.rl.types import validate_token_scores
+from espnet2.rl.types import (
+    support_counts,
+    support_mismatch_rate,
+    validate_token_scores,
+)
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
 
@@ -73,6 +77,7 @@ def validate_responses(result, sources, samples, native_hash, policy_step):
 
 @torch.inference_mode()
 def verify_native_log_probs(policy, batch, tolerance):
+    before = support_counts(policy)
     errors = []
     for index in range(len(batch)):
         item = batch.select_idxs([index])
@@ -85,6 +90,8 @@ def verify_native_log_probs(policy, batch, tolerance):
         if not math.isfinite(error) or error > tolerance:
             raise ValueError(f"Native/SGLang logprob mismatch: {error} > {tolerance}")
         errors.append(error)
+    counts = [now - then for now, then in zip(support_counts(policy), before)]
+    support_mismatch_rate(policy, counts, "native")
     return errors
 
 

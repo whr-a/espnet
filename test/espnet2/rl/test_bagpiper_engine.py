@@ -20,6 +20,7 @@ from transformers import Qwen3Config
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
 from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.types import support_counts, support_mismatch_rate
 from espnet2.speechlm.model.speechlm.rl.bagpiper import rollout as rollout_module
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import NativeSpeechLMPolicy
 from espnet2.speechlm.model.speechlm.rl.bagpiper.sglang_model import (
@@ -698,15 +699,15 @@ def test_records_are_scored_by_the_learner_under_their_supports(
     policy(batch_).log_probs.sum().backward()
     assert core.lm_head.weight.grad is not None
     # A policy whose own supports differ still scores the recorded ones; the
-    # frames it disagrees on are counted and gated by their rate.
+    # frames it disagrees on are counted, and a scoring pass gated by their rate.
     with torch.no_grad():
         core.lm_head.weight.neg_()
-        policy.support_mismatch_rate, before = 1.0, policy.support_mismatches
+        before = support_counts(policy)
         policy(batch_)
-        assert policy.support_mismatches > before
-        policy.support_mismatch_rate = 0.0
-        with pytest.raises(ValueError, match="another support"):
-            policy(batch_)
+    counts = [now - then for now, then in zip(support_counts(policy), before)]
+    assert counts[0] > 0 and counts[1] == int(batch_.batch["response_lengths"].sum())
+    with pytest.raises(RuntimeError, match="another support"):
+        support_mismatch_rate(policy, counts, "current")
 
 
 def test_batched_learner_equals_the_learner_per_candidate(

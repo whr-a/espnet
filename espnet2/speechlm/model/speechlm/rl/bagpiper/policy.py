@@ -143,8 +143,10 @@ class NativeSpeechLMPolicy(nn.Module):
         self.activation_checkpointing = bool(activation_checkpointing)
         self.score_checkpointing = bool(score_checkpointing)
         self.activation_cpu_offload = bool(activation_cpu_offload)
-        # Frames a Bagpiper scoring pass scored under a recorded support other
-        # than the one its own logits give, out of all frames it scored.
+        # Frames scored under a recorded support other than the one this
+        # policy's own logits give, and all frames scored, in no-grad passes.
+        # A scoring pass of the current or behavior policy fails above this
+        # rate (espnet2.rl.scoring); the reference only counts.
         self.support_mismatch_rate = support_mismatch_rate
         self.support_mismatches = self.support_frames = 0
         # The primary ids every support allows, [len(SUPPORTS), vocab].
@@ -163,18 +165,8 @@ class NativeSpeechLMPolicy(nn.Module):
         return self.model.state_dict()
 
     def forward(self, batch):
-        before = self.support_mismatches, self.support_frames
         with offload_saved_activations(self.model, self.activation_cpu_offload):
-            scores = self._forward(batch)
-        mismatches = self.support_mismatches - before[0]
-        frames = self.support_frames - before[1]
-        if mismatches > self.support_mismatch_rate * frames:
-            raise ValueError(
-                f"The current policy gives {mismatches} of {frames} frames another "
-                f"support than their rollout recorded (rate above "
-                f"{self.support_mismatch_rate})"
-            )
-        return scores
+            return self._forward(batch)
 
     def _forward(self, batch):
         responses = batch.batch["responses"].cpu()

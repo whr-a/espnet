@@ -46,6 +46,25 @@ class NativeScoringOracle(nn.Module):
         return TokenScores(value, torch.zeros_like(mask), native_mask)
 
 
+class SupportOracle(NativeScoringOracle):
+    """Counts supports like the Bagpiper policy: ``flips`` frames of candidate
+    0 get another support from its own logits than their rollout recorded."""
+
+    support_mismatch_rate = 2e-3
+
+    def __init__(self, offset=0.0, flips=0):
+        super().__init__(offset)
+        self.flips, self.support_mismatches, self.support_frames = flips, 0, 0
+
+    def forward(self, batch):
+        scores = super().forward(batch)
+        self.support_frames += int(batch.batch["response_lengths"].sum())
+        self.support_mismatches += self.flips * self.sample_indices[
+            -len(batch) :
+        ].count(0)
+        return scores
+
+
 def _global_batch():
     sources = [
         {"id": f"prompt-{i:02d}", "feature": torch.tensor([i])} for i in range(32)
@@ -173,6 +192,26 @@ class TestParallelScoring(unittest.TestCase):
         batch.batch["response_mask"][0, 0] = 0.5
         with self.assertRaisesRegex(RuntimeError, "finite binary"):
             score_native_batch(trainer, batch)
+
+    def test_support_mismatches_are_gated_per_pass_but_not_for_the_reference(self):
+        # One flipped frame of 768 passes the 2e-3 rate, although each forward
+        # of five candidates (15 frames) alone would exceed it.
+        trainer = _trainer()
+        trainer.policy = SupportOracle(0.02, flips=1)
+        trainer.reference = SupportOracle(-0.04, flips=9).requires_grad_(False)
+        behavior = SupportOracle(-0.08, flips=1).requires_grad_(False)
+        score_native_batch(trainer, _global_batch(), behavior)
+        self.assertEqual(
+            trainer.support_metrics,
+            {
+                "rollout/support_mismatch_rate": 1 / 768,
+                "rollout/behavior_support_mismatch_rate": 1 / 768,
+                "rollout/reference_support_mismatch_rate": 9 / 768,
+            },
+        )
+        trainer.policy.flips = 2
+        with self.assertRaisesRegex(RuntimeError, "current policy gives 2 of 768"):
+            score_native_batch(trainer, _global_batch())
 
 
 if __name__ == "__main__":

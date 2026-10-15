@@ -37,3 +37,29 @@ class NativeESPnetPolicy(nn.Module):
 
     def checkpoint_state_dict(self):
         return self.model.state_dict()
+
+
+def support_counts(policy):
+    """Frames a policy scored under a recorded support its own logits do not
+    give, and all frames it scored, in no-grad passes so far. Only a policy
+    that scores under the supports its rollout recorded (Bagpiper) counts."""
+    return [
+        getattr(policy, "support_mismatches", 0),
+        getattr(policy, "support_frames", 0),
+    ]
+
+
+def support_mismatch_rate(policy, counts, name, gate=True):
+    """The mismatch rate of one scoring pass's ``counts`` (None if it counted
+    nothing). When gated, a rate above the policy's support_mismatch_rate
+    fails: occasional flips of a near tie are tolerated, systematic ones not."""
+    mismatches, frames = counts
+    if not frames:
+        return None
+    if gate and mismatches > policy.support_mismatch_rate * frames:
+        raise RuntimeError(
+            f"The {name} policy gives {mismatches} of {frames} frames another "
+            f"support than their rollout recorded (rate above "
+            f"{policy.support_mismatch_rate})"
+        )
+    return mismatches / frames

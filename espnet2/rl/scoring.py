@@ -16,7 +16,7 @@ import numpy as np
 import torch
 import torch.distributed as distributed
 
-from .types import validate_binary_mask
+from .types import support_mismatch_rate, validate_binary_mask
 
 
 def _numbers(value):
@@ -89,6 +89,22 @@ def _identity_digest(batch):
     return digest.hexdigest()
 
 
+def support_gate(policy, replicas):
+    """Gate the current and behavior passes' support mismatches over all ranks
+    and log their rates. The frozen reference drifts from the rollout's
+    supports by design, so its rate is only logged."""
+    metrics = {}
+    for name in replicas[0]["supports"]:
+        counts = [
+            sum(part["supports"][name][index] for part in replicas) for index in (0, 1)
+        ]
+        rate = support_mismatch_rate(policy, counts, name, gate=name != "reference")
+        if rate is not None:
+            prefix = "" if name == "current" else f"{name}_"
+            metrics[f"rollout/{prefix}support_mismatch_rate"] = rate
+    return metrics
+
+
 def score_native_batch(trainer, batch, behavior_policy=None):
     """Return complete CPU ``(current_old, behavior, reference)`` logprobs.
 
@@ -129,14 +145,17 @@ def score_native_batch(trainer, batch, behavior_policy=None):
         width = len(batch) // world_size
         indices = np.arange(rank * width, (rank + 1) * width)
         local = batch.select_idxs(indices)
+        supports = payload["supports"] = {}
         with torch.no_grad():
             old = trainer._score_chunks(trainer.policy, local)
-            behavior = (
-                old
-                if behavior_policy is None or behavior_policy is trainer.policy
-                else trainer._score_chunks(behavior_policy, local)
-            )
+            supports["current"] = trainer.support_pass
+            if behavior_policy is None or behavior_policy is trainer.policy:
+                behavior = old
+            else:
+                behavior = trainer._score_chunks(behavior_policy, local)
+                supports["behavior"] = trainer.support_pass
             reference = trainer._score_chunks(trainer.reference, local)
+            supports["reference"] = trainer.support_pass
         for scores in (old, behavior, reference):
             if scores.shape != local.batch["response_mask"].shape:
                 raise ValueError("Native scorer output action shape differs from input")
@@ -173,6 +192,7 @@ def score_native_batch(trainer, batch, behavior_policy=None):
     actual = [index for part in replicas for index in part["indices"]]
     if actual != expected:
         raise RuntimeError("Gathered native score candidates changed order or coverage")
+    trainer.support_metrics = support_gate(trainer.policy, replicas)
     return tuple(
         torch.cat([part[key] for part in replicas], dim=0)
         for key in ("old", "behavior", "reference")
