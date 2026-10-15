@@ -260,6 +260,9 @@ def exporter(config, native_checkpoint_path, hf_output_dir):
         bos_token_id=metadata["bos_token_id"],
         pad_token_id=0,
         tie_word_embeddings=False,
+        espnet_rl_inference_cache=True,
+        espnet_rl_cache_max_frames=flat.get("max_position_embeddings", 32768),
+        espnet_rl_cache_max_audio_bytes=64 * 1024**2,
     )
     (directory / "config.json").write_text(json.dumps(flat, indent=2) + "\n")
     state = torch.load(native_checkpoint_path, map_location="cpu", weights_only=True)

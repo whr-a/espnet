@@ -28,6 +28,9 @@ def generate(config, model_path, sources, step):
     # path explicitly rather than leaving the staging path in server config.
     payload_path = model_path.parent / "payload.json"
     kwargs = dict(config.sglang_engine_kwargs)
+    overrides = kwargs.get("json_model_override_args", "{}")
+    overrides = json.loads(overrides) if isinstance(overrides, str) else dict(overrides)
+    overrides["espnet_rl_payload_path"] = str(payload_path)
     kwargs.update(
         model_path=str(model_path),
         dtype=config.dtype,
@@ -39,9 +42,7 @@ def generate(config, model_path, sources, step):
         chunked_prefill_size=-1,
         max_running_requests=1,
         mem_fraction_static=0.65,
-        json_model_override_args=json.dumps(
-            {"espnet_rl_payload_path": str(payload_path)}
-        ),
+        json_model_override_args=json.dumps(overrides),
     )
     engine = sgl.Engine(**kwargs)
     generations = []
@@ -71,6 +72,8 @@ def generate(config, model_path, sources, step):
                         "sample": sample,
                         "step": step,
                         "position": position,
+                        "cache_reset": position == 0,
+                        "cache_release": position == config.max_tokens - 1,
                     }
                     payload_path.write_text(json.dumps(payload) + "\n")
                     result = engine.generate(
