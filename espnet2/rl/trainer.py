@@ -220,7 +220,7 @@ class NativeGRPOTrainer:
             "Rollout/native",
             "check checkpoint version, prefix, audio frontend and sampling distribution",
         )
-        scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
+        _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,
@@ -236,12 +236,7 @@ class NativeGRPOTrainer:
                 "token_level_rewards": token_rewards,
             }
         )
-        return {
-            "reward/mean": scores.mean().item(),
-            "reward/min": scores.min().item(),
-            "reward/max": scores.max().item(),
-            **drift,
-        }
+        return {**metrics, **drift}
 
     def prepare_async_batch(
         self,
@@ -337,7 +332,7 @@ class NativeGRPOTrainer:
         drift = self._drift_gate(
             behavior, batch, "Behavior native/SGLang", "the generating actor must match"
         )
-        scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
+        _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,
@@ -353,9 +348,7 @@ class NativeGRPOTrainer:
             token_level_rewards=token_rewards,
         )
         return {
-            "reward/mean": scores.mean().item(),
-            "reward/min": scores.min().item(),
-            "reward/max": scores.max().item(),
+            **metrics,
             **drift,
             "rollout/current_behavior_logprob_max_difference": (
                 (old - behavior).abs() * mask

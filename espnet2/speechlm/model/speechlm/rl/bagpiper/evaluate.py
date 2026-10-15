@@ -1,22 +1,36 @@
 # Copyright 2026 Haoran Wang
 # SPDX-License-Identifier: Apache-2.0
-"""Independent Bagpiper evaluation with complete native/action identity gates."""
+"""Held-out Bagpiper evaluation through the family's rollout engine.
+
+The evaluated checkpoint is exported and loaded into the recipe's
+``sglang_engine``, which decodes every held-out prompt. MMAU follows WEST's
+decode_mmau.py: greedy decoding of up to 2,048 new tokens, every clip cut to
+its first 30 s, and the official MMAU matcher applied to WEST's extraction and
+to the v1 reward's. TTS prompts are scored with the training reward's ASR WER.
+A sampled evaluation (temperature 1) can also verify every action's probability
+against the native checkpoint; a greedy decode is not a sampled policy.
+"""
 
 import argparse
 import json
 import math
+import os
 import subprocess
 import traceback
+from collections import Counter
 from pathlib import Path
 
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
-from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, sha256
+from espnet2.rl.rewards import edit_distance, words
+from espnet2.rl.rollout import sha256, subprocess_environment
 from espnet2.rl.types import validate_token_scores
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
+
+from .rewards import ANSWER, ASRWERReward, mmau_answer, mmau_match, qa_answer
 
 
 def validate_manifests(training, heldout):
@@ -32,7 +46,8 @@ def validate_manifests(training, heldout):
         raise ValueError("Held-out manifest must contain one supported task")
 
 
-def validate_responses(result, sources, config, native_hash, policy_step):
+def validate_responses(result, sources, samples, native_hash, policy_step):
+    """The generations of this checkpoint: ``samples`` per source, in order."""
     if (
         result.get("native_sha256") != native_hash
         or result.get("policy_step") != policy_step
@@ -42,15 +57,18 @@ def validate_responses(result, sources, config, native_hash, policy_step):
             "Response checkpoint, policy version or backend identity differs"
         )
     generations = result["generations"]
-    batch = collate_rollouts(sources, generations, config.group_size)
+    if len(generations) != len(sources) * samples:
+        raise ValueError("Incomplete held-out generations")
     for index, generation in enumerate(generations):
-        source = sources[index // config.group_size]
+        source = sources[index // samples]
+        if generation["source_id"] != source["id"]:
+            raise ValueError("Held-out generations are out of manifest order")
         if (
             "prompt_token_ids" in source
             and source["prompt_token_ids"] != generation["prompt_token_ids"]
         ):
             raise ValueError("Saved prompt differs from the prepared held-out manifest")
-    return generations, batch
+    return generations
 
 
 @torch.inference_mode()
@@ -109,52 +127,149 @@ def verify_export(checkpoint, directory):
     }
 
 
-def summarize(sources, generations, config):
-    from espnet2.rl.rewards import words
+def clip_audio(sources, directory, seconds):
+    """Cut every longer clip to its first ``seconds``, as decode_mmau.py does.
 
-    from .rewards import ASRWERReward, mmau_match
+    The cut is written as float WAV, so the frontend reads exactly the samples
+    it would have read from the original file. Returns the number cut.
+    """
+    import soundfile as sf
 
-    metric = "wer" if sources[0]["task"] == "tts_asr_wer" else "mmau_official_accuracy"
-    callback = (
-        ASRWERReward(config)
-        if metric == "wer"
-        else resolve_callable(config.reward_function)
+    clipped = 0
+    for index, source in enumerate(sources):
+        info = sf.info(source["audio"])
+        limit = int(seconds * info.samplerate)
+        if info.frames > limit:
+            audio, rate = sf.read(
+                source["audio"], frames=limit, dtype="float32", always_2d=True
+            )
+            Path(directory).mkdir(exist_ok=True)
+            path = Path(directory) / f"{index:06d}.wav"
+            sf.write(str(path), audio, rate, subtype="FLOAT")
+            source.update(audio=str(path), clipped_from=source["audio"])
+            clipped += 1
+    return clipped
+
+
+def generate(config, sources, directory, sampling, batch_size):
+    """Decode every source with the family engine built from ``directory/hf``.
+
+    Each ``batch_size`` sources form one rollout, which bounds what the engine
+    holds per rollout (prepared sources, audio encodings).
+    """
+    (directory / "engine").mkdir()
+    engine = resolve_callable(config.sglang_engine)(
+        config, directory / "hf", directory=directory / "engine", replica=0
     )
-    rows, values = [], []
+    try:
+        generations = []
+        for rollout_id, start in enumerate(range(0, len(sources), batch_size)):
+            chunk = sources[start : start + batch_size]
+            generations += engine.generate(chunk, rollout_id, sampling=sampling)
+    finally:
+        engine.close()
+    return generations
+
+
+def _accuracy(items):
+    count = len(items)
+    west = sum(item["west_correct"] for item in items)
+    v1 = sum(item["v1_correct"] for item in items)
+    return {
+        "count": count,
+        "west_correct": west,
+        "west_accuracy": west / count,
+        "v1_correct": v1,
+        "v1_accuracy": v1 / count,
+    }
+
+
+def score_mmau(sources, generations, samples):
+    """Official MMAU matches of WEST's and of the v1 reward's extracted answer,
+    overall and for every category the manifest records."""
+    items = []
     for index, generation in enumerate(generations):
-        source = sources[index // config.group_size]
-        reward = float(callback(source, generation))
-        value = -reward if metric == "wer" else float(mmau_match(source, generation))
-        if not math.isfinite(reward) or not math.isfinite(value):
-            raise ValueError("Every held-out reward and metric must be finite")
-        rows.append(
+        source = sources[index // samples]
+        text = generation["text"]
+        west = mmau_answer(text)
+        answer, path = qa_answer(text)
+        items.append(
             {
                 "source_id": source["id"],
-                "sample_index": index % config.group_size,
-                "reward": reward,
-                metric: value,
-                "text": generation["text"],
+                "sample": index % samples,
+                "categories": source.get("categories", {}),
                 "reference": source["reference"],
-                "reference_words": len(words(source["reference"])),
+                "choices": source["choices"],
+                "text": text,
+                "finish_reason": generation.get("finish_reason"),
+                "answer_blocks": len(ANSWER.findall(text)),
+                "west_answer": west,
+                "west_correct": mmau_match(source, west),
+                "v1_answer": answer,
+                "v1_path": path,
+                "v1_correct": mmau_match(source, answer),
             }
         )
-        values.append(value)
+    groups = {}
+    for item in items:
+        for name, value in item["categories"].items():
+            groups.setdefault(name, {}).setdefault(str(value), []).append(item)
+    summary = {
+        "metric": "mmau_official_accuracy",
+        **_accuracy(items),
+        "one_answer_block": sum(item["answer_blocks"] == 1 for item in items),
+        "v1_paths": dict(Counter(item["v1_path"] for item in items)),
+        "truncated": sum(item["finish_reason"] == "length" for item in items),
+        "by_category": {
+            name: {value: _accuracy(rows) for value, rows in sorted(values.items())}
+            for name, values in sorted(groups.items())
+        },
+    }
+    return items, summary
+
+
+def score_tts(reward, sources, generations, samples):
+    """The training reward's ASR transcript and WER of every candidate."""
+    repeated = [sources[index // samples] for index in range(len(generations))]
+    items = []
+    for index, row in enumerate(reward.transcribe(repeated, generations)):
+        reference = words(row["reference"])
+        errors = (
+            max(1, len(reference))
+            if row["hypothesis"] is None
+            else edit_distance(reference, words(row["hypothesis"]))
+        )
+        items.append(
+            {
+                **row,
+                "sample": index % samples,
+                "finish_reason": generations[index].get("finish_reason"),
+                "errors": errors,
+                "reference_words": len(reference),
+            }
+        )
+    summary = {
+        "metric": "wer",
+        "count": len(items),
+        "wer_mean": sum(item["wer"] for item in items) / len(items),
+        "corpus_wer": sum(item["errors"] for item in items)
+        / max(1, sum(item["reference_words"] for item in items)),
+        "statuses": dict(Counter(item["status"] for item in items)),
+        "truncated": sum(item["finish_reason"] == "length" for item in items),
+    }
+    return items, summary
+
+
+def _without_features(generation):
+    # The manifest identifies the native audio features; keep only their hash.
+    prepared = generation.get("prepared_native_source")
+    if not prepared:
+        return generation
     return {
-        "metric": metric,
-        "value": sum(values) / len(values),
-        "sample_count": len(values),
-        "prompt_count": len(sources),
-        "group_size": config.group_size,
-        "source_ids": [source["id"] for source in sources],
-        "sampling": "unit temperature, native recorded support, all group candidates",
-        "denominator": len(values),
-        "metric_definition": (
-            "mean completion WER"
-            if metric == "wer"
-            else "official MMAU token-set matches / all configured completions"
-        ),
-        "dataset": sources[0]["dataset"],
-        "generations": rows,
+        **generation,
+        "prepared_native_source": {
+            key: value for key, value in prepared.items() if key != "data"
+        },
     }
 
 
@@ -162,76 +277,75 @@ def run(args):
     cfg = ESPnetRLConfig.load(args.config)
     if cfg.family != "bagpiper" or cfg.rollout_backend != "sglang":
         raise ValueError("Bagpiper evaluation requires its native SGLang configuration")
-    if args.manifest:
-        cfg.eval_manifest = args.manifest
-    if not cfg.eval_manifest:
-        raise ValueError("Set a separate held-out eval_manifest before evaluation")
-    training = read_manifest(cfg.manifest)
-    sources = read_manifest(cfg.eval_manifest)
-    validate_manifests(training, sources)
+    manifest = args.manifest or cfg.eval_manifest
+    if not manifest:
+        raise ValueError("Set a separate held-out eval_manifest or --manifest")
+    if args.verify_native and args.temperature != 1.0:
+        raise ValueError("Only sampled actions have native probabilities to verify")
+    sources = read_manifest(manifest)
+    validate_manifests(read_manifest(cfg.manifest), sources)
+    task = sources[0]["task"]
     checkpoint = Path(args.checkpoint).resolve(strict=True)
-    cfg.checkpoint = str(checkpoint)
-    cfg.device = args.device
-    cfg.output_dir = str(Path(args.output).resolve())
-    cfg.validate()
-    directory = Path(cfg.output_dir)
+    directory = Path(args.output).resolve()
     directory.mkdir(parents=True, exist_ok=False)
-    (directory / "native.pt").symlink_to(checkpoint)
+    cfg.checkpoint, cfg.output_dir = str(checkpoint), str(directory)
+    cfg.eval_manifest = str(Path(manifest).resolve())
+    cfg.device = args.device
+    cfg.adapter_options = {**cfg.adapter_options, "reward_device": args.device}
+    # What the engine decodes: ``samples`` candidates per prompt (one for a
+    # greedy decode, so this record is not a valid training config) within
+    # the evaluation's token budget.
+    cfg.group_size, cfg.max_tokens = args.samples, args.max_new_tokens
+    sampling = {"temperature": args.temperature, "max_new_tokens": args.max_new_tokens}
     (directory / "frozen_config.json").write_text(
         json.dumps(cfg.to_dict(), indent=2) + "\n"
     )
     (directory / "requests.json").write_text(json.dumps(sources, indent=2) + "\n")
-    evidence = {
+    protocol = {
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": sha256(checkpoint),
-        "manifest": str(Path(cfg.eval_manifest).resolve()),
-        "manifest_sha256": sha256(cfg.eval_manifest),
+        "manifest": cfg.eval_manifest,
+        "manifest_sha256": sha256(manifest),
         "training_manifest": str(Path(cfg.manifest).resolve()),
         "training_manifest_sha256": sha256(cfg.manifest),
         "config_sha256": sha256(args.config),
         "policy_step": args.policy_step,
-        "distinct_train_ids": True,
-        "native_device": cfg.device,
+        "task": task,
+        "sampling": sampling,
+        "samples_per_prompt": args.samples,
+        "audio_seconds": args.audio_seconds if task == "qa" else None,
     }
-    (directory / "protocol.json").write_text(json.dumps(evidence, indent=2) + "\n")
+    (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     try:
         if args.responses:
             result = json.loads(Path(args.responses).read_text())
-            evidence.update(
+            protocol.update(
                 saved_responses=str(Path(args.responses).resolve()),
                 saved_responses_sha256=sha256(args.responses),
             )
-            if args.export_dir:
-                export = verify_export(checkpoint, args.export_dir)
-                (directory / "export_audit.json").write_text(
-                    json.dumps(export, indent=2) + "\n"
-                )
-                evidence["exact_native_export_tensors"] = export[
-                    "exact_native_export_tensors"
-                ]
         else:
-            if args.export_dir:
-                raise ValueError(
-                    "--export-dir is only for read-only saved-response auditing"
-                )
-            rollout = CheckpointRollout(cfg)
-            export_command = [
-                cfg.rollout_python,
-                "-m",
-                "espnet2.rl.export_worker",
-                "--config",
-                str(directory / "frozen_config.json"),
-                "--checkpoint",
-                str(checkpoint),
-                "--output",
-                str(directory / "hf"),
-            ]
+            # The engine runs in this process, which is never a training rank.
+            environment = subprocess_environment(
+                cfg, os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+            )
+            os.environ.clear()
+            os.environ.update(environment)
             with (directory / "export.log").open("w") as handle:
                 subprocess.run(
-                    export_command,
-                    env=rollout._environment(),
+                    [
+                        cfg.rollout_python,
+                        "-m",
+                        "espnet2.rl.export_worker",
+                        "--config",
+                        str(directory / "frozen_config.json"),
+                        "--checkpoint",
+                        str(checkpoint),
+                        "--output",
+                        str(directory / "hf"),
+                    ],
+                    env=environment,
                     check=True,
                     stdout=handle,
                     stderr=subprocess.STDOUT,
@@ -240,58 +354,57 @@ def run(args):
             (directory / "export_audit.json").write_text(
                 json.dumps(export, indent=2) + "\n"
             )
-            evidence["exact_native_export_tensors"] = export[
+            protocol["exact_native_export_tensors"] = export[
                 "exact_native_export_tensors"
             ]
-            process = RolloutProcess(
-                cfg, cfg.rollout_gpus, rollout.directory / "replica-0", 0
-            )
-            try:
-                process.load(directory / "hf", args.policy_step)
-                generations = process.generate(sources, args.policy_step)
-            finally:
-                process.close()
+            if task == "qa":
+                protocol["clipped_audio"] = clip_audio(
+                    sources, directory / "audio", args.audio_seconds
+                )
+            generations = generate(cfg, sources, directory, sampling, args.batch_size)
             result = {
                 "policy_step": args.policy_step,
-                "native_sha256": evidence["checkpoint_sha256"],
+                "native_sha256": protocol["checkpoint_sha256"],
                 "rollout_backend": "sglang",
-                "generations": generations,
+                "sampling": sampling,
+                "generations": (
+                    generations
+                    if args.verify_native
+                    else [_without_features(item) for item in generations]
+                ),
             }
-            (directory / "responses.json").write_text(
-                json.dumps(result, indent=2) + "\n"
-            )
-        generations, batch = validate_responses(
-            result, sources, cfg, evidence["checkpoint_sha256"], args.policy_step
+            (directory / "responses.json").write_text(json.dumps(result) + "\n")
+            result["generations"] = generations
+        (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
+        generations = validate_responses(
+            result,
+            sources,
+            args.samples,
+            protocol["checkpoint_sha256"],
+            args.policy_step,
         )
-        if args.responses:
-            (directory / "responses.json").write_text(
-                json.dumps(result, indent=2) + "\n"
-            )
-        batch.save_to_disk(directory / "rollout.pkl")
-        policy = build_policy(cfg, cfg.device)
-        policy.requires_grad_(False)
-        errors = verify_native_log_probs(policy, batch, cfg.score_tolerance)
-        del policy
-        metrics = {
-            "status": "passed",
-            **evidence,
-            **summarize(sources, generations, cfg),
-            "native_logprob_max_error": max(errors),
-            "completion_logprob_errors": errors,
-            "generation": (
-                "audited existing responses" if args.responses else "actual SGLang"
-            ),
-        }
-        (directory / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+        if task == "qa":
+            items, summary = score_mmau(sources, generations, args.samples)
+        else:
+            reward = ASRWERReward(cfg, audits=None)
+            items, summary = score_tts(reward, sources, generations, args.samples)
+            del reward
+        if args.verify_native:
+            batch = collate_rollouts(sources, generations, args.samples)
+            batch.save_to_disk(directory / "rollout.pkl")
+            policy = build_policy(cfg, cfg.device).requires_grad_(False)
+            errors = verify_native_log_probs(policy, batch, cfg.score_tolerance)
+            summary["native_logprob_max_error"] = max(errors)
+        with (directory / "items.jsonl").open("w") as stream:
+            for item in items:
+                stream.write(json.dumps(item, ensure_ascii=False) + "\n")
+        summary = {"status": "passed", **protocol, **summary}
+        (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         (directory / "completion.json").write_text(
-            json.dumps({"status": "Succeeded", "metrics": "metrics.json"}) + "\n"
+            json.dumps({"status": "Succeeded", "summary": "summary.json"}) + "\n"
         )
-        print(
-            json.dumps(
-                {key: value for key, value in metrics.items() if key != "generations"},
-                indent=2,
-            )
-        )
+        print(json.dumps(summary, indent=2))
+        return summary
     except Exception as error:
         (directory / "failure.txt").write_text(traceback.format_exc())
         (directory / "completion.json").write_text(
@@ -316,16 +429,33 @@ def main():
         "--output", required=True, help="New immutable evaluation directory"
     )
     parser.add_argument("--manifest", help="Override the prepared held-out manifest")
-    parser.add_argument(
-        "--device", default="cpu", help="Native probability verification device"
-    )
     parser.add_argument("--policy-step", type=int, default=-1)
     parser.add_argument(
-        "--responses", help="Audit existing real responses without new generation"
+        "--temperature", type=float, default=0.0, help="0 decodes greedily"
+    )
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
+    parser.add_argument(
+        "--samples", type=int, default=1, help="Candidates decoded per prompt"
     )
     parser.add_argument(
-        "--export-dir",
-        help="Existing HF directory for exact native tensor verification with --responses",
+        "--audio-seconds",
+        type=float,
+        default=30.0,
+        help="QA clips are cut to their first seconds",
+    )
+    parser.add_argument(
+        "--batch-size", type=int, default=256, help="Prompts per engine rollout"
+    )
+    parser.add_argument(
+        "--device", default="cuda:0", help="ASR reward and native verification"
+    )
+    parser.add_argument(
+        "--verify-native",
+        action="store_true",
+        help="Check every sampled action's probability against the checkpoint",
+    )
+    parser.add_argument(
+        "--responses", help="Score existing responses without new generation"
     )
     run(parser.parse_args())
 

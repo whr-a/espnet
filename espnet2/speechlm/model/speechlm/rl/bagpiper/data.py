@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import io
 import json
+import random
 import re
 from pathlib import Path
 
@@ -15,6 +16,8 @@ OPTION_LABEL = re.compile(r"^(?:[A-Z]\.|\([A-Z]\))\s*")
 QA_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
 TTS_TEMPLATE = "Please read the following text aloud verbatim: {text}"
 QA_THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
+# MMAU's own groups of an item, kept for per-group held-out accuracy.
+CATEGORIES = ("task", "category", "sub-category", "difficulty")
 
 
 def qa_prompt(question, choices, template="default"):
@@ -95,7 +98,7 @@ def prepare_parquet(path, dataset, output_dir):
     for index, row in frame.iterrows():
         source = row.to_dict()
         if "extra_info" in source:  # Existing cached prepare_avqa/prepare_mmau.
-            extra = source["extra_info"]
+            extra = attributes = source["extra_info"]
             audio = extra["audio_path"]
             question = extra["question"]
             choices = list(extra.get("choices", []))
@@ -121,25 +124,46 @@ def prepare_parquet(path, dataset, output_dir):
                 ]
             answer = source["answer"]
             key = str(source.get("id", f"{dataset}-{index:06d}"))
+            attributes = json.loads(source.get("other_attributes") or "{}")
         if dataset == "avqa":
             question = question.replace("video", "audio")
         # Strip option letters from the answer and every choice alike, so the
         # prompt and the official matcher see the same label-free options.
         answer = OPTION_LABEL.sub("", answer).strip()
         choices = [OPTION_LABEL.sub("", str(choice)).strip() for choice in choices]
-        records.append(
-            {
-                "id": key,
-                "audio": audio,
-                "reference": answer,
-                "question": question,
-                "choices": choices,
-                "prompt": QA_TEMPLATE.format(question=question, choices=choices),
-                "task": "qa",
-                "dataset": dataset,
-            }
-        )
+        record = {
+            "id": key,
+            "audio": audio,
+            "reference": answer,
+            "question": question,
+            "choices": choices,
+            "prompt": QA_TEMPLATE.format(question=question, choices=choices),
+            "task": "qa",
+            "dataset": dataset,
+        }
+        categories = {
+            name: attributes[name] for name in CATEGORIES if name in attributes
+        }
+        if categories:
+            record["categories"] = categories
+        records.append(record)
     return records
+
+
+def select(records, max_words=None, shuffle_seed=None, limit=None):
+    """References of at most ``max_words`` WER words, in the source order or
+    shuffled by ``random.Random(shuffle_seed)``, then the first ``limit``.
+
+    Prompts are taken in manifest order, so a shuffled manifest is how a run
+    sees a random sample of the corpus without repeating a prompt.
+    """
+    from espnet2.rl.rewards import words
+
+    if max_words is not None:
+        records = [row for row in records if len(words(row["reference"])) <= max_words]
+    if shuffle_seed is not None:
+        random.Random(shuffle_seed).shuffle(records)
+    return records[:limit] if limit else records
 
 
 def main():
@@ -155,11 +179,21 @@ def main():
     parser.add_argument("--choices")
     parser.add_argument("--task", choices=("tts_asr_wer", "qa"), default="qa")
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--shuffle-seed",
+        type=int,
+        help="Shuffle with random.Random(seed) before --limit (default: source order)",
+    )
+    parser.add_argument(
+        "--max-words", type=int, help="Keep TTS references of at most this many words"
+    )
     parser.add_argument("--hf-revision")
     parser.add_argument(
         "--qa-template", choices=("default", "think"), default="default"
     )
     args = parser.parse_args()
+    if args.max_words is not None and args.task != "tts_asr_wer":
+        parser.error("--max-words filters TTS references")
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
@@ -200,8 +234,8 @@ def main():
                 record["question"], record["choices"], args.qa_template
             )
             record["qa_template"] = args.qa_template
-    if args.limit:
-        records = records[: args.limit]
+    prepared = len(records)
+    records = select(records, args.max_words, args.shuffle_seed, args.limit)
     if not records:
         raise ValueError("No RL records prepared")
     encoded = "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in records)
@@ -213,6 +247,10 @@ def main():
                 "sha256": hashlib.sha256(encoded.encode()).hexdigest(),
                 "input": args.input,
                 "dataset": args.dataset,
+                "prepared": prepared,
+                "max_words": args.max_words,
+                "shuffle_seed": args.shuffle_seed,
+                "limit": args.limit,
                 "hf_revision": args.hf_revision,
                 "qa_template": args.qa_template,
                 "template": (
