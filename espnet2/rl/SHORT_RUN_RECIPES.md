@@ -2,6 +2,10 @@
 
 Each new `*_collocate.yaml` / `*_disagg_async.yaml` template freezes 32 independent source prompts, eight candidates per prompt and 256 global candidates per update. `steps: 5`, `ppo_epochs: 1`, `warmup_steps: 1` mean five optimizer updates total; update one is warmup for timing. All profiles retain FP32 and a 1536-token cap. Microbatch size changes memory layout, not the global batch.
 
+Select one of these new templates explicitly with `--config` / `--rl-config`;
+the earlier small synchronous YAML files retain their declared budgets. The
+32×8 profile does not change the ordinary supervised recipe defaults.
+
 | Recipe directory | Template prefix | Task / source |
 | --- | --- | --- |
 | `egs2/owsm_v4/s2t1/conf` | `rl_miles_wer` | OWSM v4 / LibriSpeech ASR |
@@ -14,7 +18,7 @@ Each new `*_collocate.yaml` / `*_disagg_async.yaml` template freezes 32 independ
 
 Public `collocate` maps to `execution_mode: sync`. Its intended eight-GPU geometry is four native training ranks on GPUs 0–3 and four independent rollout replicas on GPUs 4–7. A TP1 subprocess merely visible to four GPUs still uses one GPU: it does not establish the four-replica layout. Async uses eight native training ranks on one node and eight independent TP1 rollout replicas on a second node. OWSM can use DDP; larger Bagpiper/Opus select chunked native allreduce and CPU reference/optimizer. Verify actual rank/replica placement before timing.
 
-SGLang currently retains full-prefix and sequential sampling semantics inside each replica. These are correctness profiles; no optimized cache or best-throughput claim follows from the mode. The full Miles async runtime needs a separately reviewed environment. Previously accepted synchronous environments do not establish full-runtime import compatibility.
+SGLang currently retains full-prefix and sequential sampling semantics inside each replica. These are correctness profiles; no optimized cache or best-throughput claim follows from the mode. Use the independent native Miles source environment described in [ENVIRONMENT.md](ENVIRONMENT.md), with Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang `283d68c8bff309a42476c95f7c71dad895d09da6`. Its CPU import/hash/pip-check acceptance is separate from actual Ray/GPU execution. Earlier synchronous environments do not establish full-runtime import compatibility.
 
 ## Genuine source preparation
 
@@ -56,7 +60,17 @@ For AVQA's local partition, both true splits are `train` and add `--heldout-is-t
 
 Resolve native checkpoint/config, model assets, exact ESPnet/SGLang/Miles revisions, interpreters, manifests and fresh output directory before freezing. OWSM `rl.sh` and `espnet2.s2t.rl.recipe` preserve the selected template's update budget, including the new five-update profile. Older small synchronous templates keep their declared 100 updates unless explicitly overridden. Bagpiper wrapper stages1/2/3 prepare/validate/train; Opus `speechlm.sh` stage10 accepts `--rl_config`.
 
-The async public entry resolves two already available Ray nodes:
+In every selected YAML, resolve `miles_source`, `sglang_source` and
+`rollout_python` to those checked sources and the native Miles interpreter;
+these paths depend on the local installation. The async path retains the
+original Miles `train_async.py:train` code and substitutes only the native
+ESPnet component factories. Run the async driver directly with Python from
+outside torchrun. Start the dedicated Ray head and worker with clean distributed
+identity as described in the environment guide; the public CLI connects to the
+provided cluster and does not repair a previously started dirty Ray environment.
+
+From the recipe directory and the checked native Miles environment, the async
+public entry resolves two already available Ray nodes:
 
 ```bash
 python -m espnet2.bin.rl_train_async --config conf/rl_miles_wer_disagg_async.yaml --manifest data/rl/frozen/train32.jsonl --eval-manifest data/rl/frozen/heldout.jsonl --data-admission data/rl/frozen/admission.json --checkpoint /path/to/native/checkpoint --train-config /path/to/native/config --output-dir exp/new_async_run --ray-address RAY_ADDRESS --train-node EXACT_TRAIN_NODE_ID_OR_IP --rollout-node EXACT_ROLLOUT_NODE_ID_OR_IP --validate-only

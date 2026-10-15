@@ -406,6 +406,17 @@ shared output paths.
 
 ## Optional Miles RL stage
 
+Explicitly select `conf/rl_collocate.yaml` / `conf/rl_disagg_async.yaml`, or the
+corresponding `rl_think_*` files, for five updates of 32 prompts × 8 candidates.
+The earlier `conf/rl.yaml` / `conf/rl_think.yaml` keep their declared budgets.
+The checked native source environment pins Miles
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`. Async uses the original Miles loop
+with native ESPnet component factories; collocate uses four native ranks and
+four independent rollout GPUs. See
+[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for installation,
+data admission and exact Ray node arguments.
+
 The existing stages remain the default. `run.sh --stage 6` selects an optional
 post-training stage using a pinned Miles library and SGLang rollout. Architecture
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched

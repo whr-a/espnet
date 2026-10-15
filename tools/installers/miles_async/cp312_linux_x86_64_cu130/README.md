@@ -7,3 +7,12 @@ Miles is an unchanged pinned source checkout exposed through config.miles_source
 The limited SGLang backport retains original dispatch, adds the exact upstream V41 encoder and three helpers needed by Miles imports, and has actual upstream parity tests. It does not enable full V41 serving. Original synchronous profile/locks and running frozen environments remain separate.
 
 Install with tools/installers/install_miles_async_env.sh. It refuses an existing venv and requires clean exact source pins. The installer writes source/profile/import/pipcheck evidence beside the venv. Add `--with-tests` for separately hash-locked pytest dependencies; GPU training is never started by installation.
+
+The source pins are unchanged Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`
+from `https://github.com/radixark/miles` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6` from
+`https://github.com/whr-a/sglang`. ESPnet's `disagg_async` entry retains the
+original Miles `train_async.py:train` function code and binds native ESPnet
+actors, rollouts and weight publication through its orchestration factories.
+See `espnet2/rl/ENVIRONMENT.md` for the complete clean checkout/install example
+and `espnet2/rl/SHORT_RUN_RECIPES.md` for explicit 32×8 template selection.

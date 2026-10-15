@@ -7,16 +7,27 @@ The SGLang fork provides the input-embedding API extension and thin model
 registrations that import the implementation from ESPnet. The model, native
 scorer, data preparation and exporter remain in `espnet2/speechlm/rl`; Miles is
 an unmodified library pinned to `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`.
-ESPnet owns the native training loop, AdamW, checkpoints and rollout orchestration.
-This directly reuses Miles' mathematical APIs; its complete distributed training
-runtime is not integrated.
+ESPnet owns the native model, scorer, AdamW and checkpoints. Synchronous profiles
+use ESPnet's training loop. The new `disagg_async` profiles retain the original
+Miles `train_async.py:train` loop with native ESPnet component factories.
 
-Install Miles through `tools/installers/install_miles_rl.sh` and use
+The five-update 32×8 profiles are
+`conf/rl_opuslm_librispeech_collocate.yaml`,
+`conf/rl_opuslm_librispeech_disagg_async.yaml` and their
+`rl_opuslm_dialogue_librispeech_*` counterparts. Select one explicitly with
+`speechlm.sh --stage 10 --stop_stage 10 --rl_config ...`. The native source
+environment uses Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`; setup, data admission, interpreter
+paths and Ray selectors are documented in
+[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md).
+
+For the earlier small synchronous profile, install Miles through
+`tools/installers/install_miles_rl.sh` and use
 `tools/installers/install_sglang_rl_env.sh` for a new inference environment, with
 the hash-locked profile described in
 [`espnet2/rl/ENVIRONMENT.md`](../../../espnet2/rl/ENVIRONMENT.md). The original
 `install_sglang_rl.sh` remains available for an already reviewed compatible
-dependency profile. The reviewed SGLang fork is `https://github.com/whr-a/sglang` at
+dependency profile. That earlier SGLang profile uses `https://github.com/whr-a/sglang` at
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. See
 [`espnet2/rl/README.md`](../../../espnet2/rl/README.md) for the optional flow.
 Create the inference venv without `--system-site-packages`; its dependencies
@@ -139,8 +150,7 @@ every registered evaluation set or the released model's pretraining data.
 The complete-split commands above are reusable examples, not commands that
 produced these small-run scores.
 
-Historical evidence lives under
-`/mnt/project/haoran/terminal_docs/espnet_miles_rl_20261014/`:
+The private historical experiment archive retains these run identities and pins:
 
 | Architecture | Successful run directory | Frozen ESPnet commit | Frozen SGLang commit |
 | --- | --- | --- | --- |

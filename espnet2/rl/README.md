@@ -1,15 +1,29 @@
 # Optional Miles post-training stage
 
-Existing `egs2` recipes opt into `python -m espnet2.bin.rl_train --config CONFIG`.
+Existing `egs2` recipes opt into `python -m espnet2.bin.rl_launch --config CONFIG`.
 The new 32-prompt × 8-candidate, five-update dual-mode templates and data preparation
 are described in [SHORT_RUN_RECIPES.md](SHORT_RUN_RECIPES.md).
 ESPnet owns the native model, waveform preparation, architecture adapter,
-optimizer and checkpoints. Miles is an unmodified installed library pinned to
+optimizer and checkpoints. Miles is an unmodified source library pinned to
 official v0.1.2 (`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`). Its GRPO
 reward normalization/returns, PPO clipping and KL functions are called directly.
 The training entry refuses a different pin or changed algorithm files.
 
-Install optional Miles support with `cd tools; make miles_rl.done`. The installer
+Synchronous profiles use ESPnet's native loop. `disagg_async` binds ESPnet's
+native training actors, rollout executor and checkpoint publication to the
+unchanged `train_async.py:train` loop at that same Miles pin. The binding retains
+the original function code and replaces its four orchestration factories; it
+does not use Miles' optional Megatron or other model backends.
+
+For the 32×8 profiles, use the independent hash-locked source environment in
+[`ENVIRONMENT.md`](ENVIRONMENT.md): Miles
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`. Its installer checks full runtime
+imports and all 233 dependency artifacts, with Miles loaded from its unchanged
+checkout rather than installed with every optional backend dependency.
+
+For the earlier synchronous library profile, install optional Miles support
+with `cd tools; make miles_rl.done`. The installer
 requires an existing compatible Torch environment and keeps the pinned checkout
 as an editable library, so the source and revision remain reviewable. It is not
 an ESPnet-specific Miles fork. PyPI distribution metadata intentionally does not
@@ -36,14 +50,17 @@ requests, raw responses, rewards, masks and optimizer state are retained. Use a
 new output directory for every run. This initial implementation does not resume
 partially completed runs or silently switch to another inference backend.
 
-The initial correctness implementation is full precision, TP=1, synchronous,
-with full prompt prefill. Model-specific full-prefix implementations deliberately
+The correctness profiles use full precision, independent TP=1 rollout replicas
+and full prompt prefill. Collocate uses four native training ranks and four
+rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs
+on distinct nodes. The selected YAML fixes the layout and global batch.
+Model-specific full-prefix implementations deliberately
 trade throughput for exact native semantics; they are not optimized KV-cache
 implementations. Two successful updates establish an engineering loop, not a
 claim of general training quality. Held-out evaluation must retain its own
 manifest, raw responses and explicit denominator.
 
-To install the inference fork in its dedicated environment, run the installer
+For an earlier reviewed inference-only environment, run the optional installer
 with that environment's Python (the Makefile otherwise uses active ESPnet Python):
 
 ```bash

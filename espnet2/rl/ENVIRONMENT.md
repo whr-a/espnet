@@ -1,5 +1,76 @@
 # Native training and SGLang environment profiles
 
+## Native Miles source environment for 32×8 profiles
+
+Use `tools/installers/install_miles_async_env.sh` for a new 32-prompt,
+eight-candidate native Miles environment. The checked CPython 3.12 / Linux
+x86_64 / CUDA 13.0 profile requires glibc 2.39 or later and fixes these sources:
+
+| Source | Exact revision |
+| --- | --- |
+| Unchanged Miles v0.1.2 | `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` |
+| SGLang ESPnet fork | `283d68c8bff309a42476c95f7c71dad895d09da6` |
+| SGLang base before the import compatibility backport | `4c3f163fe54634f20ef846e1ec0c507b27ae2430` |
+| Upstream encoder reference for that backport | `4076a68579b4a7ae3e9d2ce2f94dec9917237bab` |
+
+The 233-artifact lock and source pins are in
+`tools/installers/miles_async/cp312_linux_x86_64_cu130/profile.json`.
+Torch/Torchaudio 2.11.0+cu130, Transformers 5.12.1 and NumPy 2.3.5 retain the
+validated native/rollout ABI. Miles router 0.3.2, Polars 1.42.1, PyLaTeXEnc 2.10
+and xxhash 3.7.1 support the full eager native Miles imports. The SGLang backport
+adds the upstream encoder and import helpers while preserving the original
+serving dispatch; it does not enable complete V41 serving.
+
+```bash
+git clone https://github.com/radixark/miles.git /path/to/miles
+git -C /path/to/miles checkout --detach a22fd824191c64ba7c5d6c531f125406e4ce9cc6
+git clone https://github.com/whr-a/sglang.git /path/to/sglang
+git -C /path/to/sglang checkout --detach 283d68c8bff309a42476c95f7c71dad895d09da6
+bash tools/installers/install_miles_async_env.sh \
+  --python python3.12 --venv /path/to/new-native-miles-env \
+  --espnet-source /path/to/espnet \
+  --sglang-source /path/to/sglang --miles-source /path/to/miles
+```
+
+Supply a clean delivery checkout as `--espnet-source`; the installer records its
+actual revision. It refuses an existing venv, verifies exact clean Miles/SGLang
+sources and lock hashes, installs every artifact with hashes, and checks
+`pip check`, actual imports and four architecture registrations. Editable builds
+write package metadata into the supplied ESPnet/SGLang checkouts, so use separate
+installation copies when preserving frozen source trees.
+
+Set `miles_source: /path/to/miles`, `sglang_source: /path/to/sglang` and
+`rollout_python: /path/to/new-native-miles-env/bin/python` in the selected recipe
+YAML, and run the learner with that same Python. Miles is exposed through its
+unchanged source checkout; its distribution and unused Megatron, ring-flash,
+torchft or Kubernetes extras are not installed. This profile supports ESPnet's
+native actors and the original Miles async orchestration loop. Synchronous
+profiles retain ESPnet's own native loop and use the same mathematical APIs.
+
+Start dedicated Ray head/worker processes from ordinary shells outside torchrun,
+without inherited `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `LOCAL_WORLD_SIZE`,
+`MASTER_ADDR`, `MASTER_PORT`, group/role identity or `TORCHELASTIC_*` variables.
+Invoke the async driver with Python, outside torchrun. The public driver connects
+to the supplied Ray cluster; it does not clean or restart existing Ray daemons.
+Training actors write rank/master identity only in their own processes and are
+bound to a different node from rollout tasks. Independent rollout children clear
+the full torchrun identity, including `TORCHELASTIC_USE_AGENT_STORE`, before
+starting their own inference rendezvous.
+
+The independent environment passed actual full runtime imports, all 233 artifact
+hashes and `pip check`. The source validation also passed real CPU native actor,
+bounded noncontiguous collective and TCPStore isolation oracles. Installation
+and CPU checks do not establish Ray/NCCL, GPU model execution, two-node transport,
+five optimizer updates, throughput or held-out quality; each new run needs those
+separate checks. Add `--with-tests` for the separately locked pytest dependencies.
+
+The following earlier synchronous profile retains its own 229-artifact lock and
+SGLang `4c3f163fe54634f20ef846e1ec0c507b27ae2430` pin. Do not substitute that
+pin into the new native Miles installer or infer async acceptance from the
+earlier synchronous results.
+
+## Earlier synchronous and inference profiles
+
 Native ESPnet and rollout can use separate Python interpreters. The existing
 2026-10-14 H100 interpreters used Python 3.12.3 with these observed profiles:
 
@@ -40,25 +111,20 @@ were checked in addition to distribution versions.
 
 Miles is the unmodified library at
 `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. ESPnet directly calls its GRPO
-normalization/returns, PPO clipping and KL mathematical APIs. ESPnet owns the
-native training loop, AdamW, checkpoints and SGLang rollout orchestration;
-the complete Miles distributed training runtime is not integrated. The unified
+normalization/returns, PPO clipping and KL mathematical APIs. For these earlier
+synchronous runs, ESPnet owns the native training loop, AdamW, checkpoints and
+SGLang rollout orchestration. Their installation profile does not establish
+the new Miles async runtime. The
 SGLang fork is
 `https://github.com/whr-a/sglang` at
 `4c3f163fe54634f20ef846e1ec0c507b27ae2430`. Its three registration modules
 import OWSM, Bagpiper and both OpusLM implementations from this ESPnet checkout.
 Architecture code is not duplicated in SGLang.
 
-On the existing shared host, the tested interpreters remain available at
-`/mnt/project/haoran/terminal_docs/espnet_rl_20261008/gpu_venv/bin/python` and
-`/mnt/project/haoran/terminal_docs/espnet_miles_rl_20261014/sglang_venv/bin/python`.
-The native package files resolve into
-`/mnt/project/haoran/terminal_docs/espnet_audio_ab_20260910/.venv`;
-rollout Torch resolves into `/usr/local/lib/python3.12/dist-packages` through
-the safe overlay, while its Transformers/FlashInfer resolve into `sglang_venv`.
-Reusing these interpreters with a pinned ESPnet/SGLang checkout is the tested
-host reproduction path; the installation recipe below is for another reviewed
-compatible environment.
+The historical shared-host interpreters used a separate native environment and
+a rollout dependency overlay. Their actual interpreter/package paths remain in
+each run's private evidence. These host-specific paths are not portable recipe
+defaults; use the clean installation instructions for another environment.
 
 For a new rollout environment, the optional installer provides a hash-locked
 CPython 3.12 / Linux x86_64 / CUDA 13.0 profile. It includes all dependencies
@@ -94,9 +160,9 @@ verified every sampled action, with maximum logprob error 0.0000343323 against
 the 0.03 tolerance. No optimizer update or held-out quality comparison was
 performed. Bagpiper, Plain OpusLM and Dialogue OpusLM passed imports and model
 registry identity checks in this clean environment; their GPU model instances
-were not executed in this validation. Private evidence is retained in
-`runtime_profiles/va2_clean_rl_003/state.json` and
-`runs/owsm_clean_sglang_001/{state.json,environment_audit.json,generation_summary.json,native_probability_audit.json}`.
+were not executed in this validation. The original installation state,
+environment audit, generation summary and native probability audit remain in
+the private experiment evidence.
 
 The installer creates a new venv and refuses an existing path. It checks
 source dependency metadata against the profile before creating the environment.

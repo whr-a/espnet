@@ -149,6 +149,17 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
 
 ## Optional Miles RL stage
 
+For the five-update 32×8 profiles, explicitly select
+`conf/rl_miles_wer_collocate.yaml` or `conf/rl_miles_wer_disagg_async.yaml`.
+They use four training/four rollout GPUs on one node or eight training/eight
+rollout GPUs on separate nodes. The native source environment pins unchanged
+Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`; the async entry binds native ESPnet
+actors to the original Miles loop. See
+[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for data
+admission, exact interpreter/source configuration and Ray node selectors.
+The earlier `conf/rl_miles_wer.yaml` keeps its own small synchronous budget.
+
 Stage 18 adds WER GRPO post-training to an existing OWSM checkpoint:
 `./run.sh --stage 18 --wav-scp /path/wav.scp --text /path/text
 --train-config /path/config.yaml --checkpoint /path/model.pth`.

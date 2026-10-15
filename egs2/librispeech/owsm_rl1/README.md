@@ -4,6 +4,17 @@ This recipe adds WER GRPO after an existing autoregressive OWSM checkpoint.
 The shared training stage imports a pinned Miles library; all OWSM model code,
 checkpoint adaptation and rollout hooks live in `espnet2/s2t/rl/`.
 
+The five-update 32×8 profiles are `conf/rl_miles_wer_collocate.yaml` and
+`conf/rl_miles_wer_disagg_async.yaml`; select one explicitly with `--config`.
+The original smaller synchronous YAML keeps its own declared budget. The
+checked native source environment pins Miles
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`; async uses the original Miles loop
+with native ESPnet component factories. See
+[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for the
+complete 32×8 data-admission and launch commands. The example below describes
+the earlier small synchronous stage.
+
 Prepare LibriSpeech with the existing `egs2/librispeech/asr1` data stage, then:
 
 ```bash
