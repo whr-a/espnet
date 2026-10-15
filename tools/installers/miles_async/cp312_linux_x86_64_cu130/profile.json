@@ -1,0 +1,26 @@
+{
+  "schema": "espnet-native-miles-async-env-v1",
+  "platform": {
+    "python": "3.12",
+    "system": "Linux",
+    "machine": "x86_64",
+    "glibc_min": "2.39"
+  },
+  "requirements_sha256": "163ed1d462067b77b17805a78fb59f0da456f3b27b6b16357b901b2ab91ee777",
+  "test_requirements_sha256": "5199001e5c2387b99ea338c1a58088ed94e2bdce9d4273119800133cc0dbc65d",
+  "source_pins": {
+    "miles": "a22fd824191c64ba7c5d6c531f125406e4ce9cc6",
+    "sglang": "283d68c8bff309a42476c95f7c71dad895d09da6",
+    "sglang_base": "4c3f163fe54634f20ef846e1ec0c507b27ae2430",
+    "sglang_encoder_upstream": "4076a68579b4a7ae3e9d2ce2f94dec9917237bab"
+  },
+  "installed_locked_artifacts": 233,
+  "miles_mode": "unchanged source checkout via PYTHONPATH/config.miles_source; Miles distribution and unused backend extras are not installed",
+  "validation": "pipcheck0,233artifact hashes, actual full train_async/TrainRayActor/data/rm_hub/Engine imports, upstream loop CPU instrumentation; no GPU acceptance",
+  "rust_extensions": "none",
+  "limitations": [
+    "This source-native profile does not install all optional Miles distribution backend requirements.",
+    "The limited V41 backport does not enable full V41 serving dispatch.",
+    "GPU/weight publication/two-node performance require separate acceptance."
+  ]
+}
