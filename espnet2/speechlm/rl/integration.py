@@ -241,10 +241,8 @@ class OpusLMEngine(SGLangRolloutEngine):
         self._load_prompt_assets(model_path)
 
     def _load_prompt_assets(self, model_path):
-        """Keep the tokenizer and embedding table unless this export changes them.
-
-        The embedding is trained, so in practice every update brings a new one.
-        """
+        """Read the export's embedding table, which training changes, and its
+        tokenizer when that differs from the one already loaded."""
         from transformers import AutoTokenizer
 
         path = Path(model_path)
@@ -256,9 +254,7 @@ class OpusLMEngine(SGLangRolloutEngine):
         if files != self.tokenizer_files:
             self.tokenizer = AutoTokenizer.from_pretrained(path)
             self.tokenizer_files = files
-        embedding = _embedding_weight(path)
-        if self.embedding is None or not torch.equal(embedding, self.embedding):
-            self.embedding = embedding
+        self.embedding = _embedding_weight(path)
 
     def generate(self, sources, rollout_id):
         metadata, group = self.metadata, self.config.group_size

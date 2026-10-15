@@ -214,7 +214,9 @@ def export(directory, embedding, tokenizer="tokenizer", **metadata):
     return directory
 
 
-def test_updates_reload_only_the_prompt_assets_an_export_changes(tmp_path, monkeypatch):
+def test_updates_reload_the_embedding_and_only_a_changed_tokenizer(
+    tmp_path, monkeypatch
+):
     loads = []
     monkeypatch.setattr(
         "transformers.AutoTokenizer.from_pretrained",
@@ -229,9 +231,8 @@ def test_updates_reload_only_the_prompt_assets_an_export_changes(tmp_path, monke
     rollout.update(export(tmp_path / "policy-1", second))
     assert recorder.updates == [str(tmp_path / "policy-1")]
     assert len(loads) == 1 and torch.equal(rollout.embedding, second)
-    kept = rollout.embedding
     rollout.update(export(tmp_path / "policy-2", second.clone(), tokenizer="new"))
-    assert len(loads) == 2 and rollout.embedding is kept
+    assert len(loads) == 2 and torch.equal(rollout.embedding, second)
     with pytest.raises(ValueError, match="vocabulary"):
         rollout.update(export(tmp_path / "policy-3", second, eos_token_id=6))
     assert len(recorder.updates) == 2
