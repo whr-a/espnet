@@ -101,6 +101,29 @@ def main():
         except Exception:
             result["imports"][name] = {"ok": False, "error": traceback.format_exc()}
     try:
+        from sglang.srt.models.registry import ModelRegistry
+
+        result["architectures"] = {}
+        for name, module_name in (
+            ("ESPnetOWSMForCausalLM", "espnet2.s2t.rl.sglang_model"),
+            (
+                "ESPnetBagpiperForCausalLM",
+                "espnet2.speechlm.model.speechlm.rl.bagpiper.sglang_model",
+            ),
+            ("OpusLMForConditionalGeneration", "espnet2.speechlm.rl.sglang_model"),
+            (
+                "OpusLMDialogueForConditionalGeneration",
+                "espnet2.speechlm.rl.sglang_model",
+            ),
+        ):
+            expected = getattr(importlib.import_module(module_name), name)
+            actual, architecture = ModelRegistry.resolve_model_cls([name])
+            result["architectures"][name] = actual is expected and architecture == name
+            if not result["architectures"][name]:
+                result["errors"].append("Architecture identity differs: " + name)
+    except Exception:
+        result["errors"].append("Architecture registration: " + traceback.format_exc())
+    try:
         path = Path(args.miles_source) / "train_async.py"
         spec = importlib.util.spec_from_file_location(
             "actual_pinned_miles_train_async", path
