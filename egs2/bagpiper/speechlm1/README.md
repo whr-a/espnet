@@ -462,7 +462,7 @@ sampled rollout. The learner executes the native model on those same features.
 
 TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
 result with a separately frozen ASR model and returns negative normalized WER.
-QA training (`rewards:qa_reward`, protocol `qa_west_bagpiper_v1`) keeps WEST's
+QA training (`rewards:qa_v1_reward`, protocol `qa_west_bagpiper_v1`) keeps WEST's
 equal accuracy and format weights, `0.5 * accuracy + 0.5 * format`, but lets
 the native caption-and-reasoning responses earn them: accuracy is the official
 MMAU token-set match of the first `<answer>` block (across lines), else of the
@@ -470,11 +470,11 @@ line after the last answer cue ("final answer", "correct answer", "answer is",
 "choice is", "answer:"), else of the whole response; format is exactly one
 answer block anywhere. Accuracy, format and the extraction path are logged as
 `reward/acc`, `reward/format` and `reward/path_{tag,cue,text}`.
-`rewards:qa_west_reward` is WEST's default reward exactly (exact-string answer,
-whole response one answer tag). It uses Miles' normalized GRPO advantages and
-KL objective. Prepare the AVQA training manifest with `--shuffle-seed 42`:
-prompts are taken in manifest order, so the shuffle gives each update new
-prompts drawn across the corpus.
+`rewards:qa_reward` is WEST's default reward exactly (exact-string answer,
+whole response one answer tag), the reward earlier runs' frozen configs name.
+Both use Miles' normalized GRPO advantages and KL objective. Prepare the AVQA
+training manifest with `--shuffle-seed 42`: prompts are taken in manifest
+order, so the shuffle gives each update new prompts drawn across the corpus.
 
 MMAU evaluation follows WEST's `decode_mmau.py`: it exports the checkpoint,
 builds the recipe's `sglang_engine` from it, decodes every prompt greedily with

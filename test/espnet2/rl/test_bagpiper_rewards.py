@@ -16,7 +16,7 @@ from espnet2.speechlm.model.speechlm.rl.bagpiper.rewards import (
     qa_answer,
     qa_reward,
     qa_think_reward,
-    qa_west_reward,
+    qa_v1_reward,
 )
 
 
@@ -53,7 +53,7 @@ def test_west_think_reward(prediction, expected):
     ],
 )
 def test_strict_west_reward(prediction, accuracy, answer_format):
-    assert qa_west_reward({"reference": "Car"}, {"text": prediction}) == {
+    assert qa_reward({"reference": "Car"}, {"text": prediction}) == {
         "reward": 0.5 * (accuracy + answer_format),
         "acc": accuracy,
         "format": answer_format,
@@ -122,7 +122,7 @@ CHOICES = {
     ],
 )
 def test_v1_reward(text, acc, answer_format, path):
-    reward = qa_reward(CHOICES, {"text": text})
+    reward = qa_v1_reward(CHOICES, {"text": text})
     assert reward == {
         "reward": 0.5 * acc + 0.5 * answer_format,
         "acc": acc,
@@ -135,8 +135,8 @@ def test_v1_reward(text, acc, answer_format, path):
 
 def test_v1_reward_strips_option_labels_from_reference_and_choices():
     source = {"reference": "(B) A woman", "choices": ["(A) A man", "(B) A woman"]}
-    assert qa_reward(source, {"text": "<answer>A woman</answer>"})["acc"] == 1
-    assert qa_reward(source, {"text": "<answer>A man</answer>"})["acc"] == 0
+    assert qa_v1_reward(source, {"text": "<answer>A woman</answer>"})["acc"] == 1
+    assert qa_v1_reward(source, {"text": "<answer>A man</answer>"})["acc"] == 0
 
 
 VOICE = {

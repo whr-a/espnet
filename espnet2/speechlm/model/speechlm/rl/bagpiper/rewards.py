@@ -77,7 +77,28 @@ def mmau_match(source, prediction):
     return bool(predicted) and answer <= predicted and predicted.isdisjoint(incorrect)
 
 
+def west_accuracy(source, text):
+    """WEST's training accuracy: the first answer tag, without DOTALL, else the
+    whole response, must equal the reference string exactly."""
+    match = re.search(r"<answer>(.*?)</answer>", text)
+    return float((match.group(1) if match else text).strip() == source["reference"])
+
+
 def qa_reward(source, generation):
+    """WEST's default GRPO reward exactly, as every earlier run used it:
+    exact-string accuracy and a response that is nothing but one answer tag,
+    with equal weights."""
+    text = generation["text"]
+    accuracy = west_accuracy(source, text)
+    answer_format = float(re.fullmatch(r"<answer>.*?</answer>", text, re.S) is not None)
+    return {
+        "reward": 0.5 * (accuracy + answer_format),
+        "acc": accuracy,
+        "format": answer_format,
+    }
+
+
+def qa_v1_reward(source, generation):
     """Protocol qa_west_bagpiper_v1: WEST's equal accuracy and format weights
     with an answer Bagpiper's free-form responses can earn.
 
@@ -94,26 +115,6 @@ def qa_reward(source, generation):
         "acc": accuracy,
         "format": answer_format,
         **{f"path_{name}": float(path == name) for name in ("tag", "cue", "text")},
-    }
-
-
-def west_accuracy(source, text):
-    """WEST's training accuracy: the first answer tag, without DOTALL, else the
-    whole response, must equal the reference string exactly."""
-    match = re.search(r"<answer>(.*?)</answer>", text)
-    return float((match.group(1) if match else text).strip() == source["reference"])
-
-
-def qa_west_reward(source, generation):
-    """WEST's default GRPO reward exactly: exact-string accuracy and a response
-    that is nothing but one answer tag, with equal weights."""
-    text = generation["text"]
-    accuracy = west_accuracy(source, text)
-    answer_format = float(re.fullmatch(r"<answer>.*?</answer>", text, re.S) is not None)
-    return {
-        "reward": 0.5 * (accuracy + answer_format),
-        "acc": accuracy,
-        "format": answer_format,
     }
 
 
