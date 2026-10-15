@@ -1,23 +1,33 @@
 # Copyright 2026 Haoran Wang
 # SPDX-License-Identifier: Apache-2.0
-"""Bagpiper speech model executed by SGLang's scheduler and primary sampler.
+"""Bagpiper's native multi-stream policy on SGLang's own Qwen3 layers.
 
-Each Engine request emits one primary action; secondary codec actions
-are sampled here and returned through customized_info. The learner independently
-scores the identical native model. A request-local audio feature and HF KV cache
-avoids repeated inference work. SGLang still receives the complete primary prefix
-and owns the primary sampler. TP=1, FP32, no SGLang prefix cache, no graphs.
+RadixAttention over the paged KV pool, many requests in flight. SGLang samples
+the primary stream from logits masked to each frame's support; this model
+samples the seven secondary codec streams, with the categorical rules the
+learner scores. Request IDs are ``batch:source:sample``; the batch's prepared
+sources (native prompt frames, mode, mel features, secondary temperature) are
+read from the ``torch.save`` file named by ``espnet_rollout_sources``, which
+BagpiperEngine rewrites before every batch. Per-request decoding state lives in
+GPU tables indexed by the SGLang request-pool slot. Every frame returns its
+support, primary activity and secondary actions as
+``customized_info["espnet_bagpiper"]``: ``[support, primary_active]``, followed
+by the seven secondary ids and their log probabilities when the secondary
+streams are active. TP=1; the engine freezes radix cache, chunked prefill, CUDA
+graphs and overlap scheduling off, so every extend row is one complete new
+prompt and every decode row one frame.
 """
 
-import hashlib
-import json
 from pathlib import Path
 
 import torch
+from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.model_loader.weight_utils import default_weight_loader
+from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch import nn
 from torch.nn import functional as F
-from transformers import Qwen3Config, Qwen3Model
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeAudioEncoderConfig,
 )
@@ -25,338 +35,289 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeAudioEncoder,
 )
 
-from .inference_cache import CacheContractError, CandidateInferenceCache
+from .tokens import frame_supports, next_phase, support_masks
+
+# Native names of the modules Bagpiper adds to its Qwen3 backbone.
+RENAMES = {
+    "multimodal_io_dict.continuous_audio.model.audio_tower.": "audio_tower.",
+    "adaptor.continuous_audio.": "audio_adaptor.",
+}
+# The frozen Xcodec decoder serves the TTS reward only.
+CODEC_MODEL = "multimodal_io_dict.discrete_audio.codec_model."
+# SGLang fuses the q/k/v and gate/up projections into one parameter each.
+STACKED = (
+    ("q_proj", "qkv_proj", "q"),
+    ("k_proj", "qkv_proj", "k"),
+    ("v_proj", "qkv_proj", "v"),
+    ("gate_proj", "gate_up_proj", 0),
+    ("up_proj", "gate_up_proj", 1),
+)
 
 
-class ESPnetBagpiperForCausalLM(nn.Module):
+class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
     def __init__(self, config, quant_config=None, prefix=""):
-        super().__init__()
         if quant_config is not None:
-            raise ValueError("Bagpiper first implementation requires unquantized TP=1")
-        self.config = config
-        self.geometry = config.espnet_bagpiper
-        self.payload_path = Path(config.espnet_rl_payload_path)
-        text = Qwen3Config(**self.geometry["text_config"])
-        text._attn_implementation = "sdpa"
-        self.model = Qwen3Model(text)
-        self.lm_head = nn.Linear(text.hidden_size, text.vocab_size, bias=False)
-        self.stream_emb = nn.Embedding(self.geometry["num_stream"], text.hidden_size)
+            raise ValueError("Bagpiper RL requires unquantized weights")
+        super().__init__(config, None, prefix)
+        self.setup(config)
+
+    def setup(self, config):
+        """Add Bagpiper's streams, audio encoder and rollout state to Qwen3."""
+        geometry = self.geometry = config.espnet_bagpiper
+        self.hidden, self.vocab = config.hidden_size, config.vocab_size
+        self.stream_emb = nn.Embedding(geometry["num_stream"], self.hidden)
         audio = Qwen3OmniMoeAudioEncoderConfig(
             **{
-                k: v
-                for k, v in self.geometry["audio_config"].items()
-                if k != "model_type"
+                key: value
+                for key, value in geometry["audio_config"].items()
+                if key != "model_type"
             }
         )
         audio._attn_implementation = "sdpa"
         self.audio_tower = Qwen3OmniMoeAudioEncoder(audio)
-        self.audio_adaptor = nn.Linear(
-            self.geometry["adaptor_input_dim"], text.hidden_size, bias=True
+        self.audio_adaptor = nn.Linear(geometry["adaptor_input_dim"], self.hidden)
+        self.register_buffer(
+            "masks", support_masks(geometry, self.vocab), persistent=False
         )
-        self.inference_cache_enabled = getattr(
-            config, "espnet_rl_inference_cache", True
-        )
-        self._cache_generation = 0
-        self.inference_cache = CandidateInferenceCache(
-            max_frames=getattr(
-                config, "espnet_rl_cache_max_frames", text.max_position_embeddings
-            ),
-            max_audio_bytes=getattr(
-                config, "espnet_rl_cache_max_audio_bytes", 64 * 1024**2
-            ),
-        )
-        self.eval()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
+        self.sources_path = Path(config.espnet_rollout_sources)
+        self.batch = self.phase = self.text_audio = self.pending = None
+        self.codec = False
+        if self.lm_head.weight.dtype == torch.float32:
+            # sgl_kernel's RMSNorm has no float32 kernel; SGLang's native norm
+            # is the full-precision reference (as for OpusLM).
+            for module in self.modules():
+                if isinstance(module, RMSNorm):
+                    module._forward_method = module.forward_native
 
     def load_weights(self, weights):
-        self.clear_inference_cache("weight_load")
-        self._cache_generation += 1
+        """Load one complete native policy: every parameter exactly once."""
         params = dict(self.named_parameters())
-        loaded = set()
-        mapping = {
-            "multimodal_io_dict.continuous_audio.model.audio_tower.": "audio_tower.",
-            "adaptor.continuous_audio.": "audio_adaptor.",
+        shards = {fused: [] for _, fused, _ in STACKED}
+        for _, fused, shard in STACKED:
+            shards[fused].append(shard)
+        expected = {
+            (name, shard)
+            for name in params
+            for shard in shards.get(name.split(".")[-2], [None])
         }
-        for original, value in weights:
-            if original.startswith("multimodal_io_dict.discrete_audio.codec_model."):
-                continue  # Frozen decoder is separately strictly loaded for reward.
-            name = original
-            for before, after in mapping.items():
+        loaded = []
+        for original, tensor in weights:
+            if original.startswith(CODEC_MODEL):
+                continue
+            name, shard = original, None
+            for before, after in RENAMES.items():
                 if name.startswith(before):
                     name = after + name[len(before) :]
+            for part, fused, index in STACKED if name.startswith("model.") else ():
+                if f".{part}." in name:
+                    name, shard = name.replace(f".{part}.", f".{fused}."), index
                     break
             if name not in params:
                 raise ValueError(f"Unexpected Bagpiper native weight {original}")
-            if params[name].shape != value.shape:
-                raise ValueError(f"Bagpiper shape mismatch {name}")
-            with torch.no_grad():
-                params[name].copy_(value)
-            loaded.add(name)
-        missing = set(params) - loaded
-        if missing:
-            raise ValueError(f"Incomplete Bagpiper weights: {sorted(missing)}")
-        return loaded
+            param = params[name]
+            loader = getattr(param, "weight_loader", default_weight_loader)
+            loader(param, tensor) if shard is None else loader(param, tensor, shard)
+            loaded.append((name, shard))
+        if len(set(loaded)) != len(loaded) or set(loaded) != expected:
+            missing = sorted(str(item) for item in expected - set(loaded))
+            raise ValueError(
+                f"Bagpiper weights are incomplete or repeated; missing {missing[:4]}"
+            )
+        # Audio features computed with the previous weights must not survive.
+        self.batch = None
+        return set(params)
 
-    def clear_inference_cache(self, reason="explicit"):
-        self.inference_cache.clear(reason)
+    def _load(self, rids):
+        """Read the prepared sources of the batch named by the request IDs."""
+        batches = {rid.split(":", 1)[0] for rid in rids}
+        if len(batches) != 1:
+            raise RuntimeError("One SGLang batch mixes Bagpiper rollout batches")
+        (batch,) = batches
+        if batch == self.batch:
+            return
+        record = torch.load(self.sources_path, map_location="cpu", weights_only=True)
+        if str(record["batch"]) != batch:
+            raise RuntimeError(
+                f"{self.sources_path} holds batch {record['batch']}, not {batch}"
+            )
+        self.batch, self.sources = batch, record["sources"]
+        self.temperature = record["temperature"]
+        self.codec = any(source["text_audio"] for source in self.sources)
+        self.audio, self.seen = {}, set()
 
-    def _apply(self, fn, recurse=True):
-        # Device/dtype moves must not leave inference Tensors on the old device.
-        if hasattr(self, "inference_cache"):
-            self.clear_inference_cache("model_device_or_dtype_change")
-        return super()._apply(fn, recurse=recurse)
+    def _audio(self, index, like):
+        """The adapted audio encoder output of one source, shared by its samples."""
+        cached = self.audio.get(index)
+        if cached is None:
+            audio = self.sources[index]["audio"]
+            features = audio["feats"].to(device=like.device, dtype=like.dtype)
+            encoded = self.audio_tower(
+                features[0].T, feature_lens=audio["lengths"].to(like.device)
+            )
+            encoded = getattr(encoded, "last_hidden_state", encoded)
+            cached = self.audio[index] = [
+                self.audio_adaptor(encoded),
+                self.sources[index]["samples"],
+            ]
+        cached[1] -= 1
+        if not cached[1]:
+            del self.audio[index]
+        return cached[0]
 
-    def _cache_identity(self, payload, device):
-        for field in ("source_id", "sample", "step", "mode"):
-            if field not in payload:
-                raise CacheContractError(f"Cache request lacks {field}")
-        if not isinstance(payload["source_id"], str) or not payload["source_id"]:
-            raise CacheContractError("Invalid cache source identity")
-        if any(
-            type(payload[key]) is not int or payload[key] < 0
-            for key in ("sample", "step")
+    def _reserve(self, slots):
+        """Grow the state tables to cover these request-pool slots."""
+        size = int(slots.max()) + 1
+        if self.phase is not None and len(self.phase) >= size:
+            return
+        old = (self.phase, self.text_audio, self.pending)
+        size = max(size, 2 * len(old[0]) if old[0] is not None else 64)
+        self.phase = slots.new_zeros(size, dtype=torch.int8)
+        self.text_audio = slots.new_zeros(size, dtype=torch.bool)
+        self.pending = slots.new_zeros((size, self.hidden), dtype=torch.float32)
+        if old[0] is not None:
+            for table, value in zip((self.phase, self.text_audio, self.pending), old):
+                table[: len(value)] = value
+
+    def _extend(self, input_ids, batch):
+        """Native prompt embeddings of new requests; reset their state rows."""
+        self._load(batch.rids)
+        embeds = self.model.embed_tokens(input_ids)
+        indices, start = [], 0
+        for rid, length, prefix in zip(
+            batch.rids,
+            batch.extend_seq_lens_cpu,
+            batch.extend_prefix_lens_cpu,
+            strict=True,
         ):
-            raise CacheContractError("Invalid cache sample/step identity")
-        if payload["mode"] not in ("text_only", "text_audio"):
-            raise CacheContractError("Invalid native generation mode")
-        native = json.dumps(
-            payload.get("native_model_inputs", {}),
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
-        geometry = json.dumps(
-            self.geometry, sort_keys=True, separators=(",", ":"), allow_nan=False
-        ).encode()
-        # _version also rejects ordinary in-place parameter updates bypassing the
-        # loader. No mutable cache is shared between model objects or candidates.
-        weights = tuple((id(value), value._version) for value in self.parameters())
-        return (
-            id(self),
-            self._cache_generation,
-            weights,
-            hashlib.sha256(geometry).hexdigest(),
-            str(device),
-            str(self.model.embed_tokens.weight.dtype),
-            payload["source_id"],
-            payload["sample"],
-            payload["step"],
-            payload["mode"],
-            hashlib.sha256(native).hexdigest(),
+            index = int(rid.split(":")[1])
+            source = self.sources[index]
+            if prefix or length != len(source["prompt"]) or rid in self.seen:
+                # A retracted, chunked or prefix-cached request would be
+                # recomputed from primary ids without its secondary streams.
+                raise RuntimeError(
+                    f"SGLang extended Bagpiper request {rid} by {length} tokens "
+                    f"after {prefix}; every request must be prefilled once, whole"
+                )
+            self.seen.add(rid)
+            rows = embeds[start : start + length]
+            secondary = source["prompt"][:, 1:]
+            if secondary.any():
+                # Sum of all streams, padding (id 0) cleared in streams >= 1.
+                secondary = secondary.to(input_ids.device)
+                extra = self.model.embed_tokens(secondary).float()
+                extra = extra.masked_fill((secondary == 0)[..., None], 0).sum(1)
+                rows.copy_((rows.float() + extra).to(rows.dtype))
+            if source["audio"] is not None:
+                audio = source["audio"]
+                rows[audio["start"] : audio["start"] + audio["length"]] = self._audio(
+                    index, rows
+                )
+            indices.append(index)
+            start += length
+        prompts = torch.cat([self.sources[i]["prompt"][:, 0] for i in indices])
+        if not torch.equal(prompts.to(input_ids), input_ids):
+            raise RuntimeError("SGLang input ids differ from the native prompts")
+        slots = batch.req_pool_indices
+        self._reserve(slots)
+        self.phase[slots] = 0
+        self.text_audio[slots] = torch.tensor(
+            [self.sources[i]["text_audio"] for i in indices], device=slots.device
         )
+        self.pending[slots] = 0
+        lengths = torch.tensor(batch.extend_seq_lens_cpu, device=input_ids.device)
+        return embeds, lengths.cumsum(0) - 1
 
-    def _audio_features(self, native, device, dtype):
-        feats = torch.tensor(
-            native["continuous_audio_feats"], device=device, dtype=dtype
+    def _decode(self, input_ids, slots):
+        """The next input is the sum of every stream of the last frame."""
+        self.phase[slots] = next_phase(
+            self.phase[slots],
+            input_ids,
+            self.text_audio[slots],
+            self.geometry["eot_token_id"],
         )
-        lengths = torch.tensor(
-            native["continuous_audio_lengths"], device=device, dtype=torch.long
-        )
-        features = feats[0].T
-        n_window = self.geometry["audio_config"].get("n_window", 100)
-        chunk = 2 * n_window
-        full = chunk
-        for _ in range(3):
-            full = (full - 1) // 2 + 1
-        rem = lengths % chunk
-        for _ in range(3):
-            rem = (rem - 1) // 2 + 1
-        output_lengths = (lengths // chunk) * full + rem
-        self.inference_cache.counters["audio_encoder_calls"] += 1
-        audio = self.audio_tower(
-            features, feature_lens=lengths, aftercnn_lens=output_lengths
-        )
-        if not isinstance(audio, torch.Tensor):
-            audio = getattr(audio, "last_hidden_state", None)
-            if audio is None:
-                raise TypeError("Missing Qwen audio feature Tensor")
-        return self.audio_adaptor(audio)
-
-    def _embeds(self, sequence, native, device, start, audio):
-        frames = torch.tensor(sequence[start:], device=device, dtype=torch.long)[None]
-        embeds = self.model.embed_tokens(frames)
-        embeds[..., 1:, :] = embeds[..., 1:, :].masked_fill(
-            (frames[..., 1:] == 0).unsqueeze(-1), 0
-        )
-        embeds = embeds.sum(2)
-        if native.get("continuous_audio_feats") is not None:
-            for bidx, index, length in native["continuous_audio_indices"]:
-                if (
-                    bidx != 0
-                    or index < 0
-                    or length < 0
-                    or index + length > len(sequence)
-                ):
-                    raise CacheContractError(
-                        "Continuous audio span leaves the full native prompt"
-                    )
-                left, right = max(index, start), min(index + length, len(sequence))
-                if left < right:
-                    if audio is None:
-                        audio = self._audio_features(native, device, embeds.dtype)
-                        if (
-                            self.inference_cache_enabled
-                            and self.inference_cache.state is not None
-                        ):
-                            self.inference_cache.retain_audio(audio)
-                    embeds[bidx, left - start : right - start] = audio[
-                        left - index : right - index
-                    ]
+        embeds = self.model.embed_tokens(input_ids)
+        if self.codec:
+            # One rounding of the FP32 sum, as the learner's stream sum.
+            embeds = (embeds.float() + self.pending[slots]).to(embeds.dtype)
         return embeds
 
-    @torch.no_grad()
-    def _hidden(self, payload, device):
-        try:
-            sequence = tuple(tuple(frame) for frame in payload["sequence"])
-        except Exception:
-            self.clear_inference_cache("invalid_native_sequence")
-            raise
-        if not sequence or any(
-            len(frame) != self.geometry["num_stream"] for frame in sequence
-        ):
-            self.clear_inference_cache("invalid_native_sequence")
-            raise CacheContractError(
-                "Expected a nonempty complete native multi-stream sequence"
-            )
-        native = payload.get("native_model_inputs", {})
-        cache = self.inference_cache
-        try:
-            if self.training:
-                raise CacheContractError(
-                    "Bagpiper inference cache requires model.eval()"
-                )
-            # Above the bound, use the original full-prefix path without retaining
-            # features/KV. This preserves generation's original token budget.
-            if not self.inference_cache_enabled or len(sequence) > cache.max_frames:
-                cache.clear("disabled_or_frame_bound")
-                embeds = self._embeds(sequence, native, device, 0, None)
-                cache.counters["uncached_forwards"] += 1
-                cache.last_trace = {
-                    "operation": "full_prefix",
-                    "input_frames": len(sequence),
-                    "kv_frames": 0,
-                }
-                return self.model(
-                    inputs_embeds=embeds, use_cache=False
-                ).last_hidden_state[:, -1]
-            key = self._cache_identity(payload, device)
-            start = cache.prepare(
-                key,
-                sequence,
-                payload["position"],
-                reset=payload.get("cache_reset", False),
-            )
-            embeds = self._embeds(
-                sequence, native, device, start, cache.state.audio_features
-            )
-            positions = torch.arange(
-                start, len(sequence), device=device, dtype=torch.long
-            )[None]
-            mask = torch.ones((1, len(sequence)), device=device, dtype=torch.long)
-            output = self.model(
-                inputs_embeds=embeds,
-                attention_mask=mask,
-                position_ids=positions,
-                past_key_values=cache.state.past_key_values,
-                use_cache=True,
-            )
-            cache.commit(sequence, payload["position"], output.past_key_values, start)
-            return output.last_hidden_state[:, -1]
-        except Exception:
-            # HF DynamicCache mutates during forward, including on partial
-            # failure. A failed call can never leave reusable cache state.
-            cache.clear("failed_request")
-            raise
+    def _secondary(self, hidden, weight):
+        """Sample streams 1..7 from their own codec layers for every row."""
+        geometry = self.geometry
+        size, base = geometry["codec_layer_size"], geometry["codec_base_offset"]
+        ids, log_probs = [], []
+        for stream in range(1, geometry["num_stream"]):
+            lo = base + stream * size
+            logits = F.linear(
+                hidden + self.stream_emb.weight[stream].to(hidden.dtype),
+                weight[lo : lo + size],
+            ).float()
+            if self.temperature == 0:
+                choice = logits.argmax(-1)
+            else:
+                probabilities = (logits / self.temperature).softmax(-1)
+                choice = torch.multinomial(probabilities, 1)[:, 0]
+            ids.append(choice + lo)
+            log_probs.append(logits.log_softmax(-1).gather(-1, choice[:, None])[:, 0])
+        return torch.stack(ids, -1), torch.stack(log_probs, -1)
 
-    def _allowed(self, raw, phase, mode, stream):
-        cfg = self.geometry
-        tentative = int(raw.argmax())
-        detect = tentative in (cfg["text_token_id"], cfg["audio_token_id"])
-        audio = cfg["codec_base_offset"] <= tentative < raw.shape[-1] and not detect
-        allowed = torch.zeros(raw.shape[-1], device=raw.device, dtype=torch.bool)
-        if stream:
-            lo = cfg["codec_base_offset"] + stream * cfg["codec_layer_size"]
-            allowed[lo : lo + cfg["codec_layer_size"]] = True
-            return allowed, audio
-        if mode == "text_audio" and phase in ("transition", "audio_stop"):
-            allowed[
-                (
-                    cfg["assistant_token_id"]
-                    if phase == "transition"
-                    else cfg["eos_token_id"]
-                )
-            ] = True
-        elif detect:
-            allowed[cfg["text_token_id"]] = True
-            if mode == "text_audio" and phase == "audio":
-                allowed[cfg["audio_token_id"]] = True
-        elif audio:
-            lo = cfg["codec_base_offset"]
-            allowed[lo : lo + cfg["codec_layer_size"]] = True
-            allowed[cfg["eos_token_id"]] = allowed[cfg["eot_token_id"]] = True
-        else:
-            allowed[cfg["text_token_offset"] : cfg["text_token_end"]] = True
-            allowed[cfg["eos_token_id"]] = allowed[cfg["eot_token_id"]] = True
-        return allowed, int(allowed.sum()) > 1
-
-    @torch.no_grad()
-    def forward(self, input_ids, positions, forward_batch, input_embeds=None, **kwargs):
-        if forward_batch.batch_size != 1:
-            self.clear_inference_cache("invalid_batch_size")
-            raise ValueError(
-                "Correctness Bagpiper Engine accepts one request at a time"
-            )
-        payload = json.loads(self.payload_path.read_text())
-        expected = [frame[0] for frame in payload["sequence"]]
-        if input_ids.tolist() != expected:
-            self.clear_inference_cache("invalid_sglang_prefix")
-            raise ValueError(
-                "SGLang/native full prompt mismatch; disable radix cache/chunking"
-            )
-        hidden = self._hidden(payload, input_ids.device)
-        raw = F.linear(hidden, self.lm_head.weight)[0]
-        allowed, primary_active = self._allowed(
-            raw, payload["phase"], payload["mode"], 0
+    def _head(self, hidden, slots):
+        weight = self.lm_head.weight[: self.vocab]
+        raw = F.linear(hidden, weight)
+        support, codec = frame_supports(
+            raw, self.phase[slots], self.text_audio[slots], self.geometry
         )
-        logits = raw.masked_fill(~allowed, -torch.inf)[None]
-        secondary, stream_logps, masks, contracts = [], [], [], []
-        for stream in range(1, self.geometry["num_stream"]):
-            support, active = self._allowed(
-                raw, payload["phase"], payload["mode"], stream
+        allowed = self.masks[support]
+        active = (allowed & torch.isfinite(raw)).sum(-1) > 1
+        # A fresh tensor: SGLang's sampler softmaxes it in place.
+        logits = raw.float().masked_fill(~allowed, -torch.inf)
+        flags = torch.stack((support, active.long(), codec.long()), -1).tolist()
+        rows = [row[:2] for row in flags]
+        if self.codec:
+            ids, log_probs = self._secondary(hidden, weight)
+            self.pending[slots] = torch.where(
+                codec[:, None], self.model.embed_tokens(ids).float().sum(1), 0
             )
-            value = 0
-            lp = 0.0
-            if active:
-                row = F.linear(
-                    hidden + self.stream_emb.weight[stream], self.lm_head.weight
-                )[0].masked_fill(~support, -torch.inf)
-                probs = torch.softmax(row.float(), -1)
-                value = int(torch.multinomial(probs, 1))
-                lp = float(torch.log_softmax(row.float(), -1)[value])
-            secondary.append(value)
-            stream_logps.append(lp)
-            masks.append(active)
-            contracts.append({"temperature": 1.0, "top_k": 0, "active": active})
-        trace = {
-            "secondary_ids": secondary,
-            "secondary_log_probs": stream_logps,
-            "secondary_mask": masks,
-            "primary_active": primary_active,
-            "sampling_contracts": [
-                {"temperature": 1.0, "top_k": 0, "active": primary_active},
-                *contracts,
-            ],
-            "phase": payload["phase"],
-            "native_sequence_length": len(expected),
-            "inference_cache": self.inference_cache.snapshot(),
-        }
-        if payload.get("cache_release", False):
-            self.clear_inference_cache("last_budget_action")
+            if any(row[2] for row in flags):
+                for row, flag, sampled, scores in zip(
+                    rows, flags, ids.tolist(), log_probs.tolist()
+                ):
+                    if flag[2]:
+                        row += sampled + scores
         return LogitsProcessorOutput(
-            next_token_logits=logits, customized_info={"espnet_token_trace": [trace]}
+            next_token_logits=logits, customized_info={"espnet_bagpiper": rows}
         )
+
+    @torch.no_grad()
+    def forward(
+        self,
+        input_ids,
+        positions,
+        forward_batch,
+        input_embeds=None,
+        get_embedding=False,
+        pp_proxy_tensors=None,
+    ):
+        mode = forward_batch.forward_mode
+        if mode == ForwardMode.IDLE:
+            return LogitsProcessorOutput(
+                next_token_logits=input_ids.new_empty(
+                    (0, self.vocab), dtype=torch.float
+                )
+            )
+        if input_embeds is not None or get_embedding:
+            raise ValueError("Bagpiper builds its own native input embeddings")
+        if mode == ForwardMode.EXTEND:
+            embeds, last = self._extend(input_ids, forward_batch)
+        elif mode == ForwardMode.DECODE:
+            embeds = self._decode(input_ids, forward_batch.req_pool_indices)
+            last = None
+        else:
+            raise RuntimeError(f"Bagpiper rollout cannot run SGLang {mode.name}")
+        hidden = self.model(input_ids, positions, forward_batch, input_embeds=embeds)
+        if last is not None:
+            hidden = hidden[last]
+        return self._head(hidden, forward_batch.req_pool_indices)
 
 
 EntryClass = ESPnetBagpiperForCausalLM

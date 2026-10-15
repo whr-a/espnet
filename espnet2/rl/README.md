@@ -68,11 +68,15 @@ rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs
 on distinct nodes. The selected YAML fixes the layout and global batch.
 Model-specific full-prefix implementations deliberately
 trade throughput for exact native semantics. Opus uses its native decoder
-cache. This delivery tree also enables a request-local audio feature cache and
-HF DynamicCache for Bagpiper, with bounded state and a full-prefix path when
-disabled or beyond the frame bound. That cache has CPU equivalence checks;
-its independent GPU comparison and native probability audit remain pending.
-The frozen source004 production runs use the earlier uncached Bagpiper path.
+cache. Bagpiper runs on SGLang's own Qwen3 layers with paged KV and a whole
+rollout batch in flight; the model keeps each request's phase and pending
+secondary-stream embedding in GPU state, and every frame records the support
+the learner scores it under. The learner scores right-padded micro-batches with
+one vectorised head; `micro_batch_tokens` takes candidates in order of length
+and bounds every micro-batch's padded prompt+response tokens. Rollout processes
+write the numpy arrays of their records (Bagpiper's mel features, once per
+prompt) to binary `.npy` sidecars next to the JSON. The frozen source004
+production runs use the earlier one-request, full-prefix Bagpiper path.
 Neither layout alone establishes optimal throughput. Short runs establish an
 engineering loop; held-out evaluation retains its own manifest, raw responses
 and explicit denominator.

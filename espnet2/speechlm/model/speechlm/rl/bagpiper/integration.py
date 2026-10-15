@@ -14,6 +14,7 @@
 """Concrete checkpoint conversion and requests for supported SpeechLM families."""
 
 import copy
+import functools
 import hashlib
 import importlib
 import json
@@ -21,20 +22,15 @@ import os
 import subprocess
 from pathlib import Path
 
-
-def _json_features(value):
-    """Serialize native preparation artifacts without lossy hidden-state baking."""
-    if isinstance(value, dict):
-        return {key: _json_features(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_features(item) for item in value]
-    if hasattr(value, "tolist"):
-        return value.tolist()
-    return value
+from espnet2.rl.data import prepared_sha256
 
 
 def prepared_native_metadata(source):
-    """Only native conditioning crosses from the inference worker to learner."""
+    """Only native conditioning crosses from the inference worker to learner.
+
+    Feature arrays stay numpy arrays, hashed by their bytes; the rollout
+    process writes each to one binary sidecar.
+    """
     fields = (
         "native_model_inputs",
         "prompt_codec_mask",
@@ -42,17 +38,11 @@ def prepared_native_metadata(source):
         "mode",
         "native_preparation",
     )
-    metadata = _json_features({name: source[name] for name in fields if name in source})
-    encoded = json.dumps(
-        {"source_id": source["id"], "data": metadata},
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode()
+    metadata = {name: source[name] for name in fields if name in source}
     return {
         "source_id": source["id"],
         "data": metadata,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "sha256": prepared_sha256(source["id"], metadata),
     }
 
 
@@ -91,25 +81,21 @@ def _speechlm_waveform(source, target_rate):
     }
 
 
-def _bagpiper_audio_source(config, metadata, source):
-    """Use the recipe mel frontend for both native and SGLang audio towers.
+@functools.lru_cache(maxsize=2)
+def _bagpiper_frontend(train_config, processor_path, revision):
+    """The recipe's mel frontend and native text handler, built once.
 
-    Only the feature extractor is constructed here. The learner retains raw
-    mel features and executes its trainable audio encoder/adaptor itself.
+    Loading them costs about 0.6 s, against milliseconds for one prompt.
     """
-    import numpy as np
-    import torch
     import yaml
     from transformers import AutoFeatureExtractor
 
-    from espnet2.speechlm.model.speechlm.multimodal_io.audio import ContinuousAudioIO
+    from espnet2.speechlm.model.speechlm.multimodal_io.text import HuggingFaceTextIO
 
-    recipe = yaml.safe_load(Path(config.train_config).read_text())
+    recipe = yaml.safe_load(Path(train_config).read_text())
     io = recipe["multimodal_io"]["continuous_audio"]
     tag = io.get("encoder_hf_model_tag", "Qwen/Qwen2.5-Omni-7B")
-    options = config.adapter_options
-    revision = options.get("audio_processor_revision")
-    processor_source = options.get("audio_processor_path", tag)
+    processor_source = processor_path or tag
     if revision is None and not Path(processor_source).is_dir():
         raise ValueError(
             "Freeze audio_processor_revision or a local processor path before waveform RL"
@@ -124,6 +110,35 @@ def _bagpiper_audio_source(config, metadata, source):
             for path in sorted(Path(processor_source).rglob("*.json"))
             if path.is_file()
         }
+    text_handler = HuggingFaceTextIO(**recipe["multimodal_io"]["text"])
+    return recipe, tag, processor_source, frontend, processor_files, text_handler
+
+
+@functools.lru_cache(maxsize=2)
+def _tokenizer(hf_dir):
+    from transformers import AutoTokenizer
+
+    return AutoTokenizer.from_pretrained(hf_dir, use_fast=True)
+
+
+def _bagpiper_audio_source(config, metadata, source):
+    """Use the recipe mel frontend for both native and SGLang audio towers.
+
+    Only the feature extractor is constructed here. The learner retains raw
+    mel features and executes its trainable audio encoder/adaptor itself.
+    """
+    import numpy as np
+    import torch
+
+    from espnet2.speechlm.model.speechlm.multimodal_io.audio import ContinuousAudioIO
+
+    options = config.adapter_options
+    revision = options.get("audio_processor_revision")
+    recipe, tag, processor_source, frontend, processor_files, text_handler = (
+        _bagpiper_frontend(
+            config.train_config, options.get("audio_processor_path"), revision
+        )
+    )
     waveform, waveform_contract = _speechlm_waveform(
         source, int(frontend.sampling_rate)
     )
@@ -141,12 +156,10 @@ def _bagpiper_audio_source(config, metadata, source):
     if not encoded_length or not len(features):
         raise ValueError("SpeechLM waveform has no native encoder frames")
     count = int(metadata["num_stream"])
-    from espnet2.speechlm.model.speechlm.multimodal_io.text import HuggingFaceTextIO
     from espnet2.speechlm.model.speechlm.speechlm_job import SpeechLMPreprocessor
 
     # Keep the native recipe tokenizer, vocabulary offset and message markers.
     # The exported tokenizer is used only for decoding generated text.
-    text_handler = HuggingFaceTextIO(**recipe["multimodal_io"]["text"])
     handler.modality, handler.is_discrete = "audio", False
     preprocessor = SpeechLMPreprocessor.__new__(SpeechLMPreprocessor)
     preprocessor.is_train = False
@@ -195,22 +208,10 @@ def _bagpiper_audio_source(config, metadata, source):
         raise ValueError(
             "Native chat preprocessing changed the prepared audio features"
         )
-    source["vllm_prompt_token_ids"] = (
-        primary[:audio_start] + primary[audio_start + encoded_length :]
-    )
     source["native_model_inputs"] = {
-        "continuous_audio_feats": features[None].tolist(),
+        "continuous_audio_feats": np.ascontiguousarray(features[None], np.float32),
         "continuous_audio_lengths": [len(features)],
         "continuous_audio_indices": [[0, audio_start, int(encoded_length)]],
-    }
-    source["multi_modal_data"] = {
-        "audio": {
-            "input_audio_features": torch.from_numpy(
-                np.ascontiguousarray(features.T)
-            ).float(),
-            "audio_feature_lengths": torch.tensor([len(features)], dtype=torch.long),
-            "feature_attention_mask": torch.ones((1, len(features)), dtype=torch.long),
-        }
     }
     source["prompt_codec_mask"] = [False] * len(primary)
     source["native_preparation"] = {
@@ -219,7 +220,7 @@ def _bagpiper_audio_source(config, metadata, source):
         "processor_source": processor_source,
         "revision": revision,
         "sample_rate": int(frontend.sampling_rate),
-        "processor_files_sha256": processor_files,
+        "processor_files_sha256": dict(processor_files),
         "waveform_sha256": hashlib.sha256(waveform.tobytes()).hexdigest(),
         "features_sha256": hashlib.sha256(
             np.ascontiguousarray(features).tobytes()
@@ -255,14 +256,10 @@ def exporter(config, native_checkpoint_path, hf_output_dir):
         model_type="qwen3",
         architectures=["ESPnetBagpiperForCausalLM"],
         espnet_bagpiper=metadata,
-        espnet_rl_payload_path=str(directory.parent / "payload.json"),
         eos_token_id=metadata["eos_token_id"],
         bos_token_id=metadata["bos_token_id"],
         pad_token_id=0,
         tie_word_embeddings=False,
-        espnet_rl_inference_cache=True,
-        espnet_rl_cache_max_frames=flat.get("max_position_embeddings", 32768),
-        espnet_rl_cache_max_audio_bytes=64 * 1024**2,
     )
     (directory / "config.json").write_text(json.dumps(flat, indent=2) + "\n")
     state = torch.load(native_checkpoint_path, map_location="cpu", weights_only=True)
@@ -401,10 +398,7 @@ def _native_export_geometry(config, metadata):
 
 def request_factory(config, hf_dir, sources):
     """Create exact native multimodal prompts and preserve all codebooks."""
-    from transformers import AutoTokenizer
-
     metadata = json.loads((Path(hf_dir) / "config.json").read_text())["espnet_bagpiper"]
-    tokenizer = AutoTokenizer.from_pretrained(hf_dir, use_fast=True)
     count = int(metadata["num_stream"])
     requests, prefixes = [], []
     for source in sources:
@@ -420,7 +414,7 @@ def request_factory(config, hf_dir, sources):
                 1,
                 5,
                 7,
-                *tokenizer.encode(
+                *_tokenizer(str(hf_dir)).encode(
                     source.get("prompt", source.get("reference", "")),
                     add_special_tokens=False,
                 ),

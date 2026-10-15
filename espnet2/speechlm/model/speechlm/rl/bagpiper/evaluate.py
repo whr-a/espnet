@@ -25,7 +25,7 @@ import torch
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.rewards import edit_distance, words
-from espnet2.rl.rollout import sha256, subprocess_environment
+from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
 from espnet2.rl.types import validate_token_scores
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
@@ -320,7 +320,7 @@ def run(args):
     torch.backends.cudnn.allow_tf32 = False
     try:
         if args.responses:
-            result = json.loads(Path(args.responses).read_text())
+            result = read_json(args.responses)
             protocol.update(
                 saved_responses=str(Path(args.responses).resolve()),
                 saved_responses_sha256=sha256(args.responses),
@@ -373,7 +373,7 @@ def run(args):
                     else [_without_features(item) for item in generations]
                 ),
             }
-            (directory / "responses.json").write_text(json.dumps(result) + "\n")
+            write_json(directory / "responses.json", result)
             result["generations"] = generations
         (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
         generations = validate_responses(

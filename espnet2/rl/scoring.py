@@ -19,23 +19,44 @@ import torch.distributed as distributed
 from .types import validate_binary_mask
 
 
+def _numbers(value):
+    """A list nested to equal lengths around numbers or booleans, as one array."""
+    try:
+        array = np.asarray(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return array if array.dtype.kind in "biuf" else None
+
+
 def _identity_digest(batch):
-    """Hash inputs including native frontend sidechannels, without repr objects."""
+    """Hash inputs including native frontend sidechannels, without repr objects.
+
+    Arrays, tensors and lists of numbers are hashed by dtype, shape and bytes,
+    each array once however many candidates share it.
+    """
     digest = hashlib.sha256()
+    arrays = {}
+
+    def text(value):
+        serialized = str(value).encode()
+        digest.update(str(len(serialized)).encode() + b":" + serialized)
 
     def put(value):
         if isinstance(value, torch.Tensor):
             digest.update(b"tensor")
-            put((str(value.dtype), tuple(value.shape)))
+            text((value.dtype, tuple(value.shape)))
             raw = value.detach().cpu().contiguous().reshape(-1).view(torch.uint8)
             digest.update(raw.numpy().tobytes())
         elif isinstance(value, np.ndarray):
             digest.update(b"array")
-            put((str(value.dtype), tuple(value.shape)))
+            text((value.dtype, value.shape))
             if value.dtype.hasobject:
                 put(value.tolist())
             else:
-                digest.update(np.ascontiguousarray(value).tobytes())
+                if id(value) not in arrays:
+                    contiguous = np.ascontiguousarray(value)
+                    arrays[id(value)] = value, hashlib.sha256(contiguous).digest()
+                digest.update(arrays[id(value)][1])
         elif isinstance(value, np.generic):
             put(value.item())
         elif isinstance(value, Mapping):
@@ -47,6 +68,10 @@ def _identity_digest(batch):
                 put(value[key])
             digest.update(b"endmapping")
         elif isinstance(value, (list, tuple)):
+            array = _numbers(value)
+            if array is not None:
+                put(array)
+                return
             digest.update(b"sequence")
             put(len(value))
             for item in value:
@@ -55,8 +80,7 @@ def _identity_digest(batch):
         elif isinstance(value, Path):
             put(str(value))
         elif value is None or isinstance(value, (bool, int, float, str)):
-            serialized = f"{type(value).__name__}:{value}".encode()
-            digest.update(str(len(serialized)).encode() + b":" + serialized)
+            text(f"{type(value).__name__}:{value}")
         else:
             raise ValueError(f"Unsupported native scoring sidechannel {type(value)}")
 

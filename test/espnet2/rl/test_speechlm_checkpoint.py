@@ -8,10 +8,29 @@ import torch
 from torch import nn
 from transformers import Qwen3Config, Qwen3Model
 
+from espnet2.rl.data import collate_rollouts
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import (
     NativeSpeechLMPolicy,
     checkpoint_native_layers,
     offload_saved_activations,
+)
+from espnet2.speechlm.model.speechlm.rl.bagpiper.tokens import (
+    ASSISTANT,
+    CODEC,
+    EOS,
+    TEXT,
+)
+
+GEOMETRY = dict(
+    text_token_offset=12,
+    text_token_end=40,
+    codec_base_offset=40,
+    codec_layer_size=4,
+    text_token_id=7,
+    audio_token_id=8,
+    eot_token_id=3,
+    assistant_token_id=6,
+    eos_token_id=2,
 )
 
 
@@ -33,63 +52,40 @@ def test_chunk_checkpoint_preserves_joint_distribution_and_gradients():
         core.stream_emb.weight.normal_(std=0.001)
         for time, target in enumerate((20, 20, 20, 40, 40, 40, 20)):
             core.lm_head.weight[target, time] = 3
-    geometry = dict(
-        text_token_offset=12,
-        text_token_end=40,
-        codec_base_offset=40,
-        codec_layer_size=4,
-        text_token_id=7,
-        audio_token_id=8,
-        eot_token_id=3,
-        assistant_token_id=6,
-        eos_token_id=2,
-    )
     labels = torch.tensor(
         [
-            [
-                [20, 0, 0, 0],
-                [3, 0, 0, 0],
-                [6, 0, 0, 0],
-                [41, 45, 49, 53],
-                [42, 46, 50, 54],
-                [3, 45, 49, 53],
-                [2, 0, 0, 0],
-            ]
+            [20, 0, 0, 0],
+            [3, 0, 0, 0],
+            [6, 0, 0, 0],
+            [41, 45, 49, 53],
+            [42, 46, 50, 54],
+            [3, 45, 49, 53],
+            [2, 0, 0, 0],
         ]
     )
     masks = torch.tensor(
         [
-            [
-                [1, 0, 0, 0],
-                [1, 0, 0, 0],
-                [0, 0, 0, 0],
-                [1, 1, 1, 1],
-                [1, 1, 1, 1],
-                [1, 1, 1, 1],
-                [0, 0, 0, 0],
-            ]
+            [1, 0, 0, 0],
+            [1, 0, 0, 0],
+            [0, 0, 0, 0],
+            [1, 1, 1, 1],
+            [1, 1, 1, 1],
+            [1, 1, 1, 1],
+            [0, 0, 0, 0],
         ],
         dtype=torch.bool,
     )
-    source = dict(
-        mode="text_audio",
-        sampling_extra_args=dict(phase="text"),
-        sampling_contracts=[
-            [dict(temperature=1.0, top_k=64) for _ in range(4)] for _ in range(7)
-        ],
-    )
+    support = torch.tensor([TEXT, TEXT, ASSISTANT, CODEC, CODEC, CODEC, EOS])
+    phase, text_audio = torch.tensor([0, 0, 1, 2, 2, 2, 3]), torch.ones(7, dtype=bool)
     results = []
     for recompute in (False, True):
         model = copy.deepcopy(core)
         policy = NativeSpeechLMPolicy(
-            model,
-            token_chunk_size=2,
-            bagpiper_config=geometry,
-            score_checkpointing=recompute,
+            model, GEOMETRY, token_chunk_size=2, score_checkpointing=recompute
         )
-        hidden = torch.eye(7)[None].requires_grad_()
+        hidden = torch.eye(7).requires_grad_()
         lp, entropy, per_stream = policy._score_frames(
-            hidden, labels, masks, source, True
+            hidden, labels, masks, support, phase, text_audio
         )
         (lp.sum() + 0.03 * entropy.sum()).backward()
         results.append(
@@ -159,35 +155,22 @@ def text_only_policy():
         core.lm_head.weight.zero_()
         core.stream_emb.weight.zero_()
         core.lm_head.weight[20, 0] = 3
-    geometry = dict(
-        text_token_offset=12,
-        text_token_end=40,
-        codec_base_offset=40,
-        codec_layer_size=4,
-        text_token_id=7,
-        audio_token_id=8,
-        eot_token_id=3,
-        assistant_token_id=6,
-        eos_token_id=2,
-    )
     policy = NativeSpeechLMPolicy(
-        core, token_chunk_size=2, bagpiper_config=geometry, score_checkpointing=False
+        core, GEOMETRY, token_chunk_size=2, score_checkpointing=False
     )
-    source = dict(
-        mode="text_only",
-        sampling_contracts=[[dict(temperature=1.0, top_k=64) for _ in range(4)]],
-    )
-    hidden = torch.zeros(1, 1, 7, requires_grad=True)
+    hidden = torch.zeros(1, 7, requires_grad=True)
     hidden.data[..., 0] = 1
-    labels = torch.tensor([[[20, 0, 0, 0]]])
-    masks = torch.tensor([[[True, False, False, False]]])
-    return policy, source, hidden, labels, masks
+    labels = torch.tensor([[20, 0, 0, 0]])
+    masks = torch.tensor([[True, False, False, False]])
+    # Recorded support, phase and mode of the frame.
+    frame = (torch.tensor([TEXT]), torch.tensor([0]), torch.tensor([False]))
+    return policy, hidden, labels, masks, frame
 
 
 def test_inactive_codec_stream_preserves_zero_gradient_and_adam_state():
-    policy, source, hidden, labels, masks = text_only_policy()
+    policy, hidden, labels, masks, frame = text_only_policy()
     before = policy.core.stream_emb.weight.detach().clone()
-    logp, entropy = policy._score_frames(hidden, labels, masks, source)
+    logp, entropy, _ = policy._score_frames(hidden, labels, masks, *frame)
     (logp.sum() + 0.03 * entropy.sum()).backward()
     assert policy.core.stream_emb.weight.grad is not None
     assert torch.count_nonzero(policy.core.stream_emb.weight.grad) == 0
@@ -199,32 +182,46 @@ def test_inactive_codec_stream_preserves_zero_gradient_and_adam_state():
     assert torch.count_nonzero(state["exp_avg"]) == 0
 
 
-@pytest.mark.parametrize("setting,value", [("temperature", 0.5), ("top_k", 3)])
-def test_inactive_codec_stream_rejects_changed_sampling_contract(setting, value):
-    policy, source, hidden, labels, masks = text_only_policy()
-    source["sampling_contracts"][0][1][setting] = value
+@pytest.mark.parametrize(
+    "contract",
+    [None, {"temperature": 0.5, "top_k": 0}, {"temperature": 1.0, "top_k": 3}],
+)
+def test_scoring_rejects_a_changed_sampling_contract(contract):
+    policy = text_only_policy()[0]
+    generation = dict(
+        source_id="u",
+        prompt_token_ids=[[1, 0, 0, 0]],
+        token_ids=[[20, 0, 0, 0]],
+        log_probs=[-0.1],
+        stream_mask=[[1, 0, 0, 0]],
+        support=[TEXT],
+        **({} if contract is None else {"sampling_contract": contract}),
+    )
+    batch = collate_rollouts([{"id": "u"}], [generation] * 2, 2)
     with pytest.raises(ValueError, match="untruncated unit-temperature"):
-        policy._score_frames(hidden, labels, masks, source)
+        policy(batch)
 
 
-def test_inactive_codec_stream_rejects_current_modality_change():
-    policy, source, hidden, labels, masks = text_only_policy()
+def test_text_only_codec_argmax_keeps_the_native_text_support():
+    policy, hidden, labels, masks, frame = text_only_policy()
     with torch.no_grad():
         policy.core.lm_head.weight[41, 0] = 4
-    labels[0, 0, 0] = 41
-    with pytest.raises(ValueError, match="sampled-stream action layout"):
-        policy._score_frames(hidden, labels, masks, source)
+        policy._score_frames(hidden, labels, masks, *frame)
+    assert (policy.support_mismatches, policy.support_frames) == (0, 1)
+    labels[0, 0] = 41
+    with pytest.raises(ValueError, match="zero likelihood"):
+        policy._score_frames(hidden, labels, masks, *frame)
 
 
 @pytest.mark.parametrize("checkpoint", [False, True])
 def test_all_forced_block_preserves_zero_head_gradient(checkpoint):
-    policy, source, hidden, labels, masks = text_only_policy()
+    policy, hidden, labels, masks, _ = text_only_policy()
     policy.score_checkpointing = checkpoint
     policy.core.lm_head.bias = nn.Parameter(torch.zeros(64))
-    source.update(mode="text_audio", sampling_extra_args=dict(phase="transition"))
-    labels[0, 0, 0] = 6
+    labels[0, 0] = 6
     masks[:] = False
-    logp, entropy = policy._score_frames(hidden, labels, masks, source)
+    frame = (torch.tensor([ASSISTANT]), torch.tensor([1]), torch.tensor([True]))
+    logp, entropy, _ = policy._score_frames(hidden, labels, masks, *frame)
     (logp.sum() + 0.03 * entropy.sum()).backward()
     for parameter in (
         policy.core.lm_head.weight,

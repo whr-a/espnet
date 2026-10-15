@@ -11,14 +11,16 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.engine import SGLangRolloutEngine
-from espnet2.rl.rollout import CheckpointRollout, RolloutProcess
+from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, read_json
 
 ENGINE = """
 import json, os
+import numpy as np
 from espnet2.rl.engine import RolloutEngine
 
 
@@ -42,6 +44,12 @@ class RecordingEngine(RolloutEngine):
             raise ValueError("deliberate engine failure")
         if sources[0].get("fail") == "exit":
             os._exit(3)
+        # One array per source, shared by all its generations.
+        arrays = {
+            source["id"]: {"features": np.full(source["array"], 0.5, np.float32)}
+            for source in sources
+            if "array" in source
+        }
         rows = [
             dict(
                 source_id=source["id"],
@@ -52,6 +60,7 @@ class RecordingEngine(RolloutEngine):
                 replica=self.replica,
                 gpu=os.environ["CUDA_VISIBLE_DEVICES"],
                 rank=os.environ.get("RANK"),
+                **arrays.get(source["id"], {}),
             )
             for source in sources
             for sample in range(self.config.group_size)
@@ -125,6 +134,29 @@ def test_one_engine_serves_every_load_and_generation(config, tmp_path):
     assert recorded["rollout_id"] == 1 and recorded["policy_version"] == 1
     assert process.process.returncode == 0
     process.close()  # Closing twice is harmless.
+
+
+def test_arrays_travel_once_each_as_binary_sidecars(config, tmp_path):
+    directory = tmp_path / "replica-0"
+    process = RolloutProcess(config, "0", directory, 0)
+    try:
+        process.load(tmp_path / "hf", 0)
+        sources = [{"id": "a", "array": 3}, {"id": "b"}, {"id": "c", "array": 2}]
+        generations = process.generate(sources, 4)
+    finally:
+        process.close()
+    arrays = [row.get("features") for row in generations]
+    # Each array crossed once, and the generations of a source share it.
+    assert arrays[0] is arrays[1] and arrays[4] is arrays[5] and arrays[2] is None
+    np.testing.assert_array_equal(arrays[0], np.full(3, 0.5, np.float32))
+    assert arrays[4].dtype == np.float32 and arrays[4].shape == (2,)
+    assert sorted(path.name for path in directory.glob("*.npy")) == [
+        "responses-000004.0.npy",
+        "responses-000004.1.npy",
+    ]
+    np.save(directory / "responses-000004.1.npy", np.zeros(2, np.float32))
+    with pytest.raises(ValueError, match="differs from its record"):
+        read_json(directory / "responses-000004.json")
 
 
 def test_engine_errors_reach_the_client_and_the_worker_keeps_serving(config, tmp_path):
