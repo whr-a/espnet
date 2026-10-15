@@ -161,10 +161,10 @@ def collate_rollouts(sources, generations, group_size):
                     "Prepared native source hash differs from rollout evidence"
                 )
             sample_source.update(copy.deepcopy(payload))
-        if "sampling_contracts" in generation:
-            sample_source["sampling_contracts"] = generation["sampling_contracts"]
-        if "codec_frame_mask" in generation:
-            sample_source["codec_frame_mask"] = generation["codec_frame_mask"]
+        # Per-frame records of how the engine sampled, for the native scorer.
+        for name in ("sampling_contracts", "codec_frame_mask", "support"):
+            if name in generation:
+                sample_source[name] = generation[name]
         repeated_sources.append(sample_source)
         raw_generations.append(copy.deepcopy(generation))
         if action.ndim == 2:

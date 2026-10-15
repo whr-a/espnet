@@ -1,174 +1,287 @@
 # Copyright 2026 Haoran Wang
 # SPDX-License-Identifier: Apache-2.0
-"""Actual SGLang generation with lossless Bagpiper multi-stream traces."""
+"""Bagpiper rollouts: one batched SGLang generate per rollout batch."""
 
-import copy
 import json
+import math
 import os
 from pathlib import Path
 
-from espnet2.rl.engine import engine_kwargs
+import torch
 
-from .events import freeze_native_inputs, request_record
+from espnet2.rl.engine import SGLangRolloutEngine, engine_kwargs
+
 from .integration import prepared_native_metadata, request_factory
 
 
-def generate(config, model_path, sources, step):
-    import sglang as sgl
-    import torch
-    from transformers import AutoTokenizer
+class BagpiperEngine(SGLangRolloutEngine):
+    """Bagpiper's native multi-stream policy inside SGLang's scheduler.
 
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
-    os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
-    model_path = Path(model_path)
-    _, prefixes = request_factory(config, model_path, sources)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-    metadata = json.loads((model_path / "config.json").read_text())
-    payload_path = Path(metadata["espnet_rl_payload_path"])
-    # Export directory is atomically moved after freezing. Resolve its current
-    # path explicitly rather than leaving the staging path in server config.
-    payload_path = model_path.parent / "payload.json"
-    model_args = config.sglang_engine_kwargs.get("json_model_override_args", "{}")
-    model_args = (
-        json.loads(model_args) if isinstance(model_args, str) else dict(model_args)
+    Every request carries the real primary prompt and the ID
+    ``batch:source:sample``; the model reads the batch's prepared sources from
+    ``directory/sources.pt``, written before every batch, and traces every
+    frame's support and secondary actions. ``max_running_requests`` must keep
+    the longest possible batch inside the KV pool: SGLang would otherwise
+    retract requests and recompute them without their secondary streams.
+    """
+
+    defaults = dict(
+        skip_tokenizer_init=True,
+        disable_overlap_schedule=True,
+        chunked_prefill_size=-1,
+        context_length=4096,
+        # Safe for an FP32 engine alone on an 80 GB GPU; recipes size it to
+        # their own KV pool (generate checks it).
+        max_running_requests=32,
     )
-    model_args["espnet_rl_payload_path"] = str(payload_path)
-    kwargs = engine_kwargs(
-        config,
-        step,
-        defaults=dict(
-            model_path=str(model_path),
-            dtype=config.dtype,
-            disable_overlap_schedule=True,
-            chunked_prefill_size=-1,
-            max_running_requests=1,
-            mem_fraction_static=0.65,
-        ),
-        frozen=(
-            "chunked_prefill_size",
-            "disable_cuda_graph",
-            "disable_radix_cache",
-            "disable_overlap_schedule",
-            # The native event capture assumes one request in flight.
-            "max_running_requests",
-        ),
+    frozen = (
+        "skip_tokenizer_init",
+        "disable_cuda_graph",
+        "disable_radix_cache",
+        "chunked_prefill_size",
+        "disable_overlap_schedule",
     )
-    # The payload path is resolved per run and is never a recipe setting.
-    kwargs["json_model_override_args"] = json.dumps(model_args)
-    engine = sgl.Engine(**kwargs)
-    generations = []
-    events = model_path.parent / "sglang_events.jsonl"
-    try:
-        for source, prefix in zip(sources, prefixes, strict=True):
-            native_reference = freeze_native_inputs(
-                model_path.parent, source.get("native_model_inputs", {})
+
+    def __init__(self, config, model_path, *, directory, replica=0):
+        # Read when SGLang's scheduler imports its sampler: the primary log
+        # probability of the support distribution itself, before temperature.
+        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
+        if config.dtype == "float32":
+            # Triton's TF32 default puts float32 attention at the drift gate.
+            os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
+        super().__init__(config, model_path, directory=directory, replica=replica)
+        from transformers import AutoTokenizer
+
+        self.model_path = Path(model_path)
+        self.geometry = json.loads((self.model_path / "config.json").read_text())[
+            "espnet_bagpiper"
+        ]
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+        info = self.engine.get_server_info()
+        self.kv_tokens = info["max_total_num_tokens"]
+        self.max_running = info["internal_states"][0][
+            "effective_max_running_requests_per_dp"
+        ]
+        self.page = info.get("page_size") or 1
+        self.batches = 0
+        print(
+            f"Bagpiper engine: {self.kv_tokens} KV tokens, at most "
+            f"{self.max_running} requests in flight",
+            flush=True,
+        )
+
+    @property
+    def sources_path(self):
+        return self.directory / "sources.pt"
+
+    def settings(self, model_path):
+        attention = "triton" if self.config.dtype == "float32" else "fa3"
+        settings = engine_kwargs(
+            self.config,
+            self.replica,
+            defaults=dict(
+                self.defaults,
+                model_path=str(model_path),
+                dtype=self.config.dtype,
+                attention_backend=attention,
+            ),
+            frozen=self.frozen,
+        )
+        if self.config.dtype == "float32" and settings["attention_backend"] not in (
+            "triton",
+            "torch_native",
+        ):
+            raise ValueError("float32 Bagpiper needs triton or torch_native attention")
+        overrides = json.loads(settings.get("json_model_override_args", "{}"))
+        overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
+        settings["json_model_override_args"] = json.dumps(overrides)
+        return settings
+
+    def update(self, model_path):
+        super().update(model_path)
+        self.model_path = Path(model_path)
+
+    def generate(self, sources, rollout_id, sampling=None):
+        """Return ``group_size`` generations per source, in source order.
+
+        RL samples every stream at unit temperature from its full support.
+        ``sampling`` overrides that for evaluation only: ``temperature`` (0 is
+        greedy in every stream), ``max_new_tokens`` and ``samples`` per source.
+        """
+        sampling = {
+            "temperature": 1.0,
+            "max_new_tokens": self.config.max_tokens,
+            "samples": self.config.group_size,
+            **(sampling or {}),
+        }
+        if set(sampling) != {"temperature", "max_new_tokens", "samples"}:
+            raise ValueError(
+                "Bagpiper sampling overrides temperature, max_new_tokens, samples"
             )
-            for sample in range(config.group_size):
-                sequence = copy.deepcopy(prefix)
-                phase = "text"
-                frames = []
-                scores = []
-                stream_scores = []
-                masks = []
-                contracts = []
-                codec = []
-                ended = False
-                for position in range(config.max_tokens):
-                    payload = {
-                        "sequence": sequence,
-                        "native_model_inputs": source.get("native_model_inputs", {}),
-                        "mode": source["mode"],
-                        "phase": phase,
-                        "source_id": source["id"],
-                        "sample": sample,
-                        "step": step,
-                        "position": position,
-                        "cache_reset": position == 0,
-                        "cache_release": position == config.max_tokens - 1,
-                    }
-                    payload_path.write_text(json.dumps(payload) + "\n")
-                    result = engine.generate(
-                        input_ids=[frame[0] for frame in sequence],
-                        sampling_params={
-                            "temperature": 1.0,
-                            "top_p": 1.0,
-                            "top_k": -1,
-                            "max_new_tokens": 1,
-                            "ignore_eos": True,
-                        },
-                        return_logprob=True,
-                        logprob_start_len=-1,
-                    )
-                    with events.open("a") as handle:
-                        handle.write(
-                            json.dumps(
-                                {
-                                    "schema": "bagpiper-inference-event-v2",
-                                    "request": request_record(
-                                        payload, native_reference
-                                    ),
-                                    "response": result,
-                                }
-                            )
-                            + "\n"
-                        )
-                    info = result["meta_info"]
-                    output = info["output_token_logprobs"]
-                    if len(output) != 1:
-                        raise RuntimeError("SGLang must return exactly one real action")
-                    lp, primary, *_ = output[0]
-                    trace = info["espnet_token_trace"][0]
-                    frame = [int(primary), *trace["secondary_ids"]]
-                    mask = [trace["primary_active"], *trace["secondary_mask"]]
-                    per_stream = [
-                        float(lp) if mask[0] else 0.0,
-                        *trace["secondary_log_probs"],
-                    ]
-                    frames.append(frame)
-                    sequence.append(frame)
-                    scores.append(sum(per_stream))
-                    stream_scores.append(per_stream)
-                    masks.append(mask)
-                    contracts.append(trace["sampling_contracts"])
-                    codec.append(any(mask[1:]))
-                    if source["mode"] == "text_audio":
-                        if phase == "text" and primary == 3:
-                            phase = "transition"
-                        elif phase == "transition":
-                            phase = "audio"
-                        elif phase == "audio" and primary == 3:
-                            phase = "audio_stop"
-                    if primary == 2:
-                        ended = True
-                        break
-                text = tokenizer.decode(
-                    [
-                        frame[0]
-                        for frame in frames
-                        if 256
-                        <= frame[0]
-                        < metadata["espnet_bagpiper"]["text_token_end"]
-                    ],
-                    skip_special_tokens=True,
+        _, prefixes = request_factory(self.config, self.model_path, sources)
+        group = sampling["samples"]
+        width = max(map(len, prefixes)) + sampling["max_new_tokens"]
+        needed = min(self.max_running, len(sources) * group) * (
+            -(-width // self.page) * self.page
+        )
+        if needed > self.kv_tokens:
+            raise ValueError(
+                f"{self.max_running} requests of up to {width} tokens need "
+                f"{needed} KV tokens but the pool holds {self.kv_tokens}; lower "
+                f"max_running_requests to {self.kv_tokens // width} or enlarge "
+                "the pool so SGLang never retracts a request"
+            )
+        batch, self.batches = self.batches, self.batches + 1
+        prepared = []
+        for source, prefix in zip(sources, prefixes, strict=True):
+            native, audio = source.get("native_model_inputs", {}), None
+            if native.get("continuous_audio_feats") is not None:
+                ((row, start, length),) = native["continuous_audio_indices"]
+                if row != 0:
+                    raise ValueError("A Bagpiper prompt holds exactly one utterance")
+                audio = dict(
+                    feats=torch.as_tensor(
+                        native["continuous_audio_feats"], dtype=torch.float32
+                    ),
+                    lengths=torch.as_tensor(
+                        native["continuous_audio_lengths"], dtype=torch.long
+                    ),
+                    start=start,
+                    length=length,
                 )
+            prepared.append(
+                dict(
+                    id=source["id"],
+                    prompt=torch.tensor(prefix),
+                    text_audio=source["mode"] == "text_audio",
+                    samples=group,
+                    audio=audio,
+                )
+            )
+        staging = self.sources_path.with_suffix(".tmp")
+        torch.save(
+            dict(
+                batch=batch,
+                rollout_id=rollout_id,
+                temperature=sampling["temperature"],
+                sources=prepared,
+            ),
+            staging,
+        )
+        staging.replace(self.sources_path)
+        rids = [f"{batch}:{i}:{s}" for i in range(len(sources)) for s in range(group)]
+        outputs = self.engine.generate(
+            input_ids=[
+                [frame[0] for frame in p] for p in prefixes for _ in range(group)
+            ],
+            sampling_params=[
+                dict(
+                    temperature=sampling["temperature"],
+                    top_p=1.0,
+                    top_k=-1,
+                    min_p=0.0,
+                    max_new_tokens=sampling["max_new_tokens"],
+                    stop_token_ids=[self.geometry["eos_token_id"]],
+                    repetition_penalty=1.0,
+                    presence_penalty=0.0,
+                    frequency_penalty=0.0,
+                )
+            ]
+            * len(rids),
+            rid=rids,
+            return_logprob=True,
+            logprob_start_len=-1,
+            top_logprobs_num=0,
+        )
+        if isinstance(outputs, dict):
+            outputs = [outputs]
+        if [output["meta_info"]["id"] for output in outputs] != rids:
+            raise RuntimeError("SGLang returned incomplete Bagpiper prompt groups")
+        generations = []
+        for index, (source, prefix) in enumerate(zip(sources, prefixes, strict=True)):
+            # Identical for the whole group: hash the native inputs once.
+            native = prepared_native_metadata(source)
+            for output in outputs[index * group : (index + 1) * group]:
                 generations.append(
-                    {
-                        "source_id": source["id"],
-                        "token_ids": frames,
-                        "log_probs": scores,
-                        "stream_log_probs": stream_scores,
-                        "stream_mask": masks,
-                        "action_mask": [any(row) for row in masks],
-                        "sampling_contracts": contracts,
-                        "codec_frame_mask": codec,
-                        "prompt_token_ids": prefix,
-                        "text": text,
-                        "finish_reason": "stop" if ended else "length",
-                        "prepared_native_source": prepared_native_metadata(source),
-                        "rollout_engine": "sglang",
-                    }
+                    self._record(source, prefix, output, native, sampling)
                 )
-    finally:
-        engine.shutdown()
-    return generations
+        return generations
+
+    def _record(self, source, prefix, output, native, sampling):
+        """One generation in the native rollout schema, plus its supports."""
+        info, tokens = output["meta_info"], list(output["output_ids"])
+        logprobs, trace = info.get("output_token_logprobs"), info.get("espnet_bagpiper")
+        if info.get("num_retractions"):
+            raise RuntimeError("SGLang retracted a Bagpiper request")
+        if (
+            not tokens
+            or logprobs is None
+            or not len(tokens) == len(logprobs) == len(trace or ())
+        ):
+            raise RuntimeError("SGLang returned an incomplete Bagpiper action trace")
+        finish = (info.get("finish_reason") or {}).get("type")
+        eos = self.geometry["eos_token_id"]
+        if (
+            finish not in ("stop", "length")
+            or (finish == "stop") != (tokens[-1] == eos)
+            or eos in tokens[:-1]
+            or (finish == "length" and len(tokens) != sampling["max_new_tokens"])
+        ):
+            raise RuntimeError(
+                f"SGLang ended a Bagpiper request ({finish}) after {len(tokens)} frames"
+            )
+        secondary = self.geometry["num_stream"] - 1
+        frames, scores, stream_scores, masks, supports = [], [], [], [], []
+        for token, (logprob, sampled, _), (support, active, *codec) in zip(
+            tokens, logprobs, trace, strict=True
+        ):
+            if (
+                sampled != token
+                or not math.isfinite(logprob)
+                or not (active or logprob == 0.0)
+            ):
+                raise RuntimeError("SGLang primary action and log probability differ")
+            ids, codec_scores = (
+                (codec[:secondary], codec[secondary:])
+                if codec
+                else ([0] * secondary, [0.0] * secondary)
+            )
+            mask = [bool(active)] + [bool(codec)] * secondary
+            per_stream = [logprob if active else 0.0, *codec_scores]
+            frames.append([token, *ids])
+            scores.append(sum(per_stream))
+            stream_scores.append(per_stream)
+            masks.append(mask)
+            supports.append(support)
+        text = self.tokenizer.decode(
+            [
+                frame[0]
+                for frame in frames
+                if self.geometry["text_token_offset"]
+                <= frame[0]
+                < self.geometry["text_token_end"]
+            ],
+            skip_special_tokens=True,
+        )
+        return {
+            "source_id": source["id"],
+            "token_ids": frames,
+            "log_probs": scores,
+            "stream_log_probs": stream_scores,
+            "stream_mask": masks,
+            "action_mask": [any(mask) for mask in masks],
+            "sampling_contracts": [
+                [
+                    {"temperature": sampling["temperature"], "top_k": 0, "active": a}
+                    for a in mask
+                ]
+                for mask in masks
+            ],
+            "codec_frame_mask": [mask[1] for mask in masks],
+            "support": supports,
+            "prompt_token_ids": prefix,
+            "text": text,
+            "finish_reason": finish,
+            "prepared_native_source": native,
+            "rollout_engine": "sglang",
+        }

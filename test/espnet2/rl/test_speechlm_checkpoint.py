@@ -13,6 +13,12 @@ from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import (
     checkpoint_native_layers,
     offload_saved_activations,
 )
+from espnet2.speechlm.model.speechlm.rl.bagpiper.tokens import (
+    ASSISTANT,
+    CODEC,
+    EOS,
+    TEXT,
+)
 
 
 class ScoreCore(nn.Module):
@@ -77,6 +83,7 @@ def test_chunk_checkpoint_preserves_joint_distribution_and_gradients():
         sampling_contracts=[
             [dict(temperature=1.0, top_k=64) for _ in range(4)] for _ in range(7)
         ],
+        support=[TEXT, TEXT, ASSISTANT, CODEC, CODEC, CODEC, EOS],
     )
     results = []
     for recompute in (False, True):
@@ -176,6 +183,7 @@ def text_only_policy():
     source = dict(
         mode="text_only",
         sampling_contracts=[[dict(temperature=1.0, top_k=64) for _ in range(4)]],
+        support=[TEXT],
     )
     hidden = torch.zeros(1, 1, 7, requires_grad=True)
     hidden.data[..., 0] = 1
@@ -207,12 +215,14 @@ def test_inactive_codec_stream_rejects_changed_sampling_contract(setting, value)
         policy._score_frames(hidden, labels, masks, source)
 
 
-def test_inactive_codec_stream_rejects_current_modality_change():
+def test_text_only_codec_argmax_keeps_the_native_text_support():
     policy, source, hidden, labels, masks = text_only_policy()
     with torch.no_grad():
         policy.core.lm_head.weight[41, 0] = 4
+        policy._score_frames(hidden, labels, masks, source)
+    assert (policy.support_mismatches, policy.support_frames) == (0, 1)
     labels[0, 0, 0] = 41
-    with pytest.raises(ValueError, match="sampled-stream action layout"):
+    with pytest.raises(ValueError, match="zero likelihood"):
         policy._score_frames(hidden, labels, masks, source)
 
 
@@ -221,7 +231,11 @@ def test_all_forced_block_preserves_zero_head_gradient(checkpoint):
     policy, source, hidden, labels, masks = text_only_policy()
     policy.score_checkpointing = checkpoint
     policy.core.lm_head.bias = nn.Parameter(torch.zeros(64))
-    source.update(mode="text_audio", sampling_extra_args=dict(phase="transition"))
+    source.update(
+        mode="text_audio",
+        sampling_extra_args=dict(phase="transition"),
+        support=[ASSISTANT],
+    )
     labels[0, 0, 0] = 6
     masks[:] = False
     logp, entropy = policy._score_frames(hidden, labels, masks, source)

@@ -29,7 +29,15 @@ from torch.utils.checkpoint import checkpoint
 
 from espnet2.rl.types import TokenScores
 
-from .tokens import selected_log_probs
+from .tokens import (
+    ASSISTANT,
+    CODEC,
+    DETECT,
+    DETECT_AUDIO,
+    EOS,
+    TEXT,
+    selected_log_probs,
+)
 
 
 @contextmanager
@@ -124,6 +132,7 @@ class NativeSpeechLMPolicy(nn.Module):
         activation_checkpointing=False,
         score_checkpointing=True,
         activation_cpu_offload=False,
+        support_mismatch_rate=1e-3,
     ):
         super().__init__()
         self.model = model
@@ -157,6 +166,10 @@ class NativeSpeechLMPolicy(nn.Module):
         self.activation_checkpointing = bool(activation_checkpointing)
         self.score_checkpointing = bool(score_checkpointing)
         self.activation_cpu_offload = bool(activation_cpu_offload)
+        # Frames a Bagpiper scoring pass scored under a recorded support other
+        # than the one its own logits give, out of all frames it scored.
+        self.support_mismatch_rate = support_mismatch_rate
+        self.support_mismatches = self.support_frames = 0
         if bagpiper_config is not None and layout != "parallel":
             raise ValueError("Bagpiper deployed likelihood requires a parallel model")
 
@@ -269,8 +282,9 @@ class NativeSpeechLMPolicy(nn.Module):
             for start in range(0, t, self.token_chunk_size):
                 end = min(t, start + self.token_chunk_size)
                 part = dict(source)
-                if source.get("sampling_contracts") is not None:
-                    part["sampling_contracts"] = source["sampling_contracts"][start:end]
+                for name in ("sampling_contracts", "support"):
+                    if source.get(name) is not None:
+                        part[name] = source[name][start:end]
                 part["sampling_extra_args"] = {
                     **source.get("sampling_extra_args", {}),
                     "phase": phase,
@@ -320,6 +334,13 @@ class NativeSpeechLMPolicy(nn.Module):
                 raise ValueError(
                     "Bagpiper deployed likelihood requires actual rollout contracts"
                 )
+            supports = source.get("support")
+            if supports is None or len(supports) != t:
+                raise ValueError(
+                    "Bagpiper scoring requires the support its rollout recorded "
+                    "for every frame"
+                )
+            secondary = stream_mask[0, :, 1:].any(-1).tolist()
             mode = source.get(
                 "mode", source.get("sampling_extra_args", {}).get("mode", "text_only")
             )
@@ -381,6 +402,8 @@ class NativeSpeechLMPolicy(nn.Module):
                                 mode,
                                 targets[:, j : j + 1],
                                 active[:, j : j + 1],
+                                supports[start + j],
+                                secondary[start + j],
                             )
                     # Preserve zero rather than absent stream-offset gradients
                     # so optimizer state/weight-decay behavior remains unchanged.
@@ -424,6 +447,8 @@ class NativeSpeechLMPolicy(nn.Module):
                                 mode,
                                 targets[:, j : j + 1],
                                 active[:, j : j + 1],
+                                supports[start + j],
+                                secondary[start + j],
                             )
                         elif spec.get("allowed_ranges") is not None:
                             allowed = torch.zeros(
@@ -474,47 +499,77 @@ class NativeSpeechLMPolicy(nn.Module):
             )
         return frame_logp + zero_head, frame_entropy + zero_head
 
-    def _bagpiper_deployed_row(
-        self, logits, raw_primary, stream, phase, mode, target, recorded_active
-    ):
-        """Recompute deployed support from current logits, never old support.
+    def _bagpiper_support(self, raw_primary, phase, mode):
+        """The support and secondary activity current logits give one frame.
 
-        A changed categorical support gives zero likelihood to an excluded
-        action. The current finite-logprob GRPO backend cannot optimize that
-        boundary; reject it explicitly rather than substituting the old mask.
+        text_only decodes text natively (parallel.py text_mask): its frames
+        never get codec support or secondary streams.
         """
         cfg = self.bagpiper_config
         tentative = int(raw_primary[0, 0].argmax())
         detect = tentative in (cfg["text_token_id"], cfg["audio_token_id"])
-        audio = cfg["codec_base_offset"] <= tentative < logits.shape[-1] and not detect
+        codec = (
+            mode == "text_audio"
+            and tentative >= cfg["codec_base_offset"]
+            and not detect
+        )
+        if mode == "text_audio" and phase in ("transition", "audio_stop"):
+            return (ASSISTANT if phase == "transition" else EOS), codec
+        if detect:
+            audio = mode == "text_audio" and phase == "audio"
+            return (DETECT_AUDIO if audio else DETECT), codec
+        return (CODEC if codec else TEXT), codec
+
+    def _bagpiper_deployed_row(
+        self,
+        logits,
+        raw_primary,
+        stream,
+        phase,
+        mode,
+        target,
+        recorded_active,
+        support,
+        secondary,
+    ):
+        """Score one frame under the support its rollout recorded.
+
+        The argmax-gated support is discontinuous, so the current policy can
+        give a recorded frame another support. A scoring pass (no gradient)
+        recomputes it from the current logits and counts such frames; forward
+        fails when their rate exceeds ``support_mismatch_rate``.
+        """
+        cfg = self.bagpiper_config
+        if not stream and not torch.is_grad_enabled():
+            own = self._bagpiper_support(raw_primary, phase, mode)
+            self.support_mismatches += own != (support, secondary)
+            self.support_frames += 1
         allowed = torch.zeros(logits.shape[-1], device=logits.device, dtype=torch.bool)
         if stream:
             lo = cfg["codec_base_offset"] + stream * cfg["codec_layer_size"]
             allowed[lo : lo + cfg["codec_layer_size"]] = True
-            expected_active = audio
+            expected_active = secondary
         else:
-            if mode == "text_audio" and phase in ("transition", "audio_stop"):
-                forced = (
-                    cfg["assistant_token_id"]
-                    if phase == "transition"
-                    else cfg["eos_token_id"]
-                )
-                allowed[forced] = True
-            elif detect:
-                allowed[cfg["text_token_id"]] = True
-                if mode == "text_audio" and phase == "audio":
-                    allowed[cfg["audio_token_id"]] = True
-            elif audio:
+            if support == TEXT:
+                allowed[cfg["text_token_offset"] : cfg["text_token_end"]] = True
+            elif support == CODEC:
                 lo = cfg["codec_base_offset"]
                 allowed[lo : lo + cfg["codec_layer_size"]] = True
-                allowed[cfg["eos_token_id"]] = allowed[cfg["eot_token_id"]] = True
+            elif support in (DETECT, DETECT_AUDIO):
+                allowed[cfg["text_token_id"]] = True
+                if support == DETECT_AUDIO:
+                    allowed[cfg["audio_token_id"]] = True
+            elif support in (ASSISTANT, EOS):
+                key = "assistant_token_id" if support == ASSISTANT else "eos_token_id"
+                allowed[cfg[key]] = True
             else:
-                allowed[cfg["text_token_offset"] : cfg["text_token_end"]] = True
+                raise ValueError(f"Unknown Bagpiper support {support!r}")
+            if support in (TEXT, CODEC):
                 allowed[cfg["eos_token_id"]] = allowed[cfg["eot_token_id"]] = True
             expected_active = int((allowed & torch.isfinite(logits[0, 0])).sum()) > 1
         if bool(recorded_active[0, 0]) != expected_active:
             raise ValueError(
-                "Bagpiper current policy changed the sampled-stream action layout"
+                "Bagpiper rollout stream mask differs from its recorded support"
             )
         if not stream or expected_active:
             if (
@@ -522,13 +577,23 @@ class NativeSpeechLMPolicy(nn.Module):
                 or not allowed[int(target[0, 0])]
             ):
                 raise ValueError(
-                    "Bagpiper rollout action has zero likelihood under current deployed support"
+                    "Bagpiper rollout action has zero likelihood under its recorded support"
                 )
         return logits.masked_fill(~allowed, -torch.inf)
 
     def forward(self, batch):
+        before = self.support_mismatches, self.support_frames
         with offload_saved_activations(self.model, self.activation_cpu_offload):
-            return self._forward(batch)
+            scores = self._forward(batch)
+        mismatches = self.support_mismatches - before[0]
+        frames = self.support_frames - before[1]
+        if mismatches > self.support_mismatch_rate * frames:
+            raise ValueError(
+                f"The current policy gives {mismatches} of {frames} frames another "
+                f"support than their rollout recorded (rate above "
+                f"{self.support_mismatch_rate})"
+            )
+        return scores
 
     def _forward(self, batch):
         device = next(self.model.parameters()).device
@@ -945,6 +1010,7 @@ def factory(config, device):
         activation_cpu_offload=config.adapter_options.get(
             "activation_cpu_offload", False
         ),
+        support_mismatch_rate=config.adapter_options.get("support_mismatch_rate", 1e-3),
     )
 
 
