@@ -13,7 +13,13 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
-from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, sha256
+from espnet2.rl.rollout import (
+    CheckpointRollout,
+    RolloutProcess,
+    read_json,
+    sha256,
+    write_json,
+)
 from espnet2.rl.types import validate_token_scores
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
@@ -198,7 +204,7 @@ def run(args):
     torch.backends.cudnn.allow_tf32 = False
     try:
         if args.responses:
-            result = json.loads(Path(args.responses).read_text())
+            result = read_json(args.responses)
             evidence.update(
                 saved_responses=str(Path(args.responses).resolve()),
                 saved_responses_sha256=sha256(args.responses),
@@ -257,16 +263,12 @@ def run(args):
                 "rollout_backend": "sglang",
                 "generations": generations,
             }
-            (directory / "responses.json").write_text(
-                json.dumps(result, indent=2) + "\n"
-            )
+            write_json(directory / "responses.json", result, indent=2)
         generations, batch = validate_responses(
             result, sources, cfg, evidence["checkpoint_sha256"], args.policy_step
         )
         if args.responses:
-            (directory / "responses.json").write_text(
-                json.dumps(result, indent=2) + "\n"
-            )
+            write_json(directory / "responses.json", result, indent=2)
         batch.save_to_disk(directory / "rollout.pkl")
         policy = build_policy(cfg, cfg.device)
         policy.requires_grad_(False)

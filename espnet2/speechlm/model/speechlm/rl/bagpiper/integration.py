@@ -22,20 +22,15 @@ import os
 import subprocess
 from pathlib import Path
 
-
-def _json_features(value):
-    """Serialize native preparation artifacts without lossy hidden-state baking."""
-    if isinstance(value, dict):
-        return {key: _json_features(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [_json_features(item) for item in value]
-    if hasattr(value, "tolist"):
-        return value.tolist()
-    return value
+from espnet2.rl.data import prepared_sha256
 
 
 def prepared_native_metadata(source):
-    """Only native conditioning crosses from the inference worker to learner."""
+    """Only native conditioning crosses from the inference worker to learner.
+
+    Feature arrays stay numpy arrays, hashed by their bytes; the rollout
+    process writes each to one binary sidecar.
+    """
     fields = (
         "native_model_inputs",
         "prompt_codec_mask",
@@ -43,17 +38,11 @@ def prepared_native_metadata(source):
         "mode",
         "native_preparation",
     )
-    metadata = _json_features({name: source[name] for name in fields if name in source})
-    encoded = json.dumps(
-        {"source_id": source["id"], "data": metadata},
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode()
+    metadata = {name: source[name] for name in fields if name in source}
     return {
         "source_id": source["id"],
         "data": metadata,
-        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "sha256": prepared_sha256(source["id"], metadata),
     }
 
 
@@ -219,22 +208,10 @@ def _bagpiper_audio_source(config, metadata, source):
         raise ValueError(
             "Native chat preprocessing changed the prepared audio features"
         )
-    source["vllm_prompt_token_ids"] = (
-        primary[:audio_start] + primary[audio_start + encoded_length :]
-    )
     source["native_model_inputs"] = {
-        "continuous_audio_feats": features[None].tolist(),
+        "continuous_audio_feats": np.ascontiguousarray(features[None], np.float32),
         "continuous_audio_lengths": [len(features)],
         "continuous_audio_indices": [[0, audio_start, int(encoded_length)]],
-    }
-    source["multi_modal_data"] = {
-        "audio": {
-            "input_audio_features": torch.from_numpy(
-                np.ascontiguousarray(features.T)
-            ).float(),
-            "audio_feature_lengths": torch.tensor([len(features)], dtype=torch.long),
-            "feature_attention_mask": torch.ones((1, len(features)), dtype=torch.long),
-        }
     }
     source["prompt_codec_mask"] = [False] * len(primary)
     source["native_preparation"] = {

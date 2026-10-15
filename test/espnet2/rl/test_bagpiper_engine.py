@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
@@ -18,6 +19,7 @@ from transformers import Qwen3Config
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
+from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.speechlm.model.speechlm.rl.bagpiper import rollout as rollout_module
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import NativeSpeechLMPolicy
 from espnet2.speechlm.model.speechlm.rl.bagpiper.sglang_model import (
@@ -103,25 +105,32 @@ def engine_model(directory, hidden, backbone, lm_head):
     return model.eval()
 
 
-def deployed(policy, logits, stream, phase, mode, target, active, support, codec):
-    """The learner's scored row of one frame and stream under a support."""
-    return policy._bagpiper_deployed_row(
-        logits,
-        logits,
-        stream,
-        phase,
-        mode,
-        torch.tensor([[target]]),
-        torch.tensor([[active]]),
-        support,
-        codec,
-    )[0, 0]
+def reference_support(raw, phase, mode):
+    """The rule of a frame's support and secondary activity, one row at a time."""
+    tentative = int(raw.argmax())
+    detect = tentative in (GEOMETRY["text_token_id"], GEOMETRY["audio_token_id"])
+    codec = mode == "text_audio" and tentative >= BASE and not detect
+    if mode == "text_audio" and phase in ("transition", "audio_stop"):
+        return (ASSISTANT if phase == "transition" else EOS), codec
+    if detect:
+        audio = mode == "text_audio" and phase == "audio"
+        return (DETECT_AUDIO if audio else DETECT), codec
+    return (CODEC if codec else TEXT), codec
+
+
+def reference_allowed(support):
+    """The primary ids a support allows, one support at a time."""
+    allowed = torch.zeros(VOCAB, dtype=torch.bool)
+    if support in (TEXT, CODEC):
+        lo, hi = (16, BASE) if support == TEXT else (BASE, BASE + LAYER)
+        allowed[lo:hi] = allowed[2] = allowed[3] = True
+    else:
+        ids = {DETECT: [7], DETECT_AUDIO: [7, 8], ASSISTANT: [6], EOS: [2]}
+        allowed[ids[support]] = True
+    return allowed
 
 
 def test_engine_and_learner_give_every_frame_the_same_support():
-    policy = NativeSpeechLMPolicy(
-        Core(), bagpiper_config=GEOMETRY, score_checkpointing=False
-    )
     generator = torch.Generator().manual_seed(0)
     raw = torch.randn(64, VOCAB, generator=generator)
     # Every argmax class, then exact ties between classes (first index wins).
@@ -129,43 +138,78 @@ def test_engine_and_learner_give_every_frame_the_same_support():
         raw[row, token] = 9
     for row, (first, second) in enumerate(((7, BASE), (20, 60), (8, 30)), 12):
         raw[row, [first, second]] = 9
+    # The learner's head on hidden states that are these raw logits.
+    core = Core(VOCAB)
+    with torch.no_grad():
+        core.lm_head.weight.copy_(torch.eye(VOCAB))
+        core.stream_emb.weight.zero_()
+    policy = NativeSpeechLMPolicy(core, GEOMETRY, token_chunk_size=5)
     masks, seen = support_masks(GEOMETRY, VOCAB), set()
+    layers = BASE + LAYER * torch.arange(1, GEOMETRY["num_stream"])
     for mode in ("text_only", "text_audio"):
         for index, phase in enumerate(PHASES):
-            supports, codecs = frame_supports(
-                raw,
-                torch.full((len(raw),), index, dtype=torch.int8),
-                torch.full((len(raw),), mode == "text_audio"),
-                GEOMETRY,
-            )
+            phases = torch.full((len(raw),), index)
+            text_audio = torch.full((len(raw),), mode == "text_audio")
+            supports, codecs = frame_supports(raw, phases, text_audio, GEOMETRY)
             for row, support, codec in zip(raw, supports.tolist(), codecs.tolist()):
+                assert reference_support(row, phase, mode) == (support, codec)
+                assert torch.equal(masks[support], reference_allowed(support))
+                assert mode == "text_audio" or not codec
                 seen.add(support)
-                logits = row[None, None]
-                own = policy._bagpiper_support(logits, phase, mode)
-                assert own == (support, codec) and (mode == "text_audio" or not codec)
-                allowed = masks[support]
-                active = bool((allowed & torch.isfinite(row)).sum() > 1)
-                target = int(allowed.nonzero()[0])
-                frame = (phase, mode, target, active, support, codec)
-                with torch.no_grad():
-                    scored = deployed(policy, logits, 0, *frame)
-                assert torch.equal(torch.isfinite(scored), allowed)
-                for stream in range(1, GEOMETRY["num_stream"]):
-                    lo = BASE + stream * LAYER
-                    frame = (phase, mode, lo, codec, support, codec)
-                    scored = deployed(policy, logits, stream, *frame)
-                    finite = torch.isfinite(scored).nonzero().flatten().tolist()
-                    assert finite == list(range(lo, lo + LAYER))
+            # The first id each support and codec layer allows.
+            labels = torch.cat(
+                (masks[supports].int().argmax(-1, keepdim=True), layers.expand(64, -1)),
+                -1,
+            )
+            active = torch.cat(
+                ((masks[supports].sum(-1) > 1)[:, None], codecs[:, None].expand(-1, 3)),
+                -1,
+            )
+            with torch.no_grad():
+                logp, entropy, streams = policy._score_frames(
+                    raw, labels, active, supports, phases, text_audio
+                )
+            primary = raw.masked_fill(~masks[supports], -torch.inf).log_softmax(-1)
+            expected = torch.zeros(64, GEOMETRY["num_stream"])
+            expected[:, 0] = primary.gather(-1, labels[:, :1])[:, 0] * active[:, 0]
+            for stream, lo in enumerate(layers.tolist(), 1):
+                layer = raw[:, lo : lo + LAYER].log_softmax(-1)[:, 0]
+                expected[:, stream] = layer * codecs
+            torch.testing.assert_close(streams, expected)
+            torch.testing.assert_close(logp, expected.sum(-1))
+            assert bool((entropy[~active.any(-1)] == 0).all())
     assert seen == set(range(len(SUPPORTS)))
     assert (policy.support_mismatches, policy.support_frames) == (0, 8 * len(raw))
     # A recorded support the current logits do not give is counted.
+    phase, text_audio = torch.zeros(1, dtype=torch.long), torch.ones(
+        1, dtype=torch.bool
+    )
+    frame = raw[8:9]  # a codec argmax
     with torch.no_grad():
-        deployed(policy, raw[:1, None], 0, "text", "text_audio", 2, True, CODEC, False)
+        policy._score_frames(
+            frame,
+            torch.tensor([[2, 0, 0, 0]]),
+            torch.tensor([[True, False, False, False]]),
+            torch.tensor([TEXT]),
+            phase,
+            text_audio,
+        )
     assert policy.support_mismatches == 1
-    with pytest.raises(ValueError, match="zero likelihood"):
-        deployed(policy, raw[:1, None], 0, "text", "text_only", BASE, True, TEXT, False)
-    with pytest.raises(ValueError, match="stream mask"):
-        deployed(policy, raw[:1, None], 0, "text", "text_only", 7, True, DETECT, False)
+    for labels, active, message in (
+        ([BASE, 0, 0, 0], [True, False, False, False], "zero likelihood"),
+        ([20, BASE, 0, 0], [True, True, True, True], "zero likelihood"),
+        ([20, 0, 0, 0], [False, False, False, False], "stream mask"),
+        ([20, *layers.tolist()], [True, True, False, True], "stream mask"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            policy._score_frames(
+                frame,
+                torch.tensor([labels]),
+                torch.tensor([active]),
+                torch.tensor([TEXT]),
+                phase,
+                text_audio,
+            )
 
 
 class ScriptedBody(nn.Module):
@@ -665,6 +709,113 @@ def test_records_are_scored_by_the_learner_under_their_supports(
             policy(batch_)
 
 
+def test_batched_learner_equals_the_learner_per_candidate(
+    native, tmp_path, monkeypatch
+):
+    """Right-padded micro-batches score and differentiate as single candidates.
+
+    DESIGN test 4: QA prompts with their own audio spans at different
+    positions and a TTS prompt with codec frames, mixed in one batch.
+    """
+    core, _ = native
+    audio = core.multimodal_io_dict["continuous_audio"]
+    frames = lambda *ids: [[i, 0, 0, 0] for i in ids]  # noqa: E731
+    sources = rollout_sources()[1:]
+    for identity, count, lead in (("qa-a", 24, 1), ("qa-b", 40, 3)):
+        feats = torch.randn(1, count, 8, generator=torch.Generator().manual_seed(count))
+        with torch.no_grad():
+            span = len(audio.encode_batch(feats, torch.tensor([count]))[0])
+        sources.append(
+            dict(
+                id=identity,
+                task="qa",
+                prompt_token_ids=frames(1, *[5] * lead, *[0] * span, 20, 2, 6),
+                native_model_inputs=dict(
+                    continuous_audio_feats=feats.numpy(),
+                    continuous_audio_lengths=[count],
+                    continuous_audio_indices=[[0, 1 + lead, span]],
+                ),
+            )
+        )
+    engine = build_engine(native, tmp_path, monkeypatch)
+    torch.manual_seed(1)
+    batch_ = collate_rollouts(sources, engine.generate(sources, 0), 4)
+    feats = [
+        source.get("native_model_inputs", {}).get("continuous_audio_feats")
+        for source in batch_.non_tensor_batch["source"]
+    ]
+    # The candidates of one prompt share its feature array.
+    assert all(item is feats[4] for item in feats[4:8]) and feats[8] is not feats[4]
+    calls = []
+    encode = audio.encode_batch
+    monkeypatch.setattr(
+        audio, "encode_batch", lambda *args: calls.append(1) or encode(*args)
+    )
+    policy = NativeSpeechLMPolicy(core, GEOMETRY, token_chunk_size=3)
+    count = len(batch_)
+    with torch.no_grad():
+        together = policy(batch_)
+        assert len(calls) == 2  # once per prompt, not per candidate
+        apart = [policy(batch_.select_idxs([i])) for i in range(count)]
+    for name in ("log_probs", "entropy", "response_mask", "stream_log_probs"):
+        torch.testing.assert_close(
+            getattr(together, name),
+            torch.cat([getattr(scores, name) for scores in apart]),
+            atol=1e-6,
+            rtol=0,
+        )
+    weights = torch.randn(
+        batch_.batch["response_mask"].shape, generator=torch.Generator().manual_seed(9)
+    )
+
+    def gradients(parts):
+        core.zero_grad(set_to_none=True)
+        for part in parts:
+            scores = policy(batch_.select_idxs(part))
+            loss = (scores.log_probs + 0.1 * scores.entropy) * weights[part]
+            loss.sum().backward()
+        return {
+            name: parameter.grad.clone()
+            for name, parameter in core.named_parameters()
+            if parameter.grad is not None
+        }
+
+    together = gradients([list(range(count))])
+    apart = gradients([[i] for i in range(count)])
+    assert together.keys() == apart.keys()
+    assert {"adaptor.continuous_audio.weight", "stream_emb.weight"} <= set(together)
+    for name, gradient in together.items():
+        # FP32 sums over frames in another order: 1e-6 of the gradient scale.
+        scale = max(1.0, float(gradient.abs().max()))
+        torch.testing.assert_close(gradient, apart[name], atol=1e-6 * scale, rtol=0)
+    # Token-budget micro-batches: candidates by length, padded size in budget.
+    trainer = NativeGRPOTrainer.__new__(NativeGRPOTrainer)
+    trainer.config = SimpleNamespace(micro_batch_size=3, micro_batch_tokens=60)
+    parts = trainer._micro_batches(batch_)
+    lengths = [
+        len(prompt) + length
+        for prompt, length in zip(
+            batch_.non_tensor_batch["prompt_token_ids"],
+            batch_.batch["response_lengths"].tolist(),
+        )
+    ]
+    order = np.concatenate(parts).tolist()
+    assert sorted(order) == list(range(count)) and len(parts) > 3
+    assert [lengths[i] for i in order] == sorted(lengths)
+    for part in parts:
+        assert len(part) <= 3
+        assert len(part) == 1 or len(part) * max(lengths[i] for i in part) <= 60
+    with torch.no_grad():
+        torch.testing.assert_close(
+            trainer._score_chunks(policy, batch_),
+            torch.cat(
+                [policy(batch_.select_idxs([i])).log_probs for i in range(count)]
+            ),
+            atol=1e-6,
+            rtol=0,
+        )
+
+
 def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypatch):
     engine = build_engine(native, tmp_path, monkeypatch, dtype="bfloat16")
     assert engine.engine.settings["attention_backend"] == "fa3"
@@ -673,12 +824,7 @@ def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypa
     assert greedy[0] == greedy[1]
     assert [g["source_id"] for g in greedy[0]] == ["qa", "tts"]
     assert all(len(g["token_ids"]) <= 6 for g in greedy[0])
-    assert {
-        contract["temperature"]
-        for g in greedy[0]
-        for frame in g["sampling_contracts"]
-        for contract in frame
-    } == {0.0}
+    assert {g["sampling_contract"]["temperature"] for g in greedy[0]} == {0.0}
     with pytest.raises(ValueError, match="overrides temperature"):
         engine.generate(rollout_sources(), 2, {"top_p": 0.5})
     with pytest.raises(ValueError, match="never retracts"):

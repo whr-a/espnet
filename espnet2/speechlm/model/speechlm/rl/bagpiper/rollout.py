@@ -270,13 +270,9 @@ class BagpiperEngine(SGLangRolloutEngine):
             "stream_log_probs": stream_scores,
             "stream_mask": masks,
             "action_mask": [any(mask) for mask in masks],
-            "sampling_contracts": [
-                [
-                    {"temperature": sampling["temperature"], "top_k": 0, "active": a}
-                    for a in mask
-                ]
-                for mask in masks
-            ],
+            # Every stream of every frame samples its full support; the stream
+            # masks say which streams were sampled.
+            "sampling_contract": {"temperature": sampling["temperature"], "top_k": 0},
             "codec_frame_mask": [mask[1] for mask in masks],
             "support": supports,
             "prompt_token_ids": prefix,
