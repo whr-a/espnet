@@ -12,8 +12,9 @@
 #   run measured 46.6 at its peak without the behavior copy: ~54 here.
 # - GPU 1, engine alone: 0.85 x ~79.1 free = 67.2 = weights 6.96 + KV pool
 #   60.3 (~164k tokens); the remaining 11.9 holds its batch activations.
-# - max_running_requests 96: 96 x 1268 = 122k tokens < 164k, so no running
-#   request is ever retracted.
+# - context_length 1280 and max_running_requests 96: 96 x 1280 = 123k
+#   tokens < 164k, so no running request is ever retracted (checked at
+#   startup).
 family: opuslm_dialogue
 execution_mode: disagg_async
 rollout_backend: sglang
@@ -68,5 +69,5 @@ adapter_options:
   gradient_checkpointing: true
 sglang_engine_kwargs:
   attention_backend: triton
-  context_length: 2048
+  context_length: 1280
   max_running_requests: 96

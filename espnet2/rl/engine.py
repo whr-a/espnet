@@ -109,6 +109,7 @@ class SGLangRolloutEngine(RolloutEngine):
 
         settings = self.settings(model_path)
         self.memory_saver = bool(settings.get("enable_memory_saver"))
+        self.context_length = settings.get("context_length")
         self.engine = Engine(**settings)
 
     def settings(self, model_path):
@@ -118,6 +119,45 @@ class SGLangRolloutEngine(RolloutEngine):
             defaults=dict(self.defaults, model_path=str(model_path)),
             frozen=self.frozen,
         )
+
+    def check_kv_pool(self):
+        """Fail unless SGLang can never retract a running request.
+
+        SGLang retracts running requests when its KV pool runs out and
+        recomputes them from token ids alone, without the input embeddings
+        or secondary streams a family gave them. Each request stays within
+        context_length tokens (check_request), so the pool must hold
+        max_running_requests such requests at once.
+        """
+        if self.context_length is None:
+            raise ValueError("sglang_engine_kwargs must bound context_length")
+        info = self.engine.get_server_info()
+        pool = info["max_total_num_tokens"]
+        running = info["internal_states"][0]["effective_max_running_requests_per_dp"]
+        page = info.get("page_size") or 1
+        width = -(-self.context_length // page) * page
+        print(
+            f"SGLang KV pool: {pool} tokens for at most {running} running requests "
+            f"of up to {self.context_length} tokens",
+            flush=True,
+        )
+        if running * width > pool:
+            raise ValueError(
+                f"{running} running requests of context_length {self.context_length} "
+                f"need {running * width} KV tokens but the pool holds {pool}: lower "
+                f"max_running_requests to {pool // width} or context_length, so "
+                "that SGLang never retracts a request"
+            )
+
+    def check_request(self, prompt_tokens, max_new_tokens):
+        """Fail unless the longest request fits context_length. SGLang would
+        reject a longer one, or silently shorten an embedded prompt's budget."""
+        # SGLang keeps prompt + max_new_tokens below context_length - 1.
+        if prompt_tokens + max_new_tokens > self.context_length - 2:
+            raise ValueError(
+                f"A prompt of {prompt_tokens} tokens and {max_new_tokens} new "
+                f"tokens exceed context_length {self.context_length} - 2"
+            )
 
     def update(self, model_path):
         if self.released:

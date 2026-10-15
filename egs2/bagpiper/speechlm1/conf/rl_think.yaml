@@ -18,7 +18,7 @@ rollout_python: python
 sglang_source: ../../../tools/sglang
 sglang_engine_kwargs:
   attention_backend: torch_native
-  context_length: 4096
+  context_length: 2048
 adapter_options:
   reference_assets: exp/sft/hf_assets
   native_attention: sdpa

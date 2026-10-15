@@ -1,6 +1,8 @@
 """The OpusLM rollout engine's batched requests, without starting SGLang."""
 
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -85,6 +87,7 @@ def engine(tmp_path, recorder=None, replica=0, **overrides):
     result.metadata = dict(METADATA)
     result.tokenizer, result.tokenizer_files = Tokenizer(), {}
     result.embedding = torch.randn(VOCAB, 4, generator=torch.Generator().manual_seed(0))
+    result.context_length = 64
     return result
 
 
@@ -232,6 +235,45 @@ def test_updates_reload_only_the_prompt_assets_an_export_changes(tmp_path, monke
     with pytest.raises(ValueError, match="vocabulary"):
         rollout.update(export(tmp_path / "policy-3", second, eos_token_id=6))
     assert len(recorder.updates) == 2
+
+
+def test_requests_and_running_batches_must_fit_the_kv_pool(tmp_path, monkeypatch):
+    class Engine(Recorder):
+        def __init__(self, **settings):
+            super().__init__()
+            self.running = settings.get("max_running_requests", 2048)
+
+        def get_server_info(self):
+            return {
+                "max_total_num_tokens": 44 * 1280,
+                "page_size": 1,
+                "internal_states": [
+                    {"effective_max_running_requests_per_dp": self.running}
+                ],
+            }
+
+    monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
+    monkeypatch.setattr(
+        "transformers.AutoTokenizer.from_pretrained", lambda path: Tokenizer()
+    )
+    hf = export(tmp_path / "hf", torch.zeros(VOCAB, 4))
+    sized = {"context_length": 1280, "max_running_requests": 44}
+    rollout = OpusLMEngine(config(sglang_engine_kwargs=sized), hf, directory=tmp_path)
+    # SGLang would silently shorten the budget of a longer embedded prompt.
+    assert len(
+        rollout.generate([{"id": "a", "prompt_token_ids": frames(*[[5]] * 1271)}], 0)
+    )
+    with pytest.raises(ValueError, match="exceed context_length"):
+        rollout.generate([{"id": "a", "prompt_token_ids": frames(*[[5]] * 1272)}], 1)
+    for kwargs in ({**sized, "max_running_requests": 45}, {"context_length": 1280}):
+        with pytest.raises(ValueError, match="never retracts"):
+            OpusLMEngine(config(sglang_engine_kwargs=kwargs), hf, directory=tmp_path)
+    with pytest.raises(ValueError, match="bound context_length"):
+        OpusLMEngine(
+            config(sglang_engine_kwargs={"max_running_requests": 4}),
+            hf,
+            directory=tmp_path,
+        )
 
 
 def test_training_reward_normalizes_words_as_evaluation_does():

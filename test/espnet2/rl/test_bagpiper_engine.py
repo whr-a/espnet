@@ -519,6 +519,8 @@ class FakeEngine:
 
     core = None
     running = 3
+    # Three requests of the default 2,048-token context.
+    pool = 3 * 2048
 
     def __init__(self, **settings):
         self.settings = settings
@@ -533,9 +535,11 @@ class FakeEngine:
 
     def get_server_info(self):
         return {
-            "max_total_num_tokens": 4096,
+            "max_total_num_tokens": self.pool,
             "page_size": 1,
-            "internal_states": [{"effective_max_running_requests_per_dp": 3}],
+            "internal_states": [
+                {"effective_max_running_requests_per_dp": self.running}
+            ],
         }
 
     def generate(self, input_ids, sampling_params, rid, **kwargs):
@@ -828,5 +832,12 @@ def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypa
     assert {g["sampling_contract"]["temperature"] for g in greedy[0]} == {0.0}
     with pytest.raises(ValueError, match="overrides temperature"):
         engine.generate(rollout_sources(), 2, {"top_p": 0.5})
+    # SGLang serves an 8-frame prompt whole with at most 2,038 new tokens.
+    engine.check_request(8, 2038)
+    with pytest.raises(ValueError, match="exceed context_length"):
+        engine.generate(rollout_sources(), 3, {"max_new_tokens": 2039})
+    # Every running request at its longest must fit the KV pool at startup.
+    monkeypatch.setattr(FakeEngine, "pool", 3 * 2048 - 1)
+    (tmp_path / "small").mkdir()
     with pytest.raises(ValueError, match="never retracts"):
-        engine.generate(rollout_sources(), 3, {"max_new_tokens": 2000})
+        build_engine(native, tmp_path / "small", monkeypatch)

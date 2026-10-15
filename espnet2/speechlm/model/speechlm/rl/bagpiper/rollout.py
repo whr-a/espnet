@@ -20,18 +20,20 @@ class BagpiperEngine(SGLangRolloutEngine):
     Every request carries the real primary prompt and the ID
     ``batch:source:sample``; the model reads the batch's prepared sources from
     ``directory/sources.pt``, written before every batch, and traces every
-    frame's support and secondary actions. ``max_running_requests`` must keep
-    the longest possible batch inside the KV pool: SGLang would otherwise
-    retract requests and recompute them without their secondary streams.
+    frame's support and secondary actions. ``max_running_requests`` requests
+    of ``context_length`` tokens must fit the KV pool (checked at startup):
+    SGLang would otherwise retract requests and recompute them without their
+    secondary streams.
     """
 
     defaults = dict(
         skip_tokenizer_init=True,
         disable_overlap_schedule=True,
         chunked_prefill_size=-1,
-        context_length=4096,
-        # Safe for an FP32 engine alone on an 80 GB GPU; recipes size it to
-        # their own KV pool (generate checks it).
+        # A QA prompt of up to 510 frames with 1,536 new tokens. 32 such
+        # requests (65.5k KV tokens) fit an FP32 engine alone on an 80 GB
+        # GPU (about 120k); recipes size both to their own pool.
+        context_length=2048,
         max_running_requests=32,
     )
     frozen = (
@@ -57,18 +59,8 @@ class BagpiperEngine(SGLangRolloutEngine):
             "espnet_bagpiper"
         ]
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True)
-        info = self.engine.get_server_info()
-        self.kv_tokens = info["max_total_num_tokens"]
-        self.max_running = info["internal_states"][0][
-            "effective_max_running_requests_per_dp"
-        ]
-        self.page = info.get("page_size") or 1
+        self.check_kv_pool()
         self.batches = 0
-        print(
-            f"Bagpiper engine: {self.kv_tokens} KV tokens, at most "
-            f"{self.max_running} requests in flight",
-            flush=True,
-        )
 
     @property
     def sources_path(self):
@@ -120,17 +112,7 @@ class BagpiperEngine(SGLangRolloutEngine):
             )
         _, prefixes = request_factory(self.config, self.model_path, sources)
         group = sampling["samples"]
-        width = max(map(len, prefixes)) + sampling["max_new_tokens"]
-        needed = min(self.max_running, len(sources) * group) * (
-            -(-width // self.page) * self.page
-        )
-        if needed > self.kv_tokens:
-            raise ValueError(
-                f"{self.max_running} requests of up to {width} tokens need "
-                f"{needed} KV tokens but the pool holds {self.kv_tokens}; lower "
-                f"max_running_requests to {self.kv_tokens // width} or enlarge "
-                "the pool so SGLang never retracts a request"
-            )
+        self.check_request(max(map(len, prefixes)), sampling["max_new_tokens"])
         batch, self.batches = self.batches, self.batches + 1
         prepared = []
         for source, prefix in zip(sources, prefixes, strict=True):

@@ -35,6 +35,11 @@ sglang_engine_kwargs:
   disable_radix_cache: true
   skip_tokenizer_init: true
   attention_backend: triton
+  # max_running_requests x context_length must fit the KV pool (checked at
+  # startup): 14 x 2600 = 36.4k of about 40k FP32 tokens of 1 MiB beside the
+  # 27.6 GiB of weights; prompts of up to 1062 frames.
+  context_length: 2600
+  max_running_requests: 14
 execution_mode: disagg_async
 update_weights_interval: 1
 max_weight_staleness: 1

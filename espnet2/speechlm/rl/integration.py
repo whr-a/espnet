@@ -229,6 +229,8 @@ class OpusLMEngine(SGLangRolloutEngine):
     def __init__(self, config, model_path, *, directory, replica=0):
         self.metadata = _metadata(model_path)
         super().__init__(config, model_path, directory=directory, replica=replica)
+        # A retracted input_embeds request would restart without its output.
+        self.check_kv_pool()
         self.tokenizer_files = self.tokenizer = self.embedding = None
         self._load_prompt_assets(model_path)
 
@@ -279,6 +281,7 @@ class OpusLMEngine(SGLangRolloutEngine):
             )
             prompts.append(ids.tolist())
             embeds.append(summed.float().tolist())
+        self.check_request(max(map(len, prompts)), self.config.max_tokens)
         rids, inputs, sampling = [], [], []
         for index, source in enumerate(sources):
             for sample in range(group):

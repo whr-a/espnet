@@ -34,3 +34,7 @@ sglang_engine_kwargs:
   disable_radix_cache: true
   skip_tokenizer_init: true
   attention_backend: triton
+  # max_running_requests x context_length must fit the KV pool (checked at
+  # startup); prompts of up to context_length - 2 - max_tokens frames.
+  context_length: 1280
+  max_running_requests: 8
