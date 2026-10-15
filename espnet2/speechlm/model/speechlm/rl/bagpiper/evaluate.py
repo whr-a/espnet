@@ -99,7 +99,7 @@ def verify_native_log_probs(policy, batch, config):
         batch.batch["response_mask"],
         config,
         "Native/SGLang",
-        "the evaluated checkpoint must be the one that generated",
+        "the evaluated checkpoint must have generated these responses",
     )
     counts = [now - then for now, then in zip(support_counts(policy), before)]
     support_mismatch_rate(policy, counts, "native")

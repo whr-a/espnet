@@ -51,8 +51,8 @@ in place, saves actual actions/behavior logprobs, validates native action
 probabilities, then performs a native AdamW update. Requests, raw responses,
 rewards, masks and optimizer state are retained; once every engine holds the
 newest export, all but the newest `keep_exports` (default 2) are deleted. Use a
-new output directory for every run. This initial implementation does not resume partially
-completed runs or silently switch to another inference backend.
+new output directory for every run. This initial implementation does not resume
+partially completed runs or silently switch to another inference backend.
 
 Multi-rank trainers create their ESPnet Gloo object group collectively before
 rank zero starts rollout. Rollout payloads, native scoring results and their
@@ -83,9 +83,9 @@ and stays far below `score_tolerance`. For OpusLM and Bagpiper,
 engine's KV pool, which the engine checks at startup: SGLang would otherwise
 retract requests and recompute them without their embeddings or secondary
 streams. A stale async batch is audited by lending the learner the weights
-that generated it, from a pinned CPU snapshot, for one scoring pass. Rollout processes
-write the numpy arrays of their records (Bagpiper's mel features, once per
-prompt) to binary `.npy` sidecars next to the JSON. The frozen source004
+that generated it, from a pinned CPU snapshot, for one scoring pass. Rollout
+processes write the numpy arrays of their records (Bagpiper's mel features,
+once per prompt) to binary `.npy` sidecars next to the JSON. The frozen source004
 production runs use the earlier one-request, full-prefix Bagpiper path.
 Neither layout alone establishes optimal throughput. Short runs establish an
 engineering loop; held-out evaluation retains its own manifest, raw responses

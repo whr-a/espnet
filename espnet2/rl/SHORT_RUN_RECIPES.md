@@ -19,8 +19,8 @@ the earlier small synchronous YAML files retain their declared budgets. The
 Public `collocate` maps to `execution_mode: sync`. Its intended eight-GPU geometry is four native training ranks on GPUs 0–3 and four independent rollout replicas on GPUs 4–7. A TP1 subprocess merely visible to four GPUs still uses one GPU: it does not establish the four-replica layout. Async uses eight native training ranks on one node and eight independent TP1 rollout replicas on a second node. OWSM can use DDP; larger Bagpiper/Opus select chunked native allreduce and CPU reference/optimizer. Verify actual rank/replica placement before timing.
 
 Each SGLang replica retains native model semantics. OpusLM batches a
-rollout's candidates in one SGLang call. Bagpiper batches a rollout's candidates on SGLang's native Qwen3
-layers and records each frame's support for the learner; the earlier frozen
+rollout's candidates in one SGLang call. Bagpiper batches them on SGLang's
+native Qwen3 layers and records each frame's support for the learner; the earlier frozen
 source004 production runs retain one-request full-prefix Bagpiper generation.
 OWSM retains full-prefix generation. These profiles do not establish best throughput merely by selecting
 async. Use the independent native Miles source environment described in

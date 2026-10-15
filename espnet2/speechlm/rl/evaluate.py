@@ -94,7 +94,7 @@ def verify_log_probs(policy, batch, config):
         batch.batch["response_mask"],
         config,
         "Native/SGLang",
-        "the evaluated checkpoint must be the one that generated",
+        "the evaluated checkpoint must have generated these responses",
     )
     return errors, drift
 
