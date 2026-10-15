@@ -23,6 +23,7 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
+from espnet2.rl.engine import fit_context
 from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
 from espnet2.rl.types import (
@@ -308,6 +309,12 @@ def run(args):
     cfg.eval_manifest = str(Path(manifest).resolve())
     cfg.device = args.device
     cfg.adapter_options = {**cfg.adapter_options, "reward_device": args.device}
+    # Longer responses than the recipe's extend its context by as many tokens
+    # on its KV budget: fewer requests run at once.
+    defaults = getattr(resolve_callable(cfg.sglang_engine), "defaults", {})
+    context = {**defaults, **cfg.sglang_engine_kwargs}.get("context_length")
+    if context is not None:
+        fit_context(cfg, defaults, context + args.max_new_tokens - cfg.max_tokens)
     # What the engine decodes: ``samples`` candidates per prompt (one for a
     # greedy decode, so this record is not a valid training config) within
     # the evaluation's token budget.
@@ -462,7 +469,11 @@ def main():
         help="QA clips are cut to their first seconds",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=256, help="Prompts per engine rollout"
+        "--batch-size",
+        type=int,
+        default=256,
+        help="Prompts per engine rollout; the engine runs as many of their "
+        "candidates at once as the recipe's KV budget holds",
     )
     parser.add_argument(
         "--device", default="cuda:0", help="ASR reward and native verification"

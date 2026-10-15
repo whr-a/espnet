@@ -262,6 +262,10 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
                 "manifest": str(train),
                 "group_size": 8,
                 "max_tokens": 1536,
+                "sglang_engine_kwargs": {
+                    "context_length": 2048,
+                    "max_running_requests": 32,
+                },
             }
         )
     )
@@ -308,6 +312,11 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
     assert summary["by_category"]["task"]["music"]["count"] == 1
     frozen = json.loads((output / "frozen_config.json").read_text())
     assert (frozen["group_size"], frozen["max_tokens"]) == (1, 2048)
+    # 512 more new tokens than the recipe's on its KV budget of 32 x 2048.
+    assert frozen["sglang_engine_kwargs"] == {
+        "context_length": 2560,
+        "max_running_requests": 25,
+    }
     # The 2 s clip was cut to its first second; the short one is untouched.
     requests = json.loads((output / "requests.json").read_text())
     assert requests[1]["audio"] == str(clips[1])

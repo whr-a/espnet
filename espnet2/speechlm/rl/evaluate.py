@@ -11,6 +11,7 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
+from espnet2.rl.engine import fit_context
 from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import CheckpointRollout, sha256
 from espnet2.rl.types import drift_gate
@@ -222,6 +223,12 @@ def run(args):
         config.rollout_gpus = args.rollout_gpus
     if args.group_size is not None:
         config.group_size = args.group_size
+    prompts = [
+        len(row["prompt_token_ids"]) for row in sources if "prompt_token_ids" in row
+    ]
+    if prompts:
+        # Held-out prompts may be longer than the recipe's training prompts.
+        fit_context(config, {}, max(prompts) + config.max_tokens + 2)
     config.validate()
     output = Path(config.output_dir)
     output.mkdir(parents=True, exist_ok=False)

@@ -9,7 +9,7 @@ import pytest
 from espnet2.bin.rl_train_async import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import verify_data_admission
-from espnet2.rl.engine import engine_kwargs
+from espnet2.rl.engine import engine_kwargs, fit_context
 from espnet2.rl.rollout import sha256
 
 
@@ -107,6 +107,22 @@ def test_a_config_with_the_replaced_engine_key_names_its_successor(tmp_path):
         path.write_text(text)
         with pytest.raises(ValueError, match="replaced by sglang_engine"):
             ESPnetRLConfig.load(path)
+
+
+def test_longer_evaluation_requests_keep_the_recipe_kv_budget():
+    config = configuration(sglang_engine_kwargs={"max_running_requests": 44})
+    defaults = {"context_length": 1280, "max_running_requests": 8}
+    fit_context(config, defaults, 1280)
+    assert config.sglang_engine_kwargs == {"max_running_requests": 44}
+    fit_context(config, defaults, 1753)
+    assert config.sglang_engine_kwargs == {
+        "context_length": 1753,
+        "max_running_requests": 44 * 1280 // 1753,
+    }
+    # An engine that bounds neither is left to its own checks.
+    unbounded = configuration()
+    fit_context(unbounded, {}, 4096)
+    assert unbounded.sglang_engine_kwargs == {}
 
 
 def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():

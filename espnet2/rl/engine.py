@@ -67,6 +67,25 @@ def engine_kwargs(config, replica, *, defaults=None, frozen=()):
     return resolved
 
 
+def fit_context(config, defaults, width):
+    """Size ``config``'s engine for requests of up to ``width`` tokens on its
+    recipe's KV budget, as an evaluation with longer prompts or responses
+    needs: a longer context_length runs proportionally fewer requests, so
+    max_running_requests x context_length, which the recipe fitted to its KV
+    pool, does not grow.
+    """
+    settings = {**defaults, **config.sglang_engine_kwargs}
+    context = settings.get("context_length")
+    running = settings.get("max_running_requests")
+    if context is None or running is None or width <= context:
+        return
+    config.sglang_engine_kwargs = {
+        **config.sglang_engine_kwargs,
+        "context_length": width,
+        "max_running_requests": max(1, running * context // width),
+    }
+
+
 class RolloutEngine:
     """An architecture's inference engine, alive for a whole run.
 
