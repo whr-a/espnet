@@ -11,6 +11,9 @@ arrays in binary sidecars, espnet2.rl.rollout.write_json) and
 
 import argparse
 import json
+import os
+import signal
+import threading
 import time
 import traceback
 from multiprocessing.connection import Connection
@@ -127,7 +130,25 @@ def serve(connection, server):
         server.close()
 
 
+def watch_parent(interval=1.0):
+    """Kill this worker's process group once the client process is gone.
+
+    The worker runs in its own session, so a client killed by a signal takes
+    neither it nor SGLang's scheduler children along, and a busy engine would
+    keep its GPU until its current operation ends.
+    """
+    parent = os.getppid()
+
+    def watch():
+        while os.getppid() == parent:
+            time.sleep(interval)
+        os.killpg(0, signal.SIGKILL)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def main():
+    watch_parent()
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--fd", type=int, required=True)

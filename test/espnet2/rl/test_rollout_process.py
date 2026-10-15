@@ -7,7 +7,10 @@ engine below records what it was asked to do instead of running a model.
 import asyncio
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +22,7 @@ from espnet2.rl.engine import SGLangRolloutEngine
 from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, read_json
 
 ENGINE = """
-import json, os
+import json, os, time
 import numpy as np
 from espnet2.rl.engine import RolloutEngine
 
@@ -44,6 +47,8 @@ class RecordingEngine(RolloutEngine):
             raise ValueError("deliberate engine failure")
         if sources[0].get("fail") == "exit":
             os._exit(3)
+        if sources[0].get("fail") == "hang":
+            time.sleep(600)
         # One array per source, shared by all its generations.
         arrays = {
             source["id"]: {"features": np.full(source["array"], 0.5, np.float32)}
@@ -257,6 +262,52 @@ def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):
     finally:
         process.close()
     assert process.process.returncode == 3
+
+
+CLIENT = """
+import json, sys, threading
+from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.rollout import RolloutProcess
+
+process = RolloutProcess(ESPnetRLConfig(**json.loads(sys.argv[1])), "0", sys.argv[2], 0)
+process.load(sys.argv[2], 0)
+batch = [{"id": "a", "fail": "hang"}]
+threading.Thread(target=process.generate, args=(batch, 0)).start()
+print(process.process.pid, flush=True)
+"""
+
+
+def alive(pid):
+    try:
+        return "zombie" not in Path(f"/proc/{pid}/status").read_text()
+    except FileNotFoundError:
+        return False
+
+
+def test_a_worker_dies_with_its_client(config, tmp_path):
+    """A client killed mid-batch takes its worker's whole session along."""
+    directory = tmp_path / "replica-0"
+    client = subprocess.Popen(
+        [sys.executable, "-c", CLIENT, json.dumps(config.to_dict()), str(directory)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    worker = int(client.stdout.readline())
+    try:
+        deadline = time.monotonic() + 60
+        while "generate" not in {event[0] for event in events(directory)}:
+            assert time.monotonic() < deadline
+            time.sleep(0.1)
+        client.kill()
+        client.wait()
+        deadline = time.monotonic() + 20
+        while alive(worker):
+            assert time.monotonic() < deadline, "the worker outlived its client"
+            time.sleep(0.2)
+    finally:
+        client.kill()
+        if alive(worker):
+            os.killpg(worker, signal.SIGKILL)
 
 
 def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
