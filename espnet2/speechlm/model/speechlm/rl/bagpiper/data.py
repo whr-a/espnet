@@ -9,6 +9,9 @@ import json
 import re
 from pathlib import Path
 
+# Option letters such as "A. " or "(A) " that some MMAU/AVQA exports prepend.
+# The official MMAU references and choices carry none.
+OPTION_LABEL = re.compile(r"^(?:[A-Z]\.|\([A-Z]\))\s*")
 QA_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the final answer in <answer> </answer>."
 TTS_TEMPLATE = "Please read the following text aloud verbatim: {text}"
 QA_THINK_TEMPLATE = "{question} Please choose the answer from the following options: {choices}. Output the thinking process in <think> </think> and final answer in <answer> </answer>."
@@ -120,7 +123,10 @@ def prepare_parquet(path, dataset, output_dir):
             key = str(source.get("id", f"{dataset}-{index:06d}"))
         if dataset == "avqa":
             question = question.replace("video", "audio")
-        answer = re.sub(r"^(?:[A-Z]\.|\([A-Z]\))\s*", "", answer).strip()
+        # Strip option letters from the answer and every choice alike, so the
+        # prompt and the official matcher see the same label-free options.
+        answer = OPTION_LABEL.sub("", answer).strip()
+        choices = [OPTION_LABEL.sub("", str(choice)).strip() for choice in choices]
         records.append(
             {
                 "id": key,

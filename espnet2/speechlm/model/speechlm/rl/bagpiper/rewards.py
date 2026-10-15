@@ -8,6 +8,8 @@ import re
 import unicodedata
 from pathlib import Path
 
+from .data import OPTION_LABEL
+
 
 def normalize(text):
     return re.sub(
@@ -53,14 +55,30 @@ def qa_think_reward(source, generation):
     return 0.8 * accuracy + 0.1 * answer_format + 0.1 * think_format
 
 
+def mmau_answer(text):
+    """The prediction the official MMAU pipeline scores.
+
+    As in WEST's decode_mmau.py: the content of the answer tag, across lines,
+    or the whole response when the model wrote no tag.
+    """
+    match = re.search(r"<answer>(.*?)</answer>", text, re.S)
+    return (match.group(1) if match else text).strip()
+
+
 def mmau_match(source, generation):
-    """Official MMAU evaluation.py token-set match, with all rows retained."""
+    """Official MMAU evaluation.py token-set match, with all rows retained.
+
+    Scores the extracted answer, never the caption or reasoning around it,
+    whose discussion of wrong options would otherwise always fail the match.
+    Option letters are removed from the reference and the choices, as in the
+    official test set, so that "a", "b", ... never count as wrong-option words.
+    """
     tokenize = lambda value: set(re.findall(r"\b\w+\b", value.lower()))
-    answer = tokenize(source["reference"])
-    prediction = tokenize(generation["text"])
+    answer = tokenize(OPTION_LABEL.sub("", source["reference"]))
+    prediction = tokenize(mmau_answer(generation["text"]))
     incorrect = set()
     for choice in source["choices"]:
-        tokens = tokenize(choice)
+        tokens = tokenize(OPTION_LABEL.sub("", str(choice)))
         if tokens != answer:
             incorrect.update(tokens - answer)
     return (
