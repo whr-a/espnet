@@ -161,6 +161,34 @@ class NativeGRPOTrainer:
             results.append(scores.log_probs.detach().cpu())
         return torch.cat(results)
 
+    def _drift_gate(self, native, batch, source, hint):
+        """Check native against rollout logprobs of the sampled actions.
+
+        The maximum catches a gross error in any one action; the optional mean
+        catches a small systematic offset that a low-precision engine's
+        per-action noise would hide under any usable maximum.
+        """
+        mask = batch.batch["response_mask"].bool()
+        errors = (native - batch.batch["rollout_log_probs"]).abs()[mask].double()
+        statistics = {
+            "max": errors.max().item(),
+            "mean": errors.mean().item(),
+            "p99": np.quantile(errors.numpy(), 0.99).item(),
+        }
+        for name, tolerance in (
+            ("max", self.config.score_tolerance),
+            ("mean", self.config.score_mean_tolerance),
+        ):
+            value = statistics[name]
+            if not np.isfinite(value) or (tolerance is not None and value > tolerance):
+                raise RuntimeError(
+                    f"{source} {name} logprob disagreement {value:.6g} > "
+                    f"{tolerance}; {hint}"
+                )
+        return {
+            f"rollout/logprob_{name}_error": value for name, value in statistics.items()
+        }
+
     def prepare_batch(self, batch, native_scores=None):
         if native_scores is None:
             with torch.no_grad():
@@ -182,12 +210,12 @@ class NativeGRPOTrainer:
             raise ValueError(
                 "The ESPnet scorer must return finite detached CPU probabilities per action"
             )
-        drift = ((old - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
-        if not np.isfinite(drift) or drift > self.config.score_tolerance:
-            raise RuntimeError(
-                f"Rollout/native logprob disagreement {drift:.6g} > {self.config.score_tolerance}; "
-                "check checkpoint version, prefix, audio frontend and sampling distribution"
-            )
+        drift = self._drift_gate(
+            old,
+            batch,
+            "Rollout/native",
+            "check checkpoint version, prefix, audio frontend and sampling distribution",
+        )
         scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
@@ -208,7 +236,7 @@ class NativeGRPOTrainer:
             "reward/mean": scores.mean().item(),
             "reward/min": scores.min().item(),
             "reward/max": scores.max().item(),
-            "rollout/logprob_max_error": drift,
+            **drift,
         }
 
     def prepare_async_batch(
@@ -304,17 +332,9 @@ class NativeGRPOTrainer:
             raise ValueError(
                 "Current behavior native scores differ from learner scores"
             )
-        numerical_error = (
-            ((behavior - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
+        drift = self._drift_gate(
+            behavior, batch, "Behavior native/SGLang", "the generating actor must match"
         )
-        if (
-            not np.isfinite(numerical_error)
-            or numerical_error > self.config.score_tolerance
-        ):
-            raise RuntimeError(
-                f"Behavior native/SGLang logprob disagreement {numerical_error:.6g} "
-                f"> {self.config.score_tolerance}; the generating actor must match"
-            )
         scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
@@ -334,7 +354,7 @@ class NativeGRPOTrainer:
             "reward/mean": scores.mean().item(),
             "reward/min": scores.min().item(),
             "reward/max": scores.max().item(),
-            "rollout/logprob_max_error": numerical_error,
+            **drift,
             "rollout/current_behavior_logprob_max_difference": (
                 (old - behavior).abs() * mask
             )

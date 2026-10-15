@@ -3,6 +3,7 @@
 import json
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
@@ -63,6 +64,21 @@ def test_prompt_batch_geometry_and_frozen_roundtrip(tmp_path):
 def test_invalid_async_profiles(change):
     with pytest.raises(ValueError):
         configuration(execution_mode="disagg_async", steps=5, **change).validate()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"score_tolerance": None},
+        {"score_tolerance": float("nan")},
+        {"score_mean_tolerance": -0.1},
+        {"score_mean_tolerance": float("inf")},
+        {"score_mean_tolerance": True},
+    ],
+)
+def test_invalid_drift_gate_settings(change):
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        configuration(**change).validate()
 
 
 def test_icepop_loss_gradient_and_independent_kl_with_forced_frames():
@@ -171,6 +187,42 @@ def async_batch(config):
         for _ in range(config.group_size)
     ]
     return collate_rollouts(sources, generations, config.group_size)
+
+
+@pytest.mark.parametrize("mode", ["sync", "disagg_async"])
+def test_drift_gate_statistics_and_the_mean_gate_on_an_offset(mode):
+    config = configuration(execution_mode=mode, prompts_per_step=32, group_size=8)
+    assert config.score_mean_tolerance is None
+    trainer = NativeGRPOTrainer(Scorer(-0.2), config, reference=Scorer(-0.3))
+
+    def prepare(errors):
+        # Every candidate's one sampled action; its forced frame stays out.
+        batch = async_batch(config)
+        batch.batch["rollout_log_probs"][:, 0] -= errors
+        if mode == "sync":
+            return trainer.prepare_batch(batch)
+        return trainer.prepare_async_batch(
+            batch,
+            behavior_version=0,
+            learner_version=0,
+            behavior_checkpoint_sha256="a" * 64,
+        )
+
+    # A small offset on every action: well under the maximum's bound.
+    errors = torch.linspace(0.0, 0.02, 256)
+    metrics = prepare(errors)
+    assert metrics["rollout/logprob_max_error"] == pytest.approx(0.02, abs=1e-6)
+    assert metrics["rollout/logprob_mean_error"] == pytest.approx(0.01, abs=1e-6)
+    assert metrics["rollout/logprob_p99_error"] == pytest.approx(
+        np.quantile(errors.numpy(), 0.99), abs=1e-6
+    )
+    config.score_mean_tolerance = 0.005
+    with pytest.raises(RuntimeError, match="mean logprob disagreement 0.01"):
+        prepare(errors)
+    config.score_mean_tolerance = 0.05
+    prepare(errors)
+    with pytest.raises(RuntimeError, match="max logprob disagreement 0.04"):
+        prepare(torch.full((256,), 0.04))
 
 
 def test_behavior_numerical_audit_accepts_real_learner_drift():

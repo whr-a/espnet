@@ -75,7 +75,10 @@ class ESPnetRLConfig:
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
+    # Drift gate over the sampled actions' native/rollout logprob differences:
+    # the largest one, and optionally their mean (null leaves it unchecked).
     score_tolerance: float = 0.03
+    score_mean_tolerance: float | None = None
     language: str = "<eng>"
     task: str = "<asr>"
     predict_timestamps: bool = False
@@ -218,8 +221,12 @@ class ESPnetRLConfig:
             raise ValueError("allreduce_chunk_bytes must be positive")
         if self.learning_rate <= 0 or self.max_grad_norm <= 0 or self.kl_coef < 0:
             raise ValueError("Invalid optimizer or KL settings")
-        if self.score_tolerance < 0:
-            raise ValueError("score_tolerance must be nonnegative")
+        for name in ("score_tolerance", "score_mean_tolerance"):
+            value = getattr(self, name)
+            if name == "score_mean_tolerance" and value is None:
+                continue
+            if type(value) not in (int, float) or not 0 <= value < float("inf"):
+                raise ValueError(f"{name} must be finite and nonnegative")
 
     @classmethod
     def load(cls, path: str):
