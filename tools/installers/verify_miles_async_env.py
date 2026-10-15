@@ -34,6 +34,12 @@ def main():
         "miles_source_only": True,
         "gpu_execution": False,
     }
+    for name in ("requirements", "test_requirements"):
+        actual = hashlib.sha256(
+            (profile_dir / (name + ".txt")).read_bytes()
+        ).hexdigest()
+        if actual != profile[name + "_sha256"]:
+            result["errors"].append("Reviewed lock changed: " + name)
     for name in ("espnet", "sglang", "miles"):
         path = Path(getattr(args, name + "_source"))
         head = subprocess.check_output(
@@ -82,6 +88,16 @@ def main():
                 "ok": True,
                 "file": getattr(module, "__file__", None),
             }
+            package = name.split(".", 1)[0]
+            source_name = {
+                "espnet2": "espnet",
+                "sglang": "sglang",
+                "miles": "miles",
+            }.get(package)
+            if source_name and not Path(module.__file__).resolve().is_relative_to(
+                Path(getattr(args, source_name + "_source")).resolve()
+            ):
+                raise ValueError("Imported source is shadowed: " + name)
         except Exception:
             result["imports"][name] = {"ok": False, "error": traceback.format_exc()}
     try:
