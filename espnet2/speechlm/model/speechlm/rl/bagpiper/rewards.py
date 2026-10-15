@@ -184,7 +184,9 @@ class ASRWERReward:
     see past the end of a padded batch. The frozen ASR then transcribes
     ``asr_batch_size`` waveforms at once; each is padded to its own 30 s
     window, as it is alone. A candidate without decodable audio or with an
-    invalid codec token gets WER 1.0 (reward -1) and is counted. Each call
+    invalid codec token gets WER 1.0 and is counted. The reward is
+    -min(WER, 1) for every candidate: audio, however many words the ASR
+    inserts, never scores below a failure. Each call
     writes one line per candidate to ``reward_audit/batch-NNNNNN.jsonl`` and
     the WAV and full JSON of ``audits`` evenly spaced candidates (all if None).
     """
@@ -328,7 +330,7 @@ class ASRWERReward:
                 json.dumps(
                     {
                         **row,
-                        "reward": -row["wer"],
+                        "reward": -min(row["wer"], 1.0),
                         "waveform_sha256": digest,
                         "sample_rate": self.rate,
                         "asr_model": self.asr_tag,
@@ -345,7 +347,7 @@ class ASRWERReward:
     def __call__(self, sources, generations):
         return [
             {
-                "reward": -row["wer"],
+                "reward": -min(row["wer"], 1.0),
                 "wer": row["wer"],
                 "no_audio": float(row["status"] == "no_audio"),
                 "invalid_codec": float(row["status"] == "invalid_codec"),

@@ -227,8 +227,8 @@ class FakeInputs(dict):
 
 
 class FakeASR:
-    """Hears "the cat sat" in 960 samples and "the cat" in anything shorter;
-    the processor's features here are just each waveform's length."""
+    """Hears "the cat sat" in 960 samples, three times over in 320 and "the
+    cat" otherwise; the processor's features are each waveform's length."""
 
     generation_config = SimpleNamespace(is_multilingual=False)
 
@@ -241,7 +241,8 @@ class FakeASR:
         return input_features
 
     def batch_decode(self, ids, skip_special_tokens):
-        return ["the cat sat" if n == 960 else "the cat" for n in ids.tolist()]
+        heard = {960: "the cat sat", 320: "the cat sat " * 3}
+        return [heard.get(n, "the cat") for n in ids.tolist()]
 
 
 def fake_reward(tmp_path, audits, batch_size=2):
@@ -276,17 +277,20 @@ def test_tts_failures_score_wer_one_and_are_counted_and_audited(tmp_path):
         codec_frames(codes)[:6],  # no decodable audio
         invalid,
         [[300] + [0] * 7, [2] + [0] * 7],  # text only
+        codec_frames(codes[:1]),  # 1 frame: six inserted words
     ]
-    sources = [{"id": f"utt-{i}", "reference": "the cat sat"} for i in range(5)]
+    sources = [{"id": f"utt-{i}", "reference": "the cat sat"} for i in range(6)]
     generations = [{"token_ids": value} for value in tokens]
     reward = fake_reward(tmp_path, audits=2)
     values = reward(sources, generations)
-    assert [value["wer"] for value in values] == [0, pytest.approx(1 / 3), 1, 1, 1]
-    assert [value["reward"] for value in values] == [-v["wer"] for v in values]
-    assert [value["no_audio"] for value in values] == [0, 0, 1, 0, 1]
-    assert [value["invalid_codec"] for value in values] == [0, 0, 0, 1, 0]
+    wer = [0, pytest.approx(1 / 3), 1, 1, 1, 2]
+    assert [value["wer"] for value in values] == wer
+    # A failure always scores lowest: no audio is never better than audio.
+    assert [value["reward"] for value in values] == [0, -1 / 3, -1, -1, -1, -1]
+    assert [value["no_audio"] for value in values] == [0, 0, 1, 0, 1, 0]
+    assert [value["invalid_codec"] for value in values] == [0, 0, 0, 1, 0, 0]
     # Only decodable candidates reach the ASR, two at a time.
-    assert reward.asr.batches == [2]
+    assert reward.asr.batches == [2, 1]
     rows = [
         json.loads(line)
         for line in (tmp_path / "batch-000000.jsonl").read_text().splitlines()
@@ -297,8 +301,9 @@ def test_tts_failures_score_wer_one_and_are_counted_and_audited(tmp_path):
         "no_audio",
         "invalid_codec",
         "no_audio",
+        "ok",
     ]
-    assert [row["codec_frames"] for row in rows] == [3, 2, 0, 0, 0]
+    assert [row["codec_frames"] for row in rows] == [3, 2, 0, 0, 0, 1]
     # Evenly spaced audits: a WAV where there is audio, the full JSON always.
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "batch-000000.jsonl",

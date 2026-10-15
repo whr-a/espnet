@@ -29,7 +29,6 @@ adapter_options:
   tokenizer_mode: hf
   asr_model: openai/whisper-base.en
   asr_revision: 911407f4214e0e1d82085af863093ec0b66f9cd6
-  reward_device: cpu
 dtype: float32
 optimizer_device: cpu
 seed: 42

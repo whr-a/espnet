@@ -372,8 +372,9 @@ It scores the whole batch at once on `reward_device` (default: the learner's
 device): each candidate's codes are decoded alone, then the ASR transcribes
 `asr_batch_size` (default 64) waveforms together. A candidate with no
 decodable audio (fewer than eight codec frames) or an invalid codec token in
-an aligned frame gets WER 1 (reward -1); `reward/no_audio` and
-`reward/invalid_codec` log their fractions next to `reward/wer`. Each update
+an aligned frame gets WER 1; `reward/no_audio` and `reward/invalid_codec`
+log their fractions next to `reward/wer`. The reward is -min(WER, 1), so no
+candidate with audio scores below one without. Each update
 writes every transcript to `reward_audit/batch-NNNNNN.jsonl` and the WAV and
 JSON of four evenly spaced candidates. Prepare manifests with `--max-words 25`
 to keep utterances whose audio fits the 1536-token budget, and with
