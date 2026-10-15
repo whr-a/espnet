@@ -31,19 +31,24 @@ def _prefix(config, source, metadata):
     return prefix
 
 
-def _text(token_ids, model_path):
+def _detokenizer(model_path):
+    """Load the exported token list and BPE model once per rollout."""
     import sentencepiece as spm
 
     tokens = (Path(model_path) / "tokens.txt").read_text().splitlines()
-    pieces = [
-        tokens[token]
-        for token in token_ids
-        if not (tokens[token].startswith("<") and tokens[token].endswith(">"))
-    ]
     processor = spm.SentencePieceProcessor(
         model_file=str(Path(model_path) / "bpe.model")
     )
-    return processor.decode(pieces)
+
+    def text(token_ids):
+        pieces = [
+            tokens[token]
+            for token in token_ids
+            if not (tokens[token].startswith("<") and tokens[token].endswith(">"))
+        ]
+        return processor.decode(pieces)
+
+    return text
 
 
 def generate(config, model_path, sources, step):
@@ -111,6 +116,7 @@ def generate(config, model_path, sources, step):
         raise RuntimeError("SGLang returned incomplete OWSM prompt groups")
     generations = []
     source_sha256 = hashlib.sha256(request_path.read_bytes()).hexdigest()
+    text = _detokenizer(model_path)
     for index, output in enumerate(outputs):
         source_index = index // config.group_size
         source = sources[source_index]
@@ -132,7 +138,7 @@ def generate(config, model_path, sources, step):
                 prompt_token_ids=prefixes[source_index],
                 token_ids=token_ids,
                 log_probs=probabilities,
-                text=_text(token_ids, model_path),
+                text=text(token_ids),
                 finish_reason=output["meta_info"].get("finish_reason"),
                 rollout_backend="sglang",
                 source_sha256=source_sha256,
