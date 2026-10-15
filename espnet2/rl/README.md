@@ -64,10 +64,15 @@ and full prompt prefill. Collocate uses four native training ranks and four
 rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs
 on distinct nodes. The selected YAML fixes the layout and global batch.
 Model-specific full-prefix implementations deliberately
-trade throughput for exact native semantics; they are not optimized KV-cache
-implementations. Two successful updates establish an engineering loop, not a
-claim of general training quality. Held-out evaluation must retain its own
-manifest, raw responses and explicit denominator.
+trade throughput for exact native semantics. Opus uses its native decoder
+cache. This delivery tree also enables a request-local audio feature cache and
+HF DynamicCache for Bagpiper, with bounded state and a full-prefix path when
+disabled or beyond the frame bound. That cache has CPU equivalence checks;
+its independent GPU comparison and native probability audit remain pending.
+The frozen source004 production runs use the earlier uncached Bagpiper path.
+Neither layout alone establishes optimal throughput. Short runs establish an
+engineering loop; held-out evaluation retains its own manifest, raw responses
+and explicit denominator.
 
 For an earlier reviewed inference-only environment, run the optional installer
 with that environment's Python (the Makefile otherwise uses active ESPnet Python):

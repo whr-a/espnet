@@ -18,7 +18,19 @@ the earlier small synchronous YAML files retain their declared budgets. The
 
 Public `collocate` maps to `execution_mode: sync`. Its intended eight-GPU geometry is four native training ranks on GPUs 0–3 and four independent rollout replicas on GPUs 4–7. A TP1 subprocess merely visible to four GPUs still uses one GPU: it does not establish the four-replica layout. Async uses eight native training ranks on one node and eight independent TP1 rollout replicas on a second node. OWSM can use DDP; larger Bagpiper/Opus select chunked native allreduce and CPU reference/optimizer. Verify actual rank/replica placement before timing.
 
-SGLang currently retains full-prefix and sequential sampling semantics inside each replica. These are correctness profiles; no optimized cache or best-throughput claim follows from the mode. Use the independent native Miles source environment described in [ENVIRONMENT.md](ENVIRONMENT.md), with Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang `283d68c8bff309a42476c95f7c71dad895d09da6`. Its CPU import/hash/pip-check acceptance is separate from actual Ray/GPU execution. Earlier synchronous environments do not establish full-runtime import compatibility.
+Each SGLang replica retains sequential candidate sampling and native model
+semantics. Opus uses its native decoder cache. The Bagpiper implementation in
+this delivery tree enables a bounded request-local audio feature cache and HF
+DynamicCache; CPU equivalence checks passed, while its independent GPU
+comparison remains pending. The earlier frozen source004 production runs
+retain uncached Bagpiper full-prefix generation. OWSM retains full-prefix
+generation. These profiles do not establish best throughput merely by selecting
+async. Use the independent native Miles source environment described in
+[ENVIRONMENT.md](ENVIRONMENT.md), with Miles
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`. Its CPU import/hash/pip-check
+acceptance is separate from actual Ray/GPU execution. Earlier synchronous
+environments do not establish full-runtime import compatibility.
 
 ## Genuine source preparation
 
