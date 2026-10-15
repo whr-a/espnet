@@ -6,18 +6,16 @@
 # most 1012 + 256 = 1268 KV tokens of 384 KiB (24 layers x 2 x 2048 x 4 B).
 #
 # Memory (GiB):
-# - Trainer: policy 6.96 + reference 6.96, plus AdamW moments 13.91 from the
-#   first update on: 27.8 through every rollout. The update adds gradients
-#   6.96 with checkpointed activations (~3 for 8 candidates), then AdamW's
-#   6.96 foreach temporary: ~42 at its peak.
 # - Engine: SGLang keeps rollout_mem_fraction of the memory free when it
-#   starts (79.6 - policy - reference - two CUDA contexts = ~64.7):
-#   0.45 x 64.7 = 29.1 = weights 6.96 + KV pool 22.2 (~60.6k tokens).
-# - The other ~35.6 hold the trainer's growth (~28 at its peak) and the
-#   engine's batch activations, which it gives back after every batch:
-#   ~72 of 79.6 at the trainer's peak.
-# - max_running_requests 44: 44 x 1268 = 55.8k tokens < 60.6k, so a full
+#   starts (79.6 - trainer policy and reference - CUDA contexts = 64.0,
+#   measured): 0.45 x 64.0 = 28.8 = weights 6.96 + KV pool 21.8 (59.5k
+#   tokens). Measured: 32.6 resident between batches, 34.2 while generating.
+# - max_running_requests 44: 44 x 1268 = 55.8k tokens < 59.5k, so a full
 #   running batch always fits and no request is ever retracted.
+# - Trainer: policy 6.96 + reference 6.96 + gradients 6.96 + checkpointed
+#   activations of 8 candidates. With AdamW on this GPU as well (moments
+#   13.9 and a 6.96 foreach temporary) it measured 46.6 at its peak, 79.2
+#   of 79.6 in all, so AdamW runs on the CPU (3 x 6.96 of host memory).
 family: opuslm_dialogue
 execution_mode: sync
 rollout_backend: sglang
@@ -56,7 +54,7 @@ top_k: -1
 score_tolerance: 0.03
 device: cuda:0
 reference_device: cuda:0
-optimizer_device: null
+optimizer_device: cpu
 train_gpus: '0'
 rollout_gpus: '0'
 rollout_mem_fraction: 0.45
