@@ -18,10 +18,12 @@ from .data import OPTION_LABEL
 
 ANSWER = re.compile(r"<answer>(.*?)</answer>", re.S)
 # Where Bagpiper's untagged responses state their choice, as in "the correct
-# answer is: motorcycle", "**Final Answer:** motorcycle" or "the most accurate
-# choice is: by the car". The last cue counts.
+# answer is: motorcycle", "**Final Answer:** motorcycle", "the most accurate
+# choice is: by the car" or "the most correct answer from the given list is:".
+# The last cue counts.
 CUE = re.compile(
-    r"(?:final answer|correct answer|answer is|choice is|answer\s*:)(?:\s*is)?\s*:?",
+    r"(?:(?:final|correct) answer(?:[^.:\n]{0,40}?(?:\bis\b|:))?"
+    r"|answer is|choice is|answer\s*:)\s*:?",
     re.I,
 )
 # Markdown emphasis, quotes and punctuation around a stated answer.

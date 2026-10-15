@@ -79,6 +79,12 @@ def test_strict_west_reward(prediction, accuracy, answer_format):
         ("so the most accurate choice is: by the car.", "by the car", "cue"),
         ('The answer is "on the tree".', "on the tree", "cue"),
         (
+            "the most correct answer from the list is:\n\nOn the road",
+            "On the road",
+            "cue",
+        ),
+        ("The correct answer is car because: it honks", "car because: it honks", "cue"),
+        (
             "I thought the answer is car.\nFinal answer:\n\n__Dog__\nbecause it barks",
             "Dog",
             "cue",
