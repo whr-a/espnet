@@ -86,6 +86,10 @@ class RolloutEngine:
         source in the order given, in the generation schema used today."""
         raise NotImplementedError
 
+    def release(self):
+        """Give the last batch's working memory back to a GPU it shares with
+        a training rank, keeping what the next batch needs from the start."""
+
     def close(self):
         pass
 
@@ -116,6 +120,15 @@ class SGLangRolloutEngine(RolloutEngine):
         success, message, _ = self.engine.update_weights_from_disk(str(model_path))
         if not success:
             raise RuntimeError(f"SGLang could not load {model_path}: {message}")
+
+    def release(self):
+        # Waits until the scheduler is idle, then empties its allocator cache;
+        # the weights and the static KV pool stay allocated.
+        result = self.engine.loop.run_until_complete(
+            self.engine.tokenizer_manager.flush_cache(timeout_s=60)
+        )
+        if not result.success:
+            raise RuntimeError(f"SGLang kept its batch memory: {result.message}")
 
     def close(self):
         self.engine.shutdown()

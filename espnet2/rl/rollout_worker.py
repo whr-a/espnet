@@ -72,6 +72,9 @@ class RolloutServer:
         start = time.monotonic()
         sources = json.loads(Path(requests).read_text())
         generations = self.engine.generate(sources, rollout_id)
+        if self.config.execution_mode == "sync" and self.config.collocated:
+            # The training rank on this GPU needs the memory until next time.
+            self.engine.release()
         for generation in generations:
             generation["policy_version"] = self.version
         result = {

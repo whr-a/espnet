@@ -1,6 +1,8 @@
 """The OWSM rollout engine's requests, without starting SGLang."""
 
+import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -77,6 +79,26 @@ def test_requests_carry_real_prefixes_and_name_their_source(tmp_path):
     assert generations[2]["prompt_token_ids"] == [1, 3, 4]
     assert generations[0]["log_probs"] == [-0.5, -0.1]
     assert generations[0]["text"] == "a <eos>"
+
+
+def test_release_empties_the_idle_engine_cache(tmp_path):
+    flushes = []
+
+    async def flush_cache(timeout_s=None):
+        flushes.append(timeout_s)
+        return SimpleNamespace(success=len(flushes) == 1, message="busy")
+
+    recorder = Recorder()
+    recorder.loop = asyncio.new_event_loop()
+    recorder.tokenizer_manager = SimpleNamespace(flush_cache=flush_cache)
+    try:
+        engine(tmp_path, recorder).release()
+        with pytest.raises(RuntimeError, match="busy"):
+            engine(tmp_path, recorder).release()
+    finally:
+        recorder.loop.close()
+    # Each release lets the scheduler retire its last batch before flushing.
+    assert flushes == [60, 60]
 
 
 def test_answers_out_of_request_order_are_refused(tmp_path):

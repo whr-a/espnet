@@ -57,6 +57,9 @@ class RecordingEngine(RolloutEngine):
         ]
         return rows[:-1] if sources[-1].get("fail") == "short" else rows
 
+    def release(self):
+        self.record("release")
+
     def close(self):
         self.record("close")
 """
@@ -98,15 +101,18 @@ def test_one_engine_serves_every_load_and_generation(config, tmp_path):
         second = process.generate(sources, 1)
     finally:
         process.close()
-    # Built once from the first export, updated in place by the second.
+    # Built once from the first export and updated in place by the second;
+    # training shares this GPU, so every batch gives its memory back.
     assert [event[0] for event in events(directory)] == [
         "build",
         "generate",
+        "release",
         "update",
         "generate",
+        "release",
         "close",
     ]
-    assert events(directory)[2][1] == str(tmp_path / "policy-000001" / "hf")
+    assert events(directory)[3][1] == str(tmp_path / "policy-000001" / "hf")
     assert [row["source_id"] for row in first] == ["a", "a", "b", "b"]
     assert {row["policy_version"] for row in first} == {0}
     assert {row["policy_version"] for row in second} == {1}
@@ -150,7 +156,7 @@ def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):
 
 
 def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
-    config.rollout_gpus = "0,1,2"
+    config.train_gpus, config.rollout_gpus = "7", "0,1,2"
     rollout = CheckpointRollout(config)
     export = rollout.directory / "policy-000000"
     sources = [{"id": f"p{index}"} for index in range(7)]
@@ -179,6 +185,8 @@ def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
         requests = json.loads((directory / "requests-000000.json").read_text())
         assert requests == sources[replica::3]
         assert events(directory)[0] == ["build", str((export / "hf").resolve())]
+        # No training rank shares these GPUs, so nothing is released.
+        assert "release" not in {event[0] for event in events(directory)}
 
 
 class Actor:
