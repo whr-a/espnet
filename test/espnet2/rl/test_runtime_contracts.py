@@ -99,6 +99,16 @@ def test_repeated_or_empty_device_lists_are_rejected(name):
             config.validate()
 
 
+def test_a_config_with_the_replaced_engine_key_names_its_successor(tmp_path):
+    for path, text in (
+        (tmp_path / "recipe.yaml", "sglang_generate_factory: a:b\n"),
+        (tmp_path / "frozen_config.json", '{"sglang_generate_factory": "a:b"}'),
+    ):
+        path.write_text(text)
+        with pytest.raises(ValueError, match="replaced by sglang_engine"):
+            ESPnetRLConfig.load(path)
+
+
 def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
     """rollout_mem_fraction is the one way a recipe sizes its engine."""
     sized = configuration(rollout_mem_fraction=0.2)

@@ -243,7 +243,7 @@ class ESPnetRLConfig:
     def load(cls, path: str):
         if Path(path).suffix.lower() == ".json":
             with Path(path).open() as stream:
-                config = cls(**json.load(stream))
+                config = cls.from_dict(json.load(stream))
             config.validate()
             return config
         return cls.from_yaml(path)
@@ -251,9 +251,18 @@ class ESPnetRLConfig:
     @classmethod
     def from_yaml(cls, path: str):
         with Path(path).open() as stream:
-            config = cls(**yaml.safe_load(stream))
+            config = cls.from_dict(yaml.safe_load(stream))
         config.validate()
         return config
+
+    @classmethod
+    def from_dict(cls, values):
+        if "sglang_generate_factory" in values:
+            raise ValueError(
+                "sglang_generate_factory was replaced by sglang_engine, the "
+                "module:Class of the family's espnet2.rl.engine.RolloutEngine"
+            )
+        return cls(**values)
 
     def to_dict(self):
         return asdict(self)
