@@ -509,14 +509,20 @@ they were decoded with; give the saved `policy_step`.
 Relative config paths resolve from the command's current directory, so run
 from the original recipe or freeze absolute paths.
 
-The first SGLang implementation is deliberately synchronous and uses full-prefix
-FP32 forward with TP=1. It records every primary and secondary action, mask,
-sampling contract and joint behavior log probability; it is not a throughput
-benchmark. Checkpoints, exports, nonzero gradients, probability agreement and
-held-out task metrics must all pass before claiming end-to-end acceptance.
+`BagpiperEngine` sends a whole rollout batch to SGLang's own Qwen3 layers
+(FP32: triton attention with IEEE float32, native RMSNorm; bfloat16: fa3) and
+records every primary and secondary action, stream mask, the frame's support
+and the joint behavior log probability. `max_running_requests` requests of
+`context_length` tokens must fit its KV pool (checked at startup), so SGLang
+never retracts a request and recomputes it without its secondary streams.
+Checkpoints, exports, nonzero gradients, probability agreement and held-out
+task metrics must all pass before claiming end-to-end acceptance.
 The default 1536-token budget allows the SFT model's description and reasoning to
-reach a final answer. Native layer and score-block recomputation use the same
-32-row matrix shapes during backward; the objective and sampled actions remain
+reach a final answer. The learner scores right-padded micro-batches with one
+vectorised head under each frame's recorded support; in FP32 a batch differs
+from scoring each candidate alone by up to about 1e-4, cuBLAS rounding GEMMs by
+their row count. Native layer and score-block recomputation use the same
+matrix shapes during backward; the objective and sampled actions remain
 unchanged. The FP32 prototype requires three 80 GB GPUs with optimizer state on
 CPU; its initial acceptance configuration uses one sample per scoring forward.
 

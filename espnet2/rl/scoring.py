@@ -5,7 +5,9 @@
 Every rank supplies the same full batch and scores only its contiguous shard.
 Results and local errors are gathered once, preserving original candidate order.
 The caller owns behavior-version validation and GRPO normalization on the global
-batch. No model is moved or temporarily overwritten by this module.
+batch. A behavior snapshot lends its weights to the learner's own module for the
+behavior pass only (espnet2.rl.miles_native_actor.BehaviorSnapshot), so a policy
+must not cache tensors derived from its trainable weights across calls.
 """
 
 import hashlib
@@ -110,8 +112,9 @@ def score_native_batch(trainer, batch, behavior_policy=None):
 
     All ranks must call this function in the same order. ``behavior_policy=None``
     means the caller has verified behavior is the current learner; current scoring
-    is reused. A stale behavior checkpoint must be supplied as an independent native
-    policy. Current, reference and behavior each keep their configured GPU/CPU device.
+    is reused. A stale behavior is an independent native policy or a context
+    manager that lends its weights to a module for the pass. Current, reference and
+    behavior each keep their configured GPU/CPU device.
     Exceptions in local validation or scoring are reported to every live rank before
     any result is returned. Process death still relies on the process-group timeout.
     """

@@ -114,8 +114,10 @@ Normalization is NFKC, casefold and punctuation removal, the same
 `errors/max(1, reference_words)` for each completion; corpus WER divides
 total errors by total reference words across all completions.
 
-`--export-dir /path/to/policy-000100` can reuse an existing inference export
-only after checking its native and every recorded HF file hash. This validation
+`--export-dir /path/to/rollout/policy-000100` can reuse an existing inference
+export only after checking its native and every recorded HF file hash. Training
+keeps only its newest `keep_exports` exports (default 2), so set it higher for a
+run whose intermediate exports you will evaluate this way. This validation
 requires the recorded paths to be canonical relative paths, rejects
 parent traversal and symlinks, and verifies the complete HF file set.
 `--responses`

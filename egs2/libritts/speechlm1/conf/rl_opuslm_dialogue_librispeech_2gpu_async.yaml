@@ -6,10 +6,12 @@
 # most 1012 + 256 = 1268 KV tokens of 384 KiB (see the one-GPU recipe).
 #
 # Memory (GiB):
-# - GPU 0, trainer: policy, reference and the one-update-stale behavior
-#   policy (6.96 each) + AdamW moments 13.9; the update adds gradients 6.96,
-#   checkpointed activations and AdamW's 6.96 foreach temporary. The one-GPU
-#   run measured 46.6 at its peak without the behavior copy: ~54 here.
+# - GPU 0, trainer: policy and reference (6.96 each) + AdamW moments 13.9;
+#   the update adds gradients 6.96, checkpointed activations and AdamW's
+#   6.96 foreach temporary: 46.6 at its peak in the one-GPU run with AdamW
+#   on the GPU. A stale batch is audited by swapping the weights that
+#   generated it into the policy from a pinned CPU snapshot (6.96 of host
+#   memory).
 # - GPU 1, engine alone: 0.85 x ~79.1 free = 67.2 = weights 6.96 + KV pool
 #   60.3 (~164k tokens); the remaining 11.9 holds its batch activations.
 # - context_length 1280 and max_running_requests 96: 96 x 1280 = 123k

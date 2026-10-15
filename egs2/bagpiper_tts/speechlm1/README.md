@@ -406,11 +406,14 @@ with the training reward's ASR. `items.jsonl` keeps each transcript, WER and
 decoding status, `reward_audit/` every WAV and its codec actions, and
 `summary.json` the mean and corpus WER, failure counts and checkpoint identity.
 
-The first SGLang implementation is deliberately synchronous and uses full-prefix
-FP32 forward with TP=1. It records every primary and secondary action, mask,
-sampling contract and joint behavior log probability; it is not a throughput
-benchmark. Checkpoints, exports, nonzero gradients, probability agreement and
-held-out task metrics must all pass before claiming end-to-end acceptance.
+`BagpiperEngine` sends a whole rollout batch to SGLang's own Qwen3 layers
+(FP32: triton attention with IEEE float32, native RMSNorm; bfloat16: fa3) and
+records every primary and secondary action, stream mask, the frame's support
+and the joint behavior log probability. `max_running_requests` requests of
+`context_length` tokens must fit its KV pool (checked at startup), so SGLang
+never retracts a request and recomputes it without its secondary streams.
+Checkpoints, exports, nonzero gradients, probability agreement and held-out
+task metrics must all pass before claiming end-to-end acceptance.
 
 The small end-to-end run and its exact scope are recorded in
 [RL validation](RL_VALIDATION.md).

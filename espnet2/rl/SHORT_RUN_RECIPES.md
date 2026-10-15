@@ -18,8 +18,8 @@ the earlier small synchronous YAML files retain their declared budgets. The
 
 Public `collocate` maps to `execution_mode: sync`. Its intended eight-GPU geometry is four native training ranks on GPUs 0–3 and four independent rollout replicas on GPUs 4–7. A TP1 subprocess merely visible to four GPUs still uses one GPU: it does not establish the four-replica layout. Async uses eight native training ranks on one node and eight independent TP1 rollout replicas on a second node. OWSM can use DDP; larger Bagpiper/Opus select chunked native allreduce and CPU reference/optimizer. Verify actual rank/replica placement before timing.
 
-Each SGLang replica retains native model semantics. Opus uses its native
-decoder cache. Bagpiper batches a rollout's candidates on SGLang's native Qwen3
+Each SGLang replica retains native model semantics. OpusLM batches a
+rollout's candidates in one SGLang call. Bagpiper batches a rollout's candidates on SGLang's native Qwen3
 layers and records each frame's support for the learner; the earlier frozen
 source004 production runs retain one-request full-prefix Bagpiper generation.
 OWSM retains full-prefix generation. These profiles do not establish best throughput merely by selecting
@@ -155,4 +155,4 @@ provide the three Ray options to test two-node async execution. For Opus add
 `--rl_ray_address`, `--rl_train_node` and `--rl_rollout_node` with that suffix.
 Use a distinct output directory for each family and execution mode.
 
-Both modes use the same learner timing scope: input transfer, native scoring, task reward, rollout-evidence serialization and optimizer update. `train_wait_time` spans the gap from the previous learner window's end to the next window's start, including checkpoint save, export/publication, rollout and scheduling outside that call. Async behavior-checkpoint verification/loading remains inside its learner window. The initial model load and first rollout are excluded from the first wait metric; update1 is timing warmup. Report full orchestration wall time and total allocated GPU cost separately, including initial/final publication and teardown. For updates2–5, calculate cumulative wait ratio as `sum(train_wait_time) / sum(step_time)`, rather than averaging the individual ratios.
+Both modes use the same learner timing scope: input transfer, native scoring, task reward, rollout-evidence serialization and optimizer update. `train_wait_time` spans the gap from the previous learner window's end to the next window's start, including checkpoint save, export/publication, rollout and scheduling outside that call. The async behavior audit (the generating weights swapped into the learner from a CPU snapshot) remains inside its learner window. The initial model load and first rollout are excluded from the first wait metric; update1 is timing warmup. Report full orchestration wall time and total allocated GPU cost separately, including initial/final publication and teardown. For updates2–5, calculate cumulative wait ratio as `sum(train_wait_time) / sum(step_time)`, rather than averaging the individual ratios.

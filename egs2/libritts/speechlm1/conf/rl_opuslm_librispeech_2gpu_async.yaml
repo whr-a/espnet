@@ -8,9 +8,11 @@
 #
 # Memory (GiB):
 # - GPU 0, trainer: policy 27.6 + gradients 27.6 + checkpointed activations
-#   (~3 for 4 candidates): ~58 at its peak. A reference or behavior copy
-#   would not fit beside them, so both are scored on the CPU (2 x 27.6 of
-#   host memory), where AdamW also runs (3 x 27.6).
+#   (~3 for 4 candidates): ~58 at its peak. A reference copy would not fit
+#   beside them, so it is scored on the CPU (27.6 of host memory), where
+#   AdamW also runs (3 x 27.6). A stale batch is audited by swapping the
+#   weights that generated it into the policy from a pinned CPU snapshot
+#   (27.6 of host memory).
 # - GPU 1, engine alone: 0.85 x ~79.1 free = 67.2 = weights 27.6 + KV pool
 #   39.6 (~40.6k tokens); the remaining 11.9 holds its batch activations.
 # - context_length 1280 and max_running_requests 28: 28 x 1280 = 35.8k

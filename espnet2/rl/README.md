@@ -48,14 +48,15 @@ Each rollout GPU runs one inference process for the whole run, which builds
 the real SGLang engine from the first export. Each training update exports
 immutable native and inference checkpoints, loads that export into every engine
 in place, saves actual actions/behavior logprobs, validates native action
-probabilities, then performs a native AdamW update. Exports, requests, raw
-responses, rewards, masks and optimizer state are retained. Use a new output
-directory for every run. This initial implementation does not resume partially
+probabilities, then performs a native AdamW update. Requests, raw responses,
+rewards, masks and optimizer state are retained; once every engine holds the
+newest export, all but the newest `keep_exports` (default 2) are deleted. Use a
+new output directory for every run. This initial implementation does not resume partially
 completed runs or silently switch to another inference backend.
 
 Multi-rank trainers create their ESPnet Gloo object group collectively before
-rank zero starts rollout. Rollout payloads, native scoring results, behavior-load
-errors and reward preparation share that group. `distributed_timeout_minutes`
+rank zero starts rollout. Rollout payloads, native scoring results and their
+errors, and reward preparation share that group. `distributed_timeout_minutes`
 defaults to a finite 4320 minutes (72 hours), covering the collocate runtime
 budget and the 48-hour disaggregated async budget. The default training group
 uses the same timeout. The runtime supervisor enforces each frozen run's
@@ -67,13 +68,22 @@ and full prompt prefill. Collocate uses four native training ranks and four
 rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs
 on distinct nodes. The selected YAML fixes the layout and global batch.
 Model-specific full-prefix implementations deliberately
-trade throughput for exact native semantics. Opus uses its native decoder
-cache. Bagpiper runs on SGLang's own Qwen3 layers with paged KV and a whole
+trade throughput for exact native semantics. OpusLM sends a whole rollout
+batch to SGLang's own decoder layers with exact native prompt embeddings.
+Bagpiper runs on SGLang's own Qwen3 layers with paged KV and a whole
 rollout batch in flight; the model keeps each request's phase and pending
 secondary-stream embedding in GPU state, and every frame records the support
 the learner scores it under. The learner scores right-padded micro-batches with
 one vectorised head; `micro_batch_tokens` takes candidates in order of length
-and bounds every micro-batch's padded prompt+response tokens. Rollout processes
+and bounds every micro-batch's padded prompt+response tokens. In FP32 a batched
+pass differs from scoring each candidate alone by up to about 1e-4 (1.25e-4 on
+a real QA batch): cuBLAS rounds a GEMM by its row count, so this is expected
+and stays far below `score_tolerance`. For OpusLM and Bagpiper,
+`max_running_requests` requests of `context_length` tokens must fit the
+engine's KV pool, which the engine checks at startup: SGLang would otherwise
+retract requests and recompute them without their embeddings or secondary
+streams. A stale async batch is audited by lending the learner the weights
+that generated it, from a pinned CPU snapshot, for one scoring pass. Rollout processes
 write the numpy arrays of their records (Bagpiper's mel features, once per
 prompt) to binary `.npy` sidecars next to the JSON. The frozen source004
 production runs use the earlier one-request, full-prefix Bagpiper path.
