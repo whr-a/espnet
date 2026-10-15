@@ -107,7 +107,10 @@ def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
         assert driver.__code__.co_filename.endswith("train_async.py")
         assert evidence["runtime"]["source_modified"] is False
         assert evidence["runtime"]["same_code_object"] is True
-        await with_disposer(driver, orchestration_args(config))
+        arguments = orchestration_args(config)
+        # The pinned loop owns the save cadence; it reads the recipe's interval.
+        assert arguments.save_interval == config.save_interval == 1
+        await with_disposer(driver, arguments)
 
     try:
         asyncio.run(execute())

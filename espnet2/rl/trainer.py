@@ -569,13 +569,18 @@ class NativeGRPOTrainer:
                     with (output / "metrics.jsonl").open("a") as stream:
                         stream.write(json.dumps(metrics) + "\n")
                     print(json.dumps(metrics), flush=True)
-                    save_checkpoint(
-                        output / f"step-{step + 1:06d}.pt",
-                        self.policy,
-                        self.optimizer,
-                        step + 1,
-                        self.config,
-                    )
+                    # The same cadence the Miles async loop applies.
+                    if (
+                        (step + 1) % self.config.save_interval == 0
+                        or step + 1 == self.config.steps
+                    ):
+                        save_checkpoint(
+                            output / f"step-{step + 1:06d}.pt",
+                            self.policy,
+                            self.optimizer,
+                            step + 1,
+                            self.config,
+                        )
                 except Exception as error:
                     (output / f"checkpoint-{step + 1:06d}.error.txt").write_text(
                         traceback.format_exc()

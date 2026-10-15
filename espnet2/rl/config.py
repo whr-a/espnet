@@ -50,6 +50,8 @@ class ESPnetRLConfig:
     seed: int = 42
     steps: int = 10
     warmup_steps: int = 0
+    # Write a full checkpoint every save_interval updates and after the last.
+    save_interval: int = 1
     # Prompts drawn per optimizer update and candidates sampled per prompt.
     prompts_per_step: int = 2
     group_size: int = 4
@@ -167,6 +169,7 @@ class ESPnetRLConfig:
             raise ValueError("GRPO requires group_size >= 2")
         for name in (
             "steps",
+            "save_interval",
             "prompts_per_step",
             "micro_batch_size",
             "ppo_epochs",

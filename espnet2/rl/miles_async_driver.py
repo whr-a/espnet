@@ -85,7 +85,7 @@ def orchestration_args(config):
         skip_eval_before_train=True,
         hf_checkpoint=None,
         save_trigger_sentinel=None,
-        save_interval=1,
+        save_interval=config.save_interval,
         api_server_port=None,
         mini_ft_controller_enable=False,
         debug_exit_after_rollout=None,

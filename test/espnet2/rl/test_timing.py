@@ -103,3 +103,56 @@ def test_sync_clock_includes_score_reward_update_and_next_wait_includes_save(
     assert rows[1]["perf/wait_time_ratio"] == pytest.approx(23 / 38)
     assert rows[0]["perf/warmup"] and not rows[1]["perf/warmup"]
     assert rows[1]["perf/train_end_wall"] - rows[1]["perf/train_start_wall"] == 15
+
+
+def test_full_checkpoints_follow_the_miles_save_cadence(tmp_path, monkeypatch):
+    """Every save_interval updates and after the last one, as Miles saves."""
+    import espnet2.rl.trainer as module
+    from miles.utils.misc import should_run_periodic_action
+
+    class Batch:
+        def save_to_disk(self, path):
+            pass
+
+    class Rollout:
+        def sync_weights(self, policy, step):
+            pass
+
+        def generate(self, sources, step):
+            return []
+
+    class Trainer:
+        config = ESPnetRLConfig(
+            steps=7, save_interval=3, prompts_per_step=1, output_dir=str(tmp_path)
+        )
+        rank, world_size = 0, 1
+        device = torch.device("cpu")
+        policy, optimizer = None, None
+        rollout = Rollout()
+
+        def prepare_batch(self, batch, native_scores):
+            return {}
+
+        def update_actor(self, batch):
+            return {}
+
+    saved = []
+    monkeypatch.setattr(module, "collate_rollouts", lambda *args: Batch())
+    monkeypatch.setattr(module, "score_native_batch", lambda *args: (None,) * 3)
+    monkeypatch.setattr(
+        module,
+        "save_checkpoint",
+        lambda path, policy, opt, step, config: saved.append(step),
+    )
+    NativeGRPOTrainer.train(Trainer(), [{"id": "p"}])
+    assert saved == [3, 6, 7]
+    assert saved == [
+        step + 1 for step in range(7) if should_run_periodic_action(step, 3, None, 7)
+    ]
+    with pytest.raises(ValueError, match="save_interval"):
+        ESPnetRLConfig(
+            adapter_factory="a:b",
+            exporter="a:b",
+            sglang_generate_factory="a:b",
+            save_interval=0,
+        ).validate()
