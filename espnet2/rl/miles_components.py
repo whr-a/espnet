@@ -13,7 +13,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from .data import collate_rollouts
 from .miles_native_actor import ESPnetTrainRayActor
-from .rollout import RolloutProcess, merge_generations
+from .rollout import RolloutProcess, merge_generations, prune_exports
 
 
 class RolloutActor:
@@ -385,3 +385,4 @@ class NativeComponents:
                 )
                 + "\n"
             )
+        prune_exports(Path(policy["path"]).parent, self.config.keep_exports)

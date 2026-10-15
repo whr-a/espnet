@@ -196,6 +196,20 @@ class RolloutProcess:
         self.connection.close()
 
 
+def prune_exports(directory, keep):
+    """Delete all but the newest ``keep`` policy exports in ``directory``.
+
+    Call it once every engine holds the newest export: an engine reads only
+    the export it holds, and the async behavior audit reads none.
+    """
+    exports = sorted(
+        Path(directory).glob("policy-*"),
+        key=lambda path: int(path.name.removeprefix("policy-")),
+    )
+    for export in exports[:-keep]:
+        shutil.rmtree(export)
+
+
 def merge_generations(sources, shards, group_size):
     """Restore the source order of complete prompt groups from every shard."""
     grouped = {}
@@ -280,6 +294,7 @@ class CheckpointRollout:
     def sync_weights(self, policy, step):
         metadata = self.export(policy, step)
         self.load(self.version, step)
+        prune_exports(self.directory, self.config.keep_exports)
         return metadata
 
     def load(self, export, step):

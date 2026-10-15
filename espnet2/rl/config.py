@@ -53,6 +53,9 @@ class ESPnetRLConfig:
     warmup_steps: int = 0
     # Write a full checkpoint every save_interval updates and after the last.
     save_interval: int = 1
+    # Rollout exports kept on disk: once every engine has loaded a policy, all
+    # but the newest keep_exports are deleted.
+    keep_exports: int = 2
     # Prompts drawn per optimizer update and candidates sampled per prompt.
     prompts_per_step: int = 2
     group_size: int = 4
@@ -228,6 +231,8 @@ class ESPnetRLConfig:
                 continue
             if type(value) not in (int, float) or not 0 <= value < float("inf"):
                 raise ValueError(f"{name} must be finite and nonnegative")
+        if type(self.keep_exports) is not int or self.keep_exports < 1:
+            raise ValueError("keep_exports must be a positive integer")
 
     @classmethod
     def load(cls, path: str):

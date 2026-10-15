@@ -261,6 +261,51 @@ def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
         assert "release" not in {event[0] for event in events(directory)}
 
 
+@pytest.mark.parametrize("keep", [0, 1.5, None])
+def test_keep_exports_is_a_positive_integer(config, keep):
+    assert config.keep_exports == 2
+    config.keep_exports = 1
+    config.validate()
+    config.keep_exports = keep
+    with pytest.raises(ValueError, match="keep_exports"):
+        config.validate()
+
+
+def test_sync_keeps_the_newest_exports_once_every_engine_loaded_one(config):
+    config.train_gpus, config.rollout_gpus = "7", "0,1"
+    rollout = CheckpointRollout(config)
+
+    def export(policy, step):
+        directory = rollout.directory / f"policy-{step:06d}"
+        (directory / "hf").mkdir(parents=True)
+        rollout.version = directory
+        return {"step": step}
+
+    rollout.export = export
+    kept = []
+    try:
+        for step in range(4):
+            rollout.sync_weights(None, step)
+            kept.append(
+                sorted(path.name for path in rollout.directory.glob("policy-*"))
+            )
+    finally:
+        rollout.close()
+    assert kept == [
+        ["policy-000000"],
+        ["policy-000000", "policy-000001"],
+        ["policy-000001", "policy-000002"],
+        ["policy-000002", "policy-000003"],
+    ]
+    for replica in range(2):
+        loads = [
+            Path(event[1]).parent.name
+            for event in events(rollout.directory / f"replica-{replica}")
+            if event[0] in ("build", "update")
+        ]
+        assert loads == [f"policy-{step:06d}" for step in range(4)]
+
+
 class Actor:
     """A rollout actor handle whose calls answer like RolloutActor."""
 
@@ -389,3 +434,54 @@ def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
     assert {row["behavior_checkpoint_sha256"] for row in generations} == {"f" * 64}
     timing = json.loads((tmp_path / "rollout_timing.jsonl").read_text())
     assert [replica["gpu"] for replica in timing["replicas"]] == ["0", "1"]
+
+
+def test_async_publication_keeps_the_newest_exports_after_each_load(
+    tmp_path, monkeypatch
+):
+    pytest.importorskip("miles")
+    from espnet2.rl.miles_components import NativeComponents
+
+    config = ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+        execution_mode="disagg_async",
+        output_dir=str(tmp_path),
+        steps=4,
+        prompts_per_step=2,
+        group_size=2,
+        train_gpus="0",
+        rollout_gpus="0,1",
+        keep_exports=1,
+    )
+    components = NativeComponents(config, [], "train", "rollout")
+    actors = components.rollout.actors = [Actor(0), Actor(1)]
+    exports = tmp_path / "rollout"
+
+    class Trainer:
+        step = -1
+
+        async def call(self, name):
+            self.step += 1
+            directory = exports / f"policy-{self.step:06d}"
+            (directory / "hf").mkdir(parents=True)
+            return [
+                {"step": self.step, "path": str(directory), "native_sha256": "f" * 64}
+            ]
+
+    async def run():
+        trainer = Trainer()
+        kept = []
+        for _ in range(3):
+            await components.update_weights(None, trainer, None, None)
+            kept.append(sorted(path.name for path in exports.iterdir()))
+        return kept
+
+    assert asyncio.run(run()) == [
+        ["policy-000000"],
+        ["policy-000001"],
+        ["policy-000002"],
+    ]
+    for actor in actors:
+        assert [call[2] for call in actor.calls] == [0, 1, 2]
