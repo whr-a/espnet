@@ -9,15 +9,17 @@ recipe overrides anything that is not part of that native contract.
 """
 
 # Deterministic, cache-free execution so engine log probabilities stay
-# comparable with the native actor's own forward pass.
+# comparable with the native actor's own forward pass. One device per replica
+# means tensor parallelism is always one.
 SHARED_DEFAULTS = {
     "tp_size": 1,
     "disable_cuda_graph": True,
     "disable_radix_cache": True,
-    "disable_overlap_schedule": True,
-    "chunked_prefill_size": -1,
     "log_level": "info",
 }
+# Every family freezes these: the seed has to advance with the policy step or
+# a group's candidates stop differing, and GRPO has no signal without that.
+SHARED_FROZEN = ("model_path", "dtype", "tp_size", "random_seed")
 
 
 def engine_kwargs(config, step, *, defaults=None, frozen=()):
@@ -32,6 +34,7 @@ def engine_kwargs(config, step, *, defaults=None, frozen=()):
     resolved = dict(SHARED_DEFAULTS)
     resolved.update(defaults or {})
     resolved["random_seed"] = config.seed + step
+    frozen = tuple(SHARED_FROZEN) + tuple(frozen)
     overrides = dict(config.sglang_engine_kwargs)
     if config.rollout_mem_fraction is not None:
         requested = overrides.get("mem_fraction_static", config.rollout_mem_fraction)
@@ -54,4 +57,7 @@ def engine_kwargs(config, step, *, defaults=None, frozen=()):
             + ", ".join(sorted(conflicts))
         )
     resolved.update(overrides)
+    fraction = resolved.get("mem_fraction_static")
+    if fraction is not None and not 0 < fraction < 1:
+        raise ValueError("mem_fraction_static must lie in (0, 1)")
     return resolved

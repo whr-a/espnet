@@ -61,20 +61,17 @@ def verify_data_admission(config, path):
     recorded = admission.get("manifest_sha256")
     if not isinstance(recorded, dict) or not recorded:
         raise ValueError("Data admission must record its manifest SHA256 values")
+    if not config.manifest or not config.eval_manifest:
+        raise ValueError("Data admission covers a training and a heldout manifest")
     manifests = {"train": config.manifest, "heldout": config.eval_manifest}
     splits = {}
     for role, manifest in manifests.items():
-        if manifest is None:
-            continue
         if sha256(manifest) not in set(recorded.values()):
             raise ValueError(f"The {role} manifest differs from its admission")
         splits[role] = read_manifest(manifest)
-    if "train" not in splits:
-        raise ValueError("Data admission requires a prepared training manifest")
-    counts = admission.get("counts")
-    if counts is not None and counts != {
-        role: len(rows) for role, rows in splits.items()
-    }:
+    # Required, and per role: without it the two manifests could be swapped
+    # and the receipt would still match on hashes alone.
+    if admission.get("counts") != {role: len(rows) for role, rows in splits.items()}:
         raise ValueError("Manifest record counts differ from the admission")
     media = {}
     for role, rows in splits.items():

@@ -230,7 +230,7 @@ def sglang_generate(config, model_path, sources, step):
             attention_backend="triton",
             mem_fraction_static=0.8,
         ),
-        frozen=("model_path", "dtype", "tp_size"),
+        frozen=(),
     )
     engine = sgl.Engine(**kwargs)
     generations = []

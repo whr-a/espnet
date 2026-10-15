@@ -54,14 +54,9 @@ def launch_command(args, *, python=sys.executable):
         ):
             raise ValueError("Ray node selectors require a disagg_async config")
         if not args.validate_only:
-            # A platform job may already export a distributed environment.
-            # Training never inherits it: the variables are dropped here and
-            # re-created only by the torchrun this launcher starts itself.
-            # Nesting one launcher inside another is what has to be refused.
-            if config.train_ranks > 1 and int(environment.get("WORLD_SIZE", "1")) != 1:
-                raise ValueError(
-                    "Invoke rl_launch once outside an existing distributed launcher"
-                )
+            # A platform job pod already exports a distributed environment.
+            # Training must not inherit it, or a single rank would try to join
+            # the pod's group; the torchrun started below creates its own.
             for name in (
                 "RANK",
                 "LOCAL_RANK",
@@ -78,9 +73,12 @@ def launch_command(args, *, python=sys.executable):
             ):
                 environment.pop(name, None)
             # The recipe owns the geometry: one training rank per train GPU.
-            # A single rank runs in this process; several need torchrun.
-            environment["CUDA_VISIBLE_DEVICES"] = config.train_gpus
+            # A single rank runs in this process and keeps the pod's device
+            # list, so a recipe may still place its reference policy on
+            # another GPU. Several ranks need torchrun, and then the device
+            # list has to be exactly the recipe's so local ranks line up.
             if config.train_ranks > 1:
+                environment["CUDA_VISIBLE_DEVICES"] = config.train_gpus
                 command.extend(
                     [
                         "torch.distributed.run",

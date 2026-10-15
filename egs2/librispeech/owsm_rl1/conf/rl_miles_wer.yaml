@@ -33,4 +33,4 @@ sglang_engine_kwargs:
   attention_backend: torch_native
   sampling_backend: pytorch
 train_gpus: '0'
-rollout_gpus: '0'
+rollout_gpus: '1'

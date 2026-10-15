@@ -38,4 +38,4 @@ vllm_engine_kwargs:
   max_num_seqs: 8
   attention_backend: TRITON_ATTN
 train_gpus: '0'
-rollout_gpus: '0'
+rollout_gpus: '1'

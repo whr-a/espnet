@@ -122,7 +122,6 @@ def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
     assert settings["tp_size"] == 1
     assert settings["disable_cuda_graph"] is True
     assert settings["disable_radix_cache"] is True
-    assert settings["chunked_prefill_size"] == -1
     # Left unset, the family's own default survives untouched.
     assert (
         engine_kwargs(configuration(), 0, defaults={"mem_fraction_static": 0.65})[
@@ -130,23 +129,36 @@ def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
         ]
         == 0.65
     )
-    # A recipe may repeat a frozen value but never change one.
+    # Model identity, dtype, one device per replica and a step-advancing seed
+    # are frozen for every family, not per family.
     repeated = configuration(sglang_engine_kwargs={"dtype": "float32", "tp_size": 1})
     assert (
-        engine_kwargs(
-            repeated, 0, defaults={"dtype": "float32"}, frozen=("dtype", "tp_size")
-        )["dtype"]
-        == "float32"
+        engine_kwargs(repeated, 0, defaults={"dtype": "float32"})["dtype"] == "float32"
     )
     changed = configuration(sglang_engine_kwargs={"dtype": "bfloat16"})
     with pytest.raises(ValueError, match="native execution contract"):
+        engine_kwargs(changed, 0, defaults={"dtype": "float32"})
+    # A constant seed would make every group's candidates identical, which
+    # leaves GRPO without a signal.
+    pinned = configuration(sglang_engine_kwargs={"random_seed": 7})
+    with pytest.raises(ValueError, match="native execution contract"):
+        engine_kwargs(pinned, 3)
+    # A setting a family does not freeze stays a recipe decision.
+    loud = configuration(sglang_engine_kwargs={"log_level": "debug"})
+    assert engine_kwargs(loud, 0)["log_level"] == "debug"
+    # The family's own frozen settings compose with the shared ones.
+    unsafe = configuration(sglang_engine_kwargs={"max_running_requests": 4})
+    with pytest.raises(ValueError, match="native execution contract"):
         engine_kwargs(
-            changed, 0, defaults={"dtype": "float32"}, frozen=("dtype", "tp_size")
+            unsafe,
+            0,
+            defaults={"max_running_requests": 1},
+            frozen=("max_running_requests",),
         )
-    # An unfrozen setting stays a recipe decision.
-    assert engine_kwargs(changed, 0, defaults={"dtype": "float32"})["dtype"] == (
-        "bfloat16"
-    )
+    # A memory fraction is still a fraction, whichever way it arrives.
+    for kwargs in ({"mem_fraction_static": 1.4}, {"mem_fraction_static": 0}):
+        with pytest.raises(ValueError, match=r"\(0, 1\)"):
+            engine_kwargs(configuration(sglang_engine_kwargs=kwargs), 0)
     # The two ways to size the engine may not disagree.
     conflict = configuration(
         rollout_mem_fraction=0.2, sglang_engine_kwargs={"mem_fraction_static": 0.5}

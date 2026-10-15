@@ -454,6 +454,11 @@ class NativeGRPOTrainer:
                     "Nonfinite gradient norm; optimizer was not stepped"
                 )
             self.optimizer.step()
+            # Release the gradients here rather than at the next update: on a
+            # collocated device they would otherwise hold a full copy of the
+            # model through rollout, which is exactly the memory the engine
+            # subprocess needs.
+            self.optimizer.zero_grad(set_to_none=True)
             metrics["actor/grad_norm"] = norm.item()
         if self.world_size > 1:
             keys = sorted(metrics)
@@ -652,6 +657,7 @@ def run(config):
             "rank": rank,
             "world_size": world_size,
             "local_rank": local_rank,
+            "config_device": config.device,
             "cuda_visible_devices": visible,
             "visible_gpu_count": get_torch_device().device_count(),
             "current_device": get_torch_device().current_device(),
@@ -665,18 +671,24 @@ def run(config):
             json.dumps(census, indent=2) + "\n"
         )
         expected = config.train_ranks
-        if world_size != expected or census["visible_gpu_count"] != expected:
+        if world_size != expected:
             raise ValueError(
-                f"The recipe declares {expected} training GPUs; this rank sees "
-                f"world_size={world_size} and {census['visible_gpu_count']} devices"
+                f"The recipe declares {expected} training ranks; this rank sees "
+                f"world_size={world_size}"
             )
-        if visible and visible != config.train_device_ids:
-            raise ValueError(
-                f"Training ranks must occupy the recipe's train_gpus "
-                f"{config.train_device_ids}; this rank sees {visible}"
-            )
-        if expected > 1 and census["current_device"] != local_rank:
-            raise ValueError("Each training rank must own its local device")
+        if expected > 1:
+            # Several ranks are launched by this toolkit, which pins the
+            # devices, so each rank must see exactly them and own its own.
+            if census["visible_gpu_count"] != expected or (
+                visible and visible != config.train_device_ids
+            ):
+                raise ValueError(
+                    f"Training ranks must occupy the recipe's train_gpus "
+                    f"{config.train_device_ids}; this rank sees {visible} and "
+                    f"{census['visible_gpu_count']} devices"
+                )
+            if census["current_device"] != local_rank:
+                raise ValueError("Each training rank must own its local device")
         if distributed.is_initialized():
             all_census = [None] * world_size
             distributed.all_gather_object(all_census, census)

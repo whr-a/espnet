@@ -15,6 +15,7 @@ steps=
 device=
 reference_device=
 rollout_gpus=
+train_gpus=
 rollout_python=
 sglang_source=
 miles_source=
@@ -32,7 +33,7 @@ while (($#)); do
     key=${1#--}; key=${key//-/_}
     case ${key} in
         stage|stop_stage) shift 2 ;;
-        wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|rollout_gpus|rollout_python|sglang_source|miles_source|language|manifest|eval_manifest|data_admission|ray_address|train_node|rollout_node)
+        wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|train_gpus|rollout_gpus|rollout_python|sglang_source|miles_source|language|manifest|eval_manifest|data_admission|ray_address|train_node|rollout_node)
             printf -v "${key}" '%s' "$2"; shift 2 ;;
         *) echo "Unknown RL option: $1" >&2; exit 2 ;;
     esac
@@ -44,7 +45,7 @@ done
     echo "Provide --manifest or both --wav-scp and --text" >&2; exit 2;
 }
 prepare_args=(--train-config "${train_config}" --checkpoint "${checkpoint}" --config "${config}" --work-dir "${work_dir}")
-for key in wav_scp text manifest eval_manifest data_admission steps device reference_device rollout_gpus rollout_python sglang_source miles_source language; do
+for key in wav_scp text manifest eval_manifest data_admission steps device reference_device train_gpus rollout_gpus rollout_python sglang_source miles_source language; do
     [[ -z ${!key} ]] || prepare_args+=(--${key//_/-} "${!key}")
 done
 config_path=$("${python_cmd}" -m espnet2.s2t.rl.recipe "${prepare_args[@]}")

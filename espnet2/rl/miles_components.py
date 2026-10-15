@@ -169,9 +169,13 @@ class NativeRolloutExecutor:
                     f"Rollout replicas did not occupy {replicas} distinct GPUs "
                     "on the requested node"
                 )
-            occupied = self.components.train_gpu_ids
-            if occupied & {str(gpu) for result in results for gpu in result["gpu_ids"]}:
-                raise ValueError("A rollout replica landed on a training GPU")
+            if self.components.train_node == self.components.rollout_node:
+                # Ray device ids are per node, so this comparison only means
+                # anything when both roles sit on the same one.
+                occupied = self.components.train_gpu_ids
+                held = {str(gpu) for item in results for gpu in item["gpu_ids"]}
+                if occupied & held:
+                    raise ValueError("A rollout replica landed on a training GPU")
             from .rollout_replicas import merge_generations
 
             for result in results:

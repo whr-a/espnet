@@ -40,13 +40,12 @@ def generate(config, model_path, sources, step):
         defaults=dict(
             model_path=str(model_path),
             dtype=config.dtype,
+            disable_overlap_schedule=True,
+            chunked_prefill_size=-1,
             max_running_requests=1,
             mem_fraction_static=0.65,
         ),
         frozen=(
-            "model_path",
-            "dtype",
-            "tp_size",
             "chunked_prefill_size",
             "disable_cuda_graph",
             "disable_radix_cache",

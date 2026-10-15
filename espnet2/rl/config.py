@@ -149,7 +149,10 @@ class ESPnetRLConfig:
             if not 0 < self.tis_clip_low <= 1 <= self.tis_clip:
                 raise ValueError("Invalid IcePop importance-ratio bounds")
         for name in ("train_gpus", "rollout_gpus"):
-            devices = self._devices(getattr(self, name))
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a comma-separated string")
+            devices = self._devices(value)
             if not devices or len(set(devices)) != len(devices):
                 raise ValueError(f"{name} must list distinct physical GPU ids")
         if self.rollout_backend == "vllm" and (
