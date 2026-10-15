@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from .events import freeze_native_inputs, request_record
 from .integration import prepared_native_metadata, request_factory
 
 
@@ -47,6 +48,9 @@ def generate(config, model_path, sources, step):
     events = model_path.parent / "sglang_events.jsonl"
     try:
         for source, prefix in zip(sources, prefixes, strict=True):
+            native_reference = freeze_native_inputs(
+                model_path.parent, source.get("native_model_inputs", {})
+            )
             for sample in range(config.group_size):
                 sequence = copy.deepcopy(prefix)
                 phase = "text"
@@ -83,7 +87,16 @@ def generate(config, model_path, sources, step):
                     )
                     with events.open("a") as handle:
                         handle.write(
-                            json.dumps({"request": payload, "response": result}) + "\n"
+                            json.dumps(
+                                {
+                                    "schema": "bagpiper-inference-event-v2",
+                                    "request": request_record(
+                                        payload, native_reference
+                                    ),
+                                    "response": result,
+                                }
+                            )
+                            + "\n"
                         )
                     info = result["meta_info"]
                     output = info["output_token_logprobs"]
