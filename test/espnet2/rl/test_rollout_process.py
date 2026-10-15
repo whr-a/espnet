@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.engine import SGLangRolloutEngine
 from espnet2.rl.rollout import CheckpointRollout, RolloutProcess
 
 ENGINE = """
@@ -135,9 +136,80 @@ def test_engine_errors_reach_the_client_and_the_worker_keeps_serving(config, tmp
         with pytest.raises(RuntimeError, match="deliberate engine failure"):
             process.generate([{"id": "a", "fail": "raise"}], 1)
         assert len(process.generate([{"id": "a"}], 2)) == 2
+        # That batch released the engine to the training rank on its GPU.
+        with pytest.raises(RuntimeError, match="Load a policy before generation"):
+            process.generate([{"id": "a"}], 3)
+        process.load(tmp_path / "hf", 4)
+        assert len(process.generate([{"id": "a"}], 4)) == 2
     finally:
         process.close()
     assert process.process.returncode == 0
+
+
+@pytest.mark.parametrize("memory_saver", [True, False])
+def test_release_hands_back_weights_only_with_the_memory_saver(
+    memory_saver, tmp_path, monkeypatch
+):
+    calls = []
+
+    class Engine:
+        """Stands in for sglang.Engine and records what it is asked."""
+
+        def __init__(self, **settings):
+            calls.append(("build", settings["enable_memory_saver"]))
+            self.loop = asyncio.new_event_loop()
+            self.tokenizer_manager = SimpleNamespace(flush_cache=self.flush_cache)
+
+        async def flush_cache(self, timeout_s):
+            calls.append(("flush", timeout_s))
+            return SimpleNamespace(success=True, message="")
+
+        def update_weights_from_disk(self, model_path):
+            calls.append(("load", Path(model_path).name))
+            return True, "", 0
+
+        def release_memory_occupation(self):
+            calls.append(("release",))
+
+        def resume_memory_occupation(self):
+            calls.append(("resume",))
+
+    monkeypatch.setitem(sys.modules, "sglang", SimpleNamespace(Engine=Engine))
+    config = ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+        sglang_engine_kwargs={"enable_memory_saver": memory_saver},
+    )
+    engine = SGLangRolloutEngine(config, tmp_path / "p0", directory=tmp_path)
+    try:
+        engine.release()
+        engine.update(tmp_path / "p1")
+        engine.update(tmp_path / "p2")
+        engine.release()
+    finally:
+        engine.engine.loop.close()
+    if memory_saver:
+        # The weights and KV pool come back before the next policy fills them,
+        # and only when they were given away.
+        assert calls == [
+            ("build", True),
+            ("flush", 60),
+            ("release",),
+            ("resume",),
+            ("load", "p1"),
+            ("load", "p2"),
+            ("flush", 60),
+            ("release",),
+        ]
+    else:
+        assert calls == [
+            ("build", False),
+            ("flush", 60),
+            ("load", "p1"),
+            ("load", "p2"),
+            ("flush", 60),
+        ]
 
 
 def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):

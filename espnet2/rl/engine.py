@@ -87,8 +87,8 @@ class RolloutEngine:
         raise NotImplementedError
 
     def release(self):
-        """Give the last batch's working memory back to a GPU it shares with
-        a training rank, keeping what the next batch needs from the start."""
+        """Give memory back to a GPU this engine shares with a training rank
+        until the next ``update``, which takes back whatever it needs."""
 
     def close(self):
         pass
@@ -99,12 +99,17 @@ class SGLangRolloutEngine(RolloutEngine):
     # execution contract (see engine_kwargs).
     defaults = {}
     frozen = ()
+    # A memory-saver engine releases its weights and KV pool as well; it then
+    # holds no policy until update() resumes them and loads the next one.
+    memory_saver = released = False
 
     def __init__(self, config, model_path, *, directory, replica=0):
         super().__init__(config, model_path, directory=directory, replica=replica)
         from sglang import Engine
 
-        self.engine = Engine(**self.settings(model_path))
+        settings = self.settings(model_path)
+        self.memory_saver = bool(settings.get("enable_memory_saver"))
+        self.engine = Engine(**settings)
 
     def settings(self, model_path):
         return engine_kwargs(
@@ -115,6 +120,10 @@ class SGLangRolloutEngine(RolloutEngine):
         )
 
     def update(self, model_path):
+        if self.released:
+            # The resumed pages hold no weights until the load below.
+            self.engine.resume_memory_occupation()
+            self.released = False
         # Every export holds the complete policy; SGLang streams it into the
         # model's own load_weights and flushes the idle engine's caches.
         success, message, _ = self.engine.update_weights_from_disk(str(model_path))
@@ -123,12 +132,17 @@ class SGLangRolloutEngine(RolloutEngine):
 
     def release(self):
         # Waits until the scheduler is idle, then empties its allocator cache;
-        # the weights and the static KV pool stay allocated.
+        # without the memory saver the weights and static KV pool stay.
         result = self.engine.loop.run_until_complete(
             self.engine.tokenizer_manager.flush_cache(timeout_s=60)
         )
         if not result.success:
             raise RuntimeError(f"SGLang kept its batch memory: {result.message}")
+        if self.memory_saver:
+            # The weights and KV pool go too: the next update resumes them
+            # and loads a complete policy, so nothing needs a CPU backup.
+            self.engine.release_memory_occupation()
+            self.released = True
 
     def close(self):
         self.engine.shutdown()

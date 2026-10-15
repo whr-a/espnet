@@ -67,29 +67,32 @@ class RolloutServer:
         return {"version": version}
 
     def generate(self, requests, output, rollout_id):
-        if self.engine is None:
+        if self.version is None:
             raise RuntimeError("Load a policy before generation")
         start = time.monotonic()
         sources = json.loads(Path(requests).read_text())
         generations = self.engine.generate(sources, rollout_id)
+        version = self.version
         if self.config.execution_mode == "sync" and self.config.collocated:
-            # The training rank on this GPU needs the memory until next time.
+            # The training rank on this GPU needs the memory until the next
+            # load, and a released engine may keep no weights until then.
             self.engine.release()
+            self.version = None
         for generation in generations:
-            generation["policy_version"] = self.version
+            generation["policy_version"] = version
         result = {
             "rollout_id": rollout_id,
-            "policy_version": self.version,
+            "policy_version": version,
             "rollout_backend": self.config.rollout_backend,
             "generations": generations,
         }
         Path(output).write_text(json.dumps(result, allow_nan=False) + "\n")
         print(
             f"rollout {rollout_id}: {len(generations)} generations with policy "
-            f"{self.version} in {time.monotonic() - start:.1f} s",
+            f"{version} in {time.monotonic() - start:.1f} s",
             flush=True,
         )
-        return {"version": self.version}
+        return {"version": version}
 
     def close(self):
         engine, self.engine = self.engine, None
