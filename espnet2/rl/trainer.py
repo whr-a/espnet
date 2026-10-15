@@ -188,7 +188,7 @@ class NativeGRPOTrainer:
                 f"Rollout/native logprob disagreement {drift:.6g} > {self.config.score_tolerance}; "
                 "check checkpoint version, prefix, audio frontend and sampling distribution"
             )
-        scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
+        _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,
@@ -204,12 +204,7 @@ class NativeGRPOTrainer:
                 "token_level_rewards": token_rewards,
             }
         )
-        return {
-            "reward/mean": scores.mean().item(),
-            "reward/min": scores.min().item(),
-            "reward/max": scores.max().item(),
-            "rollout/logprob_max_error": drift,
-        }
+        return {**metrics, "rollout/logprob_max_error": drift}
 
     def prepare_async_batch(
         self,
@@ -315,7 +310,7 @@ class NativeGRPOTrainer:
                 f"Behavior native/SGLang logprob disagreement {numerical_error:.6g} "
                 f"> {self.config.score_tolerance}; the generating actor must match"
             )
-        scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
+        _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         advantages, returns = compute_grpo_outcome_advantage(
             token_rewards,
             mask,
@@ -331,9 +326,7 @@ class NativeGRPOTrainer:
             token_level_rewards=token_rewards,
         )
         return {
-            "reward/mean": scores.mean().item(),
-            "reward/min": scores.min().item(),
-            "reward/max": scores.max().item(),
+            **metrics,
             "rollout/logprob_max_error": numerical_error,
             "rollout/current_behavior_logprob_max_difference": (
                 (old - behavior).abs() * mask

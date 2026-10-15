@@ -62,26 +62,59 @@ def word_error_reward(source, generation):
 
 
 def outcome_rewards(batch, function=None):
+    """Score every candidate; return the rewards, their token-level placement
+    and the metrics to log.
+
+    A reward function scores one candidate, ``function(source, generation)``,
+    or, when it sets ``function.batched = True``, the whole batch at once,
+    ``function(sources, generations)``, returning one value per candidate. A
+    value is the reward, or a dict holding it as ``"reward"`` next to the
+    numbers it was made of (accuracy, format, WER, ...); every candidate must
+    report the same ones, and their batch means are logged as ``reward/<name>``.
+    """
     callback = resolve_callable(function) if function else word_error_reward
-    values = []
-    for source, text, tokens, length, raw in zip(
-        batch.non_tensor_batch["source"],
-        batch.non_tensor_batch["text"],
-        batch.batch["responses"],
-        batch.batch["response_lengths"],
-        batch.non_tensor_batch["generation"],
-        strict=True,
-    ):
-        value = float(
-            callback(
-                source,
-                {**raw, "text": text, "token_ids": tokens[: int(length)].tolist()},
-            )
+    sources = list(batch.non_tensor_batch["source"])
+    generations = [
+        {**raw, "text": text, "token_ids": tokens[: int(length)].tolist()}
+        for text, tokens, length, raw in zip(
+            batch.non_tensor_batch["text"],
+            batch.batch["responses"],
+            batch.batch["response_lengths"],
+            batch.non_tensor_batch["generation"],
+            strict=True,
         )
-        if not math.isfinite(value):
-            raise ValueError(f"Nonfinite reward for {source['id']}")
-        values.append(value)
-    scalar = torch.tensor(values, dtype=torch.float32)
+    ]
+    if getattr(callback, "batched", False):
+        results = list(callback(sources, generations))
+    else:
+        results = [
+            callback(source, generation)
+            for source, generation in zip(sources, generations, strict=True)
+        ]
+    if len(results) != len(sources):
+        raise ValueError("The reward function must score every candidate")
+    rows = [
+        value if isinstance(value, dict) else {"reward": value} for value in results
+    ]
+    columns = {name: [] for name in rows[0]}
+    for source, row in zip(sources, rows, strict=True):
+        if row.keys() != columns.keys():
+            raise ValueError("Every candidate must report the same reward components")
+        for name, value in row.items():
+            value = float(value)
+            if not math.isfinite(value):
+                raise ValueError(f"Nonfinite reward {name} for {source['id']}")
+            columns[name].append(value)
+    scalar = torch.tensor(columns.pop("reward"), dtype=torch.float32)
+    metrics = {
+        "reward/mean": scalar.mean().item(),
+        "reward/min": scalar.min().item(),
+        "reward/max": scalar.max().item(),
+        **{
+            f"reward/{name}": sum(values) / len(values)
+            for name, values in columns.items()
+        },
+    }
     token_rewards = torch.zeros_like(batch.batch["response_mask"])
     # An action mask may contain forced codec-delay frames: reward is assigned
     # to the last active action, rather than to a masked padding frame.
@@ -90,4 +123,4 @@ def outcome_rewards(batch, function=None):
         positions.masked_fill(batch.batch["response_mask"] == 0, -1).max(-1).values
     )
     token_rewards[torch.arange(len(batch)), last_active] = scalar
-    return scalar, token_rewards
+    return scalar, token_rewards, metrics
