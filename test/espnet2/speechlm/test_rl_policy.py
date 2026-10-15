@@ -82,3 +82,25 @@ def test_released_delay_layout_and_lengths():
     expected = torch.tensor([[[1, -1, -1], [2, 10, -1], [-1, 20, 100], [-1, -1, 200]]])
     torch.testing.assert_close(output, expected)
     torch.testing.assert_close(lengths, torch.tensor([4]))
+
+
+def test_half_precision_backbone_config_still_loads_checkpoints_exactly():
+    from transformers import LlamaConfig
+
+    geometry = LlamaConfig(
+        vocab_size=8,
+        hidden_size=8,
+        intermediate_size=16,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=32,
+    )
+    # As AutoConfig reads it from a released bfloat16 backbone.
+    geometry.dtype = torch.bfloat16
+    core = OriginalOpusARDelay(geometry, ["<pad>", "<sos/eos>", "a", "b"], 9)
+    assert {parameter.dtype for parameter in core.parameters()} == {torch.float32}
+    state = {key: torch.randn_like(value) for key, value in core.state_dict().items()}
+    core.load_state_dict(state, strict=True)
+    # A saved policy reloads bit for bit, as the rollout engine loads it.
+    assert all(torch.equal(core.state_dict()[key], state[key]) for key in state)

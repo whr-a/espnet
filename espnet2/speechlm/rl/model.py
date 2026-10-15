@@ -26,7 +26,11 @@ class OriginalOpusARDelay(nn.Module):
         self.sos_eos = token_list.index("<sos/eos>")
         self.pad_id = token_list.index("<pad>")
         self.decoders = nn.Module()
-        self.decoders.model = AutoModel.from_config(geometry)
+        # A backbone config may declare half precision (SmolLM: bfloat16),
+        # which from_config honours: loading an FP32 checkpoint would then
+        # round every decoder weight. Build in FP32 so loads are exact; the
+        # policy factory casts to the recipe dtype afterwards.
+        self.decoders.model = AutoModel.from_config(geometry, dtype=torch.float32)
         self.decoders.model.set_input_embeddings(None)
         self.decoders.model_type = "huggingface"
 
