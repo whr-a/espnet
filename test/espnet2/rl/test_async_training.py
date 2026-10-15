@@ -81,6 +81,12 @@ def test_invalid_drift_gate_settings(change):
         configuration(**change).validate()
 
 
+@pytest.mark.parametrize("change", [{"tis_clip_low": 0.0}, {"tis_clip": 0.9}])
+def test_icepop_bounds_hold_in_sync_too(change):
+    with pytest.raises(ValueError, match="IcePop"):
+        configuration(**change).validate()
+
+
 def test_icepop_loss_gradient_and_independent_kl_with_forced_frames():
     mask = torch.tensor([[1.0, 0.0, 1.0], [1.0, 1.0, 0.0]])
     old = torch.zeros_like(mask, requires_grad=True)
@@ -223,6 +229,42 @@ def test_drift_gate_statistics_and_the_mean_gate_on_an_offset(mode):
     prepare(errors)
     with pytest.raises(RuntimeError, match="max logprob disagreement 0.04"):
         prepare(torch.full((256,), 0.04))
+
+
+def test_synchronous_update_applies_icepop_and_equal_logprobs_weigh_one():
+    mask = torch.tensor([[1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
+    old = torch.tensor([[-0.5, -1.2, 0.0], [-0.3, 0.0, -2.0]])
+    advantages = torch.tensor([[1.0, 1.0, 0.0], [-2.0, 0.0, -2.0]])
+    config = SimpleNamespace(
+        clip_ratio_low=0.2,
+        clip_ratio_high=0.2,
+        tis_clip_low=0.5,
+        tis_clip=2.0,
+        global_batch_info={"batch_num_tokens": 4, "dp_size": 1},
+    )
+    plain_current = (old + 0.1).requires_grad_()
+    current = (old + 0.1).requires_grad_()
+    plain, _ = compute_policy_loss_vanilla(
+        old, plain_current, advantages, mask, "token-mean", config
+    )
+    corrected, metrics = compute_policy_loss_vanilla(
+        old, current, advantages, mask, "token-mean", config, rollout_log_probs=old
+    )
+    plain.backward()
+    corrected.backward()
+    # An engine that agrees with the learner leaves the update unchanged.
+    torch.testing.assert_close(corrected, plain, rtol=0, atol=0)
+    torch.testing.assert_close(current.grad, plain_current.grad, rtol=0, atol=0)
+    assert (metrics["actor/tis"], metrics["actor/tis_clipfrac"]) == (1.0, 0.0)
+    assert metrics["actor/tis_abs"] == 0.0
+    # The synchronous trainer hands the engine's logprobs to the same loss.
+    sync = configuration(prompts_per_step=32, group_size=8, micro_batch_size=64)
+    trainer = NativeGRPOTrainer(Scorer(-0.2), sync, reference=Scorer(-0.3))
+    batch = async_batch(sync)
+    trainer.prepare_batch(batch)
+    metrics = trainer.update_actor(batch)
+    assert metrics["actor/tis"] == pytest.approx(1.0)
+    assert metrics["actor/tis_clipfrac"] == 0.0
 
 
 def test_behavior_numerical_audit_accepts_real_learner_drift():

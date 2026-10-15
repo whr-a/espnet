@@ -414,11 +414,10 @@ class NativeGRPOTrainer:
                         mask,
                         loss_agg_mode=self.config.loss_agg_mode,
                         config=self.actor_config,
-                        rollout_log_probs=(
-                            part.batch["rollout_log_probs"]
-                            if self.config.execution_mode == "disagg_async"
-                            else None
-                        ),
+                        # IcePop corrects whatever separates the engine that
+                        # sampled the actions from the learner: the async
+                        # policy lag and a low-precision engine's numerics.
+                        rollout_log_probs=part.batch["rollout_log_probs"],
                     )
                     kl = agg_loss(
                         kl_penalty(

@@ -152,8 +152,9 @@ class ESPnetRLConfig:
                 raise ValueError(
                     "The one-step async pipeline requires weight interval and staleness 1"
                 )
-            if not 0 < self.tis_clip_low <= 1 <= self.tis_clip:
-                raise ValueError("Invalid IcePop importance-ratio bounds")
+        # IcePop corrects the policy-gradient term in both modes.
+        if not 0 < self.tis_clip_low <= 1 <= self.tis_clip:
+            raise ValueError("Invalid IcePop importance-ratio bounds")
         for name in ("train_gpus", "rollout_gpus"):
             value = getattr(self, name)
             if not isinstance(value, str):

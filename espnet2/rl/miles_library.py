@@ -40,9 +40,9 @@ def verify_miles(config):
     paths = [
         root / "miles/backends/training_utils/loss/hub/math_utils.py",
         root / "miles/ray/rollout/train_data_conversion.py",
+        # IcePop, which both execution modes apply.
+        root / "miles/backends/training_utils/loss/hub/corrections.py",
     ]
-    if getattr(config, "execution_mode", "sync") == "disagg_async":
-        paths.append(root / "miles/backends/training_utils/loss/hub/corrections.py")
     result = {"commit": revision, "source": str(root), "algorithms": {}}
     for path in paths:
         relative = str(path.relative_to(root))
