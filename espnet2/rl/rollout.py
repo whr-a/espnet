@@ -114,15 +114,23 @@ class CheckpointRollout:
             environment["NVIDIA_TF32_OVERRIDE"] = "0"
             environment["TORCH_ALLOW_TF32_CUBLAS_OVERRIDE"] = "0"
         # A subprocess is an independent GPU consumer, never a torchrun rank.
-        for name in (
+        training_identity = {
             "RANK",
             "LOCAL_RANK",
             "WORLD_SIZE",
             "LOCAL_WORLD_SIZE",
             "MASTER_ADDR",
             "MASTER_PORT",
-        ):
-            environment.pop(name, None)
+            "GROUP_RANK",
+            "ROLE_RANK",
+            "ROLE_WORLD_SIZE",
+        }
+        for name in list(environment):
+            if name in training_identity or name.startswith("TORCHELASTIC_"):
+                # torchrun injects these after the outer launcher is cleaned.
+                # USE_AGENT_STORE=True makes even an explicit TP1 tcp:// rank0
+                # a TCPStore client, leaving its own rendezvous without a server.
+                environment.pop(name)
         return environment
 
     def generate(self, sources, step):
