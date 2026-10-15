@@ -128,6 +128,32 @@ class CheckpointRollout:
     def generate(self, sources, step):
         if self.version is None:
             raise RuntimeError("Weights must be synchronized before rollout")
+        if self.config.rollout_num_replicas > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            from .rollout_replicas import merge_generations, run_replica
+
+            gpus = self.config.rollout_gpus.split(",")
+            count = self.config.rollout_num_replicas
+            if len(set(gpus)) != count or len(gpus) != count or len(sources) < count:
+                raise ValueError(
+                    "Each SGLang replica requires one distinct GPU and prompt shard"
+                )
+            with ThreadPoolExecutor(max_workers=count) as executor:
+                futures = [
+                    executor.submit(
+                        run_replica,
+                        self.config,
+                        self.version,
+                        sources[replica::count],
+                        step,
+                        replica,
+                        gpus[replica],
+                        sha256(self.version / "native.pt"),
+                    )
+                    for replica in range(count)
+                ]
+                results = [future.result() for future in futures]
+            return merge_generations(sources, results, self.config.group_size)
         requests = self.version / "requests.json"
         responses = self.version / "responses.json"
         requests.write_text(json.dumps(sources) + "\n")

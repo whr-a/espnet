@@ -41,6 +41,8 @@ def verify_miles(config):
         root / "miles/backends/training_utils/loss/hub/math_utils.py",
         root / "miles/ray/rollout/train_data_conversion.py",
     ]
+    if getattr(config, "execution_mode", "sync") == "disagg_async":
+        paths.append(root / "miles/backends/training_utils/loss/hub/corrections.py")
     result = {"commit": revision, "source": str(root), "algorithms": {}}
     for path in paths:
         relative = str(path.relative_to(root))
@@ -90,17 +92,49 @@ def agg_loss(
     return (values * mask).sum() * dp_size / denominator
 
 
-def compute_policy_loss_vanilla(old, current, advantages, mask, loss_agg_mode, config):
+def compute_policy_loss_vanilla(
+    old, current, advantages, mask, loss_agg_mode, config, *, rollout_log_probs=None
+):
+    if rollout_log_probs is not None and rollout_log_probs.shape != mask.shape:
+        raise ValueError(
+            "Behavior probabilities must preserve the sampled-action shape"
+        )
+    if not mask.bool().any():
+        raise ValueError("No valid rollout actions")
     losses, clipped = _algorithms().compute_policy_loss(
         old - current,
         advantages,
         config.clip_ratio_low,
         config.clip_ratio_high,
     )
-    loss = agg_loss(losses, mask, loss_agg_mode, **config.global_batch_info)
-    return loss, {
+    metrics = {
         "actor/clip_fraction": ((clipped * mask).sum() / mask.sum()).detach().item()
     }
+    if rollout_log_probs is not None:
+        from miles.backends.training_utils.loss.hub.corrections import icepop_function
+
+        # IcePop acts on the policy-gradient term only; KL keeps its own mask.
+        lengths = [int(row.sum()) for row in mask.bool()]
+        train_rows = [
+            values[row.bool()].detach() for values, row in zip(old, mask, strict=True)
+        ]
+        behavior_rows = [
+            values[row.bool()].detach()
+            for values, row in zip(rollout_log_probs, mask, strict=True)
+        ]
+        valid = losses[mask.bool()]
+        corrected, _, correction = icepop_function(
+            config,
+            pg_loss=valid,
+            train_log_probs=train_rows,
+            rollout_log_probs=behavior_rows,
+            loss_masks=[torch.ones(length, device=valid.device) for length in lengths],
+        )
+        losses = torch.zeros_like(losses).masked_scatter(mask.bool(), corrected)
+        for name, values in correction.items():
+            metrics[f"actor/{name}"] = values.mean().detach().item()
+    loss = agg_loss(losses, mask, loss_agg_mode, **config.global_batch_info)
+    return loss, metrics
 
 
 def kl_penalty(current, reference, kind):

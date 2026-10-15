@@ -116,6 +116,8 @@ class NativeGRPOTrainer:
         self.actor_config = SimpleNamespace(
             clip_ratio_low=config.clip_ratio,
             clip_ratio_high=config.clip_ratio,
+            tis_clip_low=config.tis_clip_low,
+            tis_clip=config.tis_clip,
             global_batch_info={},
         )
 
@@ -170,6 +172,124 @@ class NativeGRPOTrainer:
             "rollout/logprob_max_error": drift,
         }
 
+    def prepare_async_batch(
+        self,
+        batch,
+        behavior_policy=None,
+        *,
+        behavior_version,
+        learner_version,
+        behavior_checkpoint_sha256,
+    ):
+        """Audit the behavior actor independently of the current learner.
+
+        Native/engine numerical agreement uses the exact generating checkpoint.
+        The expected one-update policy lag is handled by Miles IcePop in the
+        policy-gradient loss, rather than weakening the numerical audit.
+        """
+        if self.config.execution_mode != "disagg_async":
+            raise ValueError("Async batch preparation requires disagg_async mode")
+        if (
+            type(behavior_version) is not int
+            or type(learner_version) is not int
+            or not 0
+            <= learner_version - behavior_version
+            <= self.config.max_weight_staleness
+            or behavior_version < 0
+        ):
+            raise ValueError("Invalid or excessive behavior policy staleness")
+        if len(behavior_checkpoint_sha256) != 64 or any(
+            c not in "0123456789abcdef" for c in behavior_checkpoint_sha256
+        ):
+            raise ValueError(
+                "The async batch requires an exact behavior checkpoint SHA256"
+            )
+        if len(batch) != self.config.global_candidate_batch_size:
+            raise ValueError(
+                "Async batch does not contain the full global candidate count"
+            )
+        identities = batch.non_tensor_batch["uid"].tolist()
+        size = self.config.group_size
+        groups = [identities[i : i + size] for i in range(0, len(batch), size)]
+        if (
+            any(len(set(group)) != 1 for group in groups)
+            or len({group[0] for group in groups}) != self.config.prompts_per_step
+        ):
+            raise ValueError("Async batches must contain complete unique prompt groups")
+        for generation in batch.non_tensor_batch["generation"]:
+            if (
+                generation.get("behavior_policy_version") != behavior_version
+                or generation.get("behavior_checkpoint_sha256")
+                != behavior_checkpoint_sha256
+            ):
+                raise ValueError(
+                    "Mixed or unrecorded behavior checkpoint in async batch"
+                )
+        if behavior_version == learner_version:
+            behavior_policy = self.policy
+        elif behavior_policy is None:
+            raise ValueError(
+                "Stale rollout requires the independently loaded behavior policy"
+            )
+        elif behavior_policy is self.policy:
+            raise ValueError("Stale rollout cannot be audited with the current actor")
+        with torch.no_grad():
+            old = self._score_chunks(self.policy, batch)
+            behavior = (
+                old
+                if behavior_policy is self.policy
+                else self._score_chunks(behavior_policy, batch)
+            )
+            reference = self._score_chunks(self.reference, batch)
+        mask = batch.batch["response_mask"]
+        for scores in (old, behavior, reference):
+            if scores.shape != mask.shape:
+                raise ValueError(
+                    "Native async scores must preserve every sampled action"
+                )
+        numerical_error = (
+            ((behavior - batch.batch["rollout_log_probs"]).abs() * mask).max().item()
+        )
+        if (
+            not np.isfinite(numerical_error)
+            or numerical_error > self.config.score_tolerance
+        ):
+            raise RuntimeError(
+                f"Behavior native/SGLang logprob disagreement {numerical_error:.6g} "
+                f"> {self.config.score_tolerance}; the generating actor must match"
+            )
+        scores, token_rewards = outcome_rewards(batch, self.config.reward_function)
+        advantages, returns = compute_grpo_outcome_advantage(
+            token_rewards,
+            mask,
+            batch.non_tensor_batch["uid"],
+            norm_adv_by_std_in_grpo=self.config.normalize_advantage,
+        )
+        batch.batch.update(
+            old_log_probs=old,
+            ref_log_probs=reference,
+            behavior_native_log_probs=behavior,
+            advantages=advantages,
+            returns=returns,
+            token_level_rewards=token_rewards,
+        )
+        return {
+            "reward/mean": scores.mean().item(),
+            "reward/min": scores.min().item(),
+            "reward/max": scores.max().item(),
+            "rollout/logprob_max_error": numerical_error,
+            "rollout/current_behavior_logprob_max_difference": (
+                (old - behavior).abs() * mask
+            )
+            .max()
+            .item(),
+            "rollout/behavior_policy_version": behavior_version,
+            "rollout/learner_policy_version": learner_version,
+            "rollout/weight_staleness": learner_version - behavior_version,
+            "rollout/global_prompt_batch_size": len(groups),
+            "rollout/global_candidate_batch_size": len(batch),
+        }
+
     def update_actor(self, batch):
         # Each group baseline is computed globally before DDP sharding.
         if len(batch) % self.world_size:
@@ -206,6 +326,11 @@ class NativeGRPOTrainer:
                     mask,
                     loss_agg_mode=self.config.loss_agg_mode,
                     config=self.actor_config,
+                    rollout_log_probs=(
+                        part.batch["rollout_log_probs"]
+                        if self.config.execution_mode == "disagg_async"
+                        else None
+                    ),
                 )
                 kl = agg_loss(
                     kl_penalty(
@@ -290,6 +415,8 @@ class NativeGRPOTrainer:
                 parameter.data = parameter.detach().to(device)
 
     def train(self, sources):
+        if self.config.execution_mode != "sync":
+            raise ValueError("Use the Miles async driver for disagg_async training")
         output = Path(self.config.output_dir)
         output.mkdir(parents=True, exist_ok=True)
         if self.rollout is None and self.rank == 0:

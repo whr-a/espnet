@@ -26,6 +26,7 @@ from .utils import get_device_name
 @dataclass
 class ESPnetRLConfig:
     family: str = "owsm"
+    execution_mode: str = "sync"
     rollout_backend: str = "sglang"
     sglang_source: str = ""
     sglang_engine_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -44,8 +45,17 @@ class ESPnetRLConfig:
     dtype: str = "float32"
     seed: int = 42
     steps: int = 10
-    prompts_per_step: int = 2
-    group_size: int = 4
+    warmup_steps: int = 0
+    prompts_per_step: int | None = None
+    group_size: int | None = None
+    # These public names count prompts and candidates per prompt separately.
+    train_batch_size: int | None = None
+    n_samples_per_prompt: int | None = None
+    update_weights_interval: int = 1
+    max_weight_staleness: int = 1
+    async_off_policy_correction: str = "icepop"
+    tis_clip_low: float = 0.5
+    tis_clip: float = 2.0
     micro_batch_size: int = 1
     ppo_epochs: int = 1
     learning_rate: float = 1e-6
@@ -68,6 +78,7 @@ class ESPnetRLConfig:
     train_encoder: bool = True
     rollout_python: str = "python"
     rollout_gpus: str = "6,7"
+    rollout_num_replicas: int = 1
     vllm_source: str = ""
     vllm_tensor_parallel_size: int = 1
     vllm_gpu_memory_utilization: float = 0.8
@@ -80,7 +91,62 @@ class ESPnetRLConfig:
     reward_function: str | None = None
     adapter_options: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        for public, existing, default in (
+            ("train_batch_size", "prompts_per_step", 2),
+            ("n_samples_per_prompt", "group_size", 4),
+        ):
+            value = getattr(self, public)
+            existing_value = getattr(self, existing)
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"{public} must be a positive integer")
+            if value is not None and existing_value not in (None, value):
+                raise ValueError(f"{public} conflicts with {existing}")
+            setattr(
+                self,
+                existing,
+                (
+                    value
+                    if value is not None
+                    else (default if existing_value is None else existing_value)
+                ),
+            )
+
+    @property
+    def global_candidate_batch_size(self):
+        return self.prompts_per_step * self.group_size
+
     def validate(self):
+        if self.execution_mode not in ("sync", "disagg_async"):
+            raise ValueError("execution_mode must be sync or disagg_async")
+        if (
+            type(self.warmup_steps) is not int
+            or not 0 <= self.warmup_steps < self.steps
+        ):
+            raise ValueError("warmup_steps must be within the total update budget")
+        for public, existing in (
+            ("train_batch_size", "prompts_per_step"),
+            ("n_samples_per_prompt", "group_size"),
+        ):
+            if getattr(self, public) is not None and getattr(self, public) != getattr(
+                self, existing
+            ):
+                raise ValueError(f"{public} conflicts with {existing}")
+        if self.execution_mode == "disagg_async":
+            if self.rollout_backend != "sglang":
+                raise ValueError("Disaggregated async training requires SGLang")
+            if self.update_weights_interval != 1 or self.max_weight_staleness != 1:
+                raise ValueError(
+                    "The one-step async pipeline requires weight interval and staleness 1"
+                )
+            if self.async_off_policy_correction != "icepop":
+                raise ValueError("The async profile requires Miles IcePop correction")
+            if not 0 < self.tis_clip_low <= 1 <= self.tis_clip:
+                raise ValueError("Invalid IcePop importance-ratio bounds")
+        if type(self.rollout_num_replicas) is not int or self.rollout_num_replicas < 1:
+            raise ValueError("rollout_num_replicas must be a positive integer")
+        if self.rollout_num_replicas > 1 and self.rollout_backend != "sglang":
+            raise ValueError("Independent rollout replicas currently require SGLang")
         if self.group_size < 2:
             raise ValueError("GRPO requires group_size >= 2")
         for name in (
