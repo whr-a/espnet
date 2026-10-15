@@ -14,6 +14,7 @@ def main():
     for name in ("config", "model", "requests", "output"):
         parser.add_argument(f"--{name}", required=True)
     parser.add_argument("--step", type=int, required=True)
+    parser.add_argument("--policy-version", type=int)
     args = parser.parse_args()
     config = ESPnetRLConfig(**json.loads(Path(args.config).read_text()))
     config.validate()
@@ -29,7 +30,10 @@ def main():
         callback = resolve_callable(config.vllm_generate_factory)
     generations = callback(config, args.model, sources, args.step)
     result = {
-        "policy_step": args.step,
+        "policy_step": (
+            args.step if args.policy_version is None else args.policy_version
+        ),
+        "rollout_id": args.step,
         "native_sha256": sha256(Path(args.model).parent / "native.pt"),
         "rollout_backend": config.rollout_backend,
         "generations": generations,

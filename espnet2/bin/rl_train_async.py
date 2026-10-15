@@ -8,6 +8,7 @@ from pathlib import Path
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import read_manifest
+from espnet2.rl.short_run import validate_short_run, verify_data_admission
 
 
 def parser():
@@ -56,31 +57,6 @@ def resolve_nodes(nodes, train, rollout):
     return first, second
 
 
-def verify_data_admission(config, path):
-    from espnet2.rl.rollout import sha256
-
-    admission = json.loads(Path(path).read_text())
-    if not admission.get("training_ready"):
-        raise ValueError("Data has not passed the complete training admission")
-    if admission.get("scoped_component_admission") != "VERIFIED_REGISTERED_PROTECTION":
-        raise ValueError(
-            "All registered protected and heldout components must be excluded"
-        )
-    if admission.get("exact_key_gate") != "PASSED":
-        raise ValueError("Registered protected identities must be excluded")
-    for protected, expected in admission.get("protection_bindings", {}).items():
-        if sha256(protected) != expected:
-            raise ValueError("Protected metadata changed after data preparation")
-    manifest_hashes = admission.get("manifest_sha256", {})
-    if manifest_hashes.get("train32") != sha256(config.manifest):
-        raise ValueError("Training manifest differs from its frozen admission")
-    if config.eval_manifest is None or manifest_hashes.get("heldout") != sha256(
-        config.eval_manifest
-    ):
-        raise ValueError("Heldout manifest differs from its frozen admission")
-    return admission
-
-
 def main():
     args = parser().parse_args()
     config = ESPnetRLConfig.load(args.config)
@@ -96,22 +72,7 @@ def main():
     config.validate()
     if config.execution_mode != "disagg_async":
         raise ValueError("This launcher requires execution_mode=disagg_async")
-    if (
-        config.steps > 5
-        or config.ppo_epochs != 1
-        or config.global_candidate_batch_size != 256
-    ):
-        raise ValueError(
-            "The requested short-run profile is 32×8 and at most 5 optimizer updates"
-        )
-    if (
-        config.prompts_per_step != 32
-        or config.group_size != 8
-        or config.warmup_steps != 1
-    ):
-        raise ValueError(
-            "The requested profile requires 32 prompts, 8 candidates, and first update warmup"
-        )
+    validate_short_run(config)
     if config.miles_source:
         sys.path.insert(0, config.miles_source)
     from espnet2.rl.miles_library import verify_miles
@@ -145,6 +106,7 @@ def main():
         raise FileExistsError("Use a fresh output_dir for this run")
     config.output_dir = str(output)
     frozen.write_text(json.dumps(config.to_dict(), indent=2) + "\n")
+    (output / "data_admission.json").write_text(json.dumps(admission, indent=2) + "\n")
     for source in sources:
         source["reward_config"] = str(frozen)
     ray.init(address=args.ray_address)

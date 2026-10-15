@@ -93,6 +93,9 @@ def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
             execution_mode="disagg_async",
             steps=5,
             warmup_steps=1,
+            train_batch_size=32,
+            n_samples_per_prompt=8,
+            rollout_num_replicas=8,
             adapter_factory="unused:factory",
             exporter="unused:exporter",
             sglang_generate_factory="unused:generate",
@@ -101,6 +104,7 @@ def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
         driver, evidence = load_async_loop(config, components)
         assert driver.__code__.co_filename.endswith("train_async.py")
         assert evidence["runtime"]["source_modified"] is False
+        assert evidence["runtime"]["same_code_object"] is True
         await with_disposer(driver, orchestration_args(config))
 
     try:

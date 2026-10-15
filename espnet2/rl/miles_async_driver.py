@@ -26,6 +26,14 @@ def load_async_loop(config, components):
     ).stdout
     if path.read_bytes() != original:
         raise ValueError("Pinned Miles async driver has local changes")
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    if status:
+        raise ValueError("The Miles runtime requires an unchanged tracked source tree")
     spec = importlib.util.spec_from_file_location("espnet_pinned_miles_async", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -50,6 +58,7 @@ def load_async_loop(config, components):
         "bindings": sorted(factories),
         "source_modified": False,
         "original_function_modified": False,
+        "same_code_object": driver.__code__ is module.train.__code__,
     }
     return driver, evidence
 

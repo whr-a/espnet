@@ -65,7 +65,7 @@ python -m espnet2.bin.rl_train_async --config conf/rl_miles_wer_disagg_async.yam
 Remove `--validate-only` after frozen runtime/environment, node placement, application connectivity, real weight identity and data gates pass. Selectors are actual Ray node IDs/IPs, not SSH entry addresses. This command does not submit/restore/migrate/resize platform resources. For collocate, launch four native ranks while keeping physical GPUs 4–7 for isolated SGLang subprocesses:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc-per-node=4 -m espnet2.bin.rl_train --config conf/rl_miles_wer_collocate.yaml --manifest data/rl/frozen/train32.jsonl --eval-manifest data/rl/frozen/heldout.jsonl --checkpoint /path/to/native/checkpoint --train-config /path/to/native/config --output-dir exp/new_collocate_run
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc-per-node=4 -m espnet2.bin.rl_train --config conf/rl_miles_wer_collocate.yaml --manifest data/rl/frozen/train32.jsonl --eval-manifest data/rl/frozen/heldout.jsonl --data-admission data/rl/frozen/admission.json --checkpoint /path/to/native/checkpoint --train-config /path/to/native/config --output-dir exp/new_collocate_run
 ```
 
 The config's `rollout_num_replicas: 4` and `rollout_gpus: '4,5,6,7'` are physical inference GPU IDs; training ranks bind their torchrun local IDs. Four-rank/four-replica execution must be verified before claiming eight-GPU usage. Preserve raw rollout, behavior/current/reference probabilities, masks, versions, loss, checkpoints and timing for all five updates.
