@@ -427,6 +427,22 @@ class TestBehaviorSnapshot(unittest.TestCase):
                 torch.testing.assert_close(value, current[name], rtol=0, atol=0)
             torch.testing.assert_close(saved, behavior.weight, rtol=0, atol=0)
 
+    def test_snapshot_values_are_views_of_one_buffer_per_dtype(self):
+        model = nn.Module()
+        model.a = nn.Parameter(torch.randn(3, 2))
+        model.b = nn.Parameter(torch.randn(4).to(torch.bfloat16))
+        model.c = nn.Parameter(torch.randn(5))
+        model.frozen = nn.Parameter(torch.randn(2), requires_grad=False)
+        snapshot = BehaviorSnapshot(model)
+        snapshot.take(3)
+        a, b, c = snapshot.values
+        storage = a.untyped_storage()
+        self.assertEqual(storage.data_ptr(), c.untyped_storage().data_ptr())
+        self.assertEqual(storage.nbytes(), (6 + 5) * 4)
+        self.assertEqual(b.untyped_storage().nbytes(), 4 * 2)
+        for value, parameter in zip(snapshot.values, (model.a, model.b, model.c)):
+            torch.testing.assert_close(value, parameter.detach(), rtol=0, atol=0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

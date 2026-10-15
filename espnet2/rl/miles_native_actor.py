@@ -36,10 +36,21 @@ class BehaviorSnapshot:
         self.policy = policy
         self.version = None
         self.parameters = [p for p in policy.parameters() if p.requires_grad]
-        self.values = [
-            torch.empty(p.shape, dtype=p.dtype, pin_memory=p.is_cuda)
-            for p in self.parameters
-        ]
+        # Views of one buffer per dtype: the pinned allocator rounds every
+        # allocation up to a power of two, per parameter a third more host
+        # memory than the weights (Bagpiper bf16: 20.3 instead of 16 GiB).
+        sizes = {}
+        for p in self.parameters:
+            sizes[p.dtype] = sizes.get(p.dtype, 0) + p.numel()
+        pinned = any(p.is_cuda for p in self.parameters)
+        buffers = {
+            dtype: torch.empty(size, dtype=dtype, pin_memory=pinned)
+            for dtype, size in sizes.items()
+        }
+        self.values, used = [], dict.fromkeys(buffers, 0)
+        for p in self.parameters:
+            start, used[p.dtype] = used[p.dtype], used[p.dtype] + p.numel()
+            self.values.append(buffers[p.dtype][start : used[p.dtype]].view(p.shape))
 
     @torch.no_grad()
     def take(self, version):
