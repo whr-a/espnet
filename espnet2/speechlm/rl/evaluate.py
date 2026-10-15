@@ -5,14 +5,13 @@
 import argparse
 import json
 import subprocess
-import unicodedata
 from pathlib import Path
 
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
-from espnet2.rl.rewards import edit_distance
+from espnet2.rl.rewards import edit_distance, words
 from espnet2.rl.rollout import CheckpointRollout, sha256
 from espnet2.rl.utils import build_policy
 
@@ -29,12 +28,7 @@ def summarize_wer(sources, generations, group_size):
             and generation["prompt_token_ids"] != source["prompt_token_ids"]
         ):
             raise ValueError("Saved native prompt differs from the heldout manifest")
-        reference = (
-            unicodedata.normalize("NFKC", source["reference"]).casefold().split()
-        )
-        hypothesis = (
-            unicodedata.normalize("NFKC", generation["text"]).casefold().split()
-        )
+        reference, hypothesis = words(source["reference"]), words(generation["text"])
         errors = edit_distance(reference, hypothesis)
         rows.append(
             {
@@ -48,7 +42,7 @@ def summarize_wer(sources, generations, group_size):
                 "wer": errors / max(1, len(reference)),
             }
         )
-    words = sum(row["reference_words"] for row in rows)
+    total_words = sum(row["reference_words"] for row in rows)
     errors = sum(row["word_errors"] for row in rows)
     return {
         "samples": len(sources),
@@ -56,11 +50,11 @@ def summarize_wer(sources, generations, group_size):
         "group_size": group_size,
         "source_ids": [source["id"] for source in sources],
         "wer_mean": sum(row["wer"] for row in rows) / len(rows),
-        "wer_corpus": errors / words if words else None,
+        "wer_corpus": errors / total_words if total_words else None,
         "total_word_errors": errors,
-        "total_reference_words": words,
+        "total_reference_words": total_words,
         "empty_reference_completions": sum(not row["reference_words"] for row in rows),
-        "normalization": "NFKC, casefold, whitespace tokens; punctuation retained",
+        "normalization": "NFKC, casefold, punctuation removed, whitespace tokens",
         "mean_definition": "mean over every completion of errors/max(1,reference_words)",
         "corpus_definition": "sum(errors)/sum(reference_words), repeated for every completion; null when denominator is zero",
         "records": rows,

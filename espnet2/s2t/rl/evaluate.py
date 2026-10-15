@@ -3,19 +3,14 @@
 import argparse
 import hashlib
 import json
-import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 import yaml
 
-from espnet2.rl.rewards import edit_distance
+from espnet2.rl.rewards import edit_distance, words
 from espnet2.s2t.rl.policy import OWSMPolicy, load_audio
-
-
-def normalize(text):
-    return unicodedata.normalize("NFKC", text).casefold().split()
 
 
 def evaluate(config, manifest, output, max_tokens=256):
@@ -68,7 +63,7 @@ def evaluate(config, manifest, output, max_tokens=256):
                 )
             ]
             text = processor.decode(pieces)
-            reference, hypothesis = normalize(source["reference"]), normalize(text)
+            reference, hypothesis = words(source["reference"]), words(text)
             errors = edit_distance(reference, hypothesis)
             results.append(
                 dict(

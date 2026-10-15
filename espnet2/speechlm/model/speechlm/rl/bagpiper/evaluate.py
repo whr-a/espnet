@@ -110,7 +110,9 @@ def verify_export(checkpoint, directory):
 
 
 def summarize(sources, generations, config):
-    from .rewards import ASRWERReward, mmau_match, normalize
+    from espnet2.rl.rewards import words
+
+    from .rewards import ASRWERReward, mmau_match
 
     metric = "wer" if sources[0]["task"] == "tts_asr_wer" else "mmau_official_accuracy"
     callback = (
@@ -133,7 +135,7 @@ def summarize(sources, generations, config):
                 metric: value,
                 "text": generation["text"],
                 "reference": source["reference"],
-                "reference_words": len(normalize(source["reference"])),
+                "reference_words": len(words(source["reference"])),
             }
         )
         values.append(value)

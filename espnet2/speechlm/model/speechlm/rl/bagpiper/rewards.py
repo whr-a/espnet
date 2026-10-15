@@ -5,28 +5,11 @@
 import hashlib
 import json
 import re
-import unicodedata
 from pathlib import Path
 
+from espnet2.rl.rewards import word_error_rate, words
+
 from .data import OPTION_LABEL
-
-
-def normalize(text):
-    return re.sub(
-        r"[^\w\s]", " ", unicodedata.normalize("NFKC", text).casefold()
-    ).split()
-
-
-def wer(reference, hypothesis):
-    expected = normalize(reference)
-    actual = normalize(hypothesis)
-    row = list(range(len(actual) + 1))
-    for i, word in enumerate(expected, 1):
-        new = [i]
-        for j, value in enumerate(actual, 1):
-            new.append(min(new[-1] + 1, row[j] + 1, row[j - 1] + (word != value)))
-        row = new
-    return row[-1] / max(1, len(expected))
 
 
 def qa_reward(source, generation):
@@ -180,7 +163,7 @@ class ASRWERReward:
         with torch.inference_mode():
             ids = self.asr.generate(**inputs.to(self.asr.device), **kwargs)
         hypothesis = self.processor.batch_decode(ids, skip_special_tokens=True)[0]
-        value = wer(source["reference"], hypothesis)
+        value = word_error_rate(source["reference"], hypothesis)
         Path(str(target) + ".json").write_text(
             json.dumps(
                 {

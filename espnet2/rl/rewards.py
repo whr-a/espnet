@@ -14,6 +14,7 @@
 """Local WER reward and an explicit custom reward hook."""
 
 import math
+import re
 import unicodedata
 
 import torch
@@ -33,6 +34,22 @@ def edit_distance(reference, hypothesis):
     return row[-1]
 
 
+def words(text):
+    """Words the WER compares: NFKC, casefolded, punctuation removed.
+
+    LibriSpeech-style references are unpunctuated while models such as OWSM
+    write punctuated text, so raw tokens would count punctuation as word
+    errors and a WER reward would mostly teach the model to drop it.
+    """
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return re.sub(r"[^\w\s]", " ", normalized).split()
+
+
+def word_error_rate(reference, hypothesis):
+    expected = words(reference)
+    return edit_distance(expected, words(hypothesis)) / max(1, len(expected))
+
+
 def word_error_reward(source, generation):
     mode = source.get("mode", "")
     if mode and mode not in ("text_only", "text_text", "text_dialogue"):
@@ -41,9 +58,7 @@ def word_error_reward(source, generation):
         )
     if "reference" not in source:
         raise ValueError("WER reward requires a reference in every manifest record")
-    reference = unicodedata.normalize("NFKC", source["reference"]).casefold().split()
-    hypothesis = unicodedata.normalize("NFKC", generation["text"]).casefold().split()
-    return -edit_distance(reference, hypothesis) / max(1, len(reference))
+    return -word_error_rate(source["reference"], generation["text"])
 
 
 def outcome_rewards(batch, function=None):

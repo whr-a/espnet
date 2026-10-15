@@ -40,7 +40,7 @@ def test_sample_mean_differs_from_word_weighted_corpus():
         summarize_wer(sources, list(reversed(outputs)), 2)
 
 
-def test_empty_reference_and_punctuation_are_explicit():
+def test_empty_reference_is_explicit_and_punctuation_is_not_an_error():
     result = summarize_wer(
         [{"id": "empty", "reference": ""}],
         [generation("empty", ""), generation("empty", "hello!")],
@@ -55,7 +55,9 @@ def test_empty_reference_and_punctuation_are_explicit():
         [generation("punctuation", "HELLO!"), generation("punctuation", "hello")],
         2,
     )
-    assert result["wer_mean"] == 0.5
+    # The reward's normalization: case and punctuation are not word errors.
+    assert result["wer_mean"] == 0
+    assert result["normalization"].startswith("NFKC, casefold, punctuation removed")
 
 
 @pytest.mark.parametrize(
