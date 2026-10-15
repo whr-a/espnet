@@ -18,6 +18,7 @@ import json
 import os
 import random
 import traceback
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,8 @@ from .miles_library import (
     kl_penalty,
     verify_miles,
 )
+from .parallel import average_native_gradients, synchronize_native_model
+from .parallel_optimizer import CPUOffloadedAdamW
 from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
 from .types import validate_token_scores
@@ -84,11 +87,28 @@ class NativeGRPOTrainer:
         self.world_size = (
             distributed.get_world_size() if distributed.is_initialized() else 1
         )
-        if config.optimizer_device is not None and self.world_size > 1:
-            raise ValueError(
-                "CPU optimizer offload currently requires a single native actor rank"
-            )
         self.policy = policy.eval()
+        self.device = next(policy.parameters()).device
+        if self.world_size > 1:
+            # Synchronize buffers once as well. DDP per-forward buffer sync is
+            # disabled because checkpoint-owned native buffers can reside on CPU.
+            synchronize_native_model(policy, chunk_bytes=config.allreduce_chunk_bytes)
+        if self.world_size > 1 and config.distributed_strategy == "ddp":
+            device_ids = [self.device.index] if self.device.type != "cpu" else None
+            self.actor = DistributedDataParallel(
+                policy,
+                device_ids=device_ids,
+                find_unused_parameters=True,
+                gradient_as_bucket_view=True,
+                # Eval-mode native buffers are fixed checkpoint tensors. Do not
+                # broadcast them at every microbatch or mix CPU/GPU buffers.
+                broadcast_buffers=False,
+                init_sync=False,
+            )
+        else:
+            self.actor = policy
+        # Replica synchronization must precede reference cloning: all ranks reference
+        # the same initial actor, including when loading consumed local RNG.
         self.reference = (
             reference
             if reference is not None
@@ -97,18 +117,20 @@ class NativeGRPOTrainer:
         if config.reference_device is not None:
             self.reference = self.reference.to(config.reference_device)
         self.reference.requires_grad_(False)
-        self.device = next(policy.parameters()).device
-        if self.world_size > 1:
-            device_ids = [self.device.index] if self.device.type != "cpu" else None
-            self.actor = DistributedDataParallel(
-                policy, device_ids=device_ids, find_unused_parameters=True
-            )
-        else:
-            self.actor = policy
-        self.optimizer = torch.optim.AdamW(
+        optimizer_class = (
+            CPUOffloadedAdamW
+            if config.optimizer_device == "cpu" and self.world_size > 1
+            else torch.optim.AdamW
+        )
+        self.optimizer = optimizer_class(
             [p for p in policy.parameters() if p.requires_grad],
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
+            **(
+                {"chunk_bytes": config.allreduce_chunk_bytes}
+                if optimizer_class is CPUOffloadedAdamW
+                else {}
+            ),
         )
         self.rollout = rollout
         from types import SimpleNamespace
@@ -316,44 +338,57 @@ class NativeGRPOTrainer:
                     )
                 )
                 part.to(self.device)
-                current = self.actor(part)
-                mask = part.batch["response_mask"]
-                validate_token_scores(current, mask)
-                loss, ppo_metrics = compute_policy_loss_vanilla(
-                    part.batch["old_log_probs"],
-                    current.log_probs,
-                    part.batch["advantages"],
-                    mask,
-                    loss_agg_mode=self.config.loss_agg_mode,
-                    config=self.actor_config,
-                    rollout_log_probs=(
-                        part.batch["rollout_log_probs"]
-                        if self.config.execution_mode == "disagg_async"
-                        else None
-                    ),
+                final_microbatch = start + self.config.micro_batch_size >= len(local)
+                synchronization = (
+                    self.actor.no_sync()
+                    if isinstance(self.actor, DistributedDataParallel)
+                    and not final_microbatch
+                    else nullcontext()
                 )
-                kl = agg_loss(
-                    kl_penalty(
+                # no_sync must include forward and backward. One reduction of
+                # accumulated gradients replaces one full-model reduction per
+                # candidate without changing the global token denominator.
+                with synchronization:
+                    current = self.actor(part)
+                    mask = part.batch["response_mask"]
+                    validate_token_scores(current, mask)
+                    loss, ppo_metrics = compute_policy_loss_vanilla(
+                        part.batch["old_log_probs"],
                         current.log_probs,
-                        part.batch["ref_log_probs"],
-                        self.config.kl_type,
-                    ),
-                    mask,
-                    self.config.loss_agg_mode,
-                    **self.actor_config.global_batch_info,
-                )
-                entropy = agg_loss(
-                    current.entropy,
-                    mask,
-                    self.config.loss_agg_mode,
-                    **self.actor_config.global_batch_info,
-                )
-                total = (
-                    loss + self.config.kl_coef * kl - self.config.entropy_coef * entropy
-                )
-                if not torch.isfinite(total):
-                    raise FloatingPointError("Nonfinite policy loss")
-                total.backward()
+                        part.batch["advantages"],
+                        mask,
+                        loss_agg_mode=self.config.loss_agg_mode,
+                        config=self.actor_config,
+                        rollout_log_probs=(
+                            part.batch["rollout_log_probs"]
+                            if self.config.execution_mode == "disagg_async"
+                            else None
+                        ),
+                    )
+                    kl = agg_loss(
+                        kl_penalty(
+                            current.log_probs,
+                            part.batch["ref_log_probs"],
+                            self.config.kl_type,
+                        ),
+                        mask,
+                        self.config.loss_agg_mode,
+                        **self.actor_config.global_batch_info,
+                    )
+                    entropy = agg_loss(
+                        current.entropy,
+                        mask,
+                        self.config.loss_agg_mode,
+                        **self.actor_config.global_batch_info,
+                    )
+                    total = (
+                        loss
+                        + self.config.kl_coef * kl
+                        - self.config.entropy_coef * entropy
+                    )
+                    if not torch.isfinite(total):
+                        raise FloatingPointError("Nonfinite policy loss")
+                    total.backward()
                 metrics["actor/loss"] += total.detach().item() / self.config.ppo_epochs
                 metrics["actor/kl_loss"] += kl.detach().item() / self.config.ppo_epochs
                 metrics["actor/entropy"] += (
@@ -367,6 +402,14 @@ class NativeGRPOTrainer:
                 )
                 for name, value in ppo_metrics.items():
                     metrics[name] = metrics.get(name, 0.0) + value * token_weight
+            if (
+                self.world_size > 1
+                and self.config.distributed_strategy == "native_allreduce"
+            ):
+                average_native_gradients(
+                    [p for p in self.policy.parameters() if p.requires_grad],
+                    chunk_bytes=self.config.allreduce_chunk_bytes,
+                )
             norm = torch.nn.utils.clip_grad_norm_(
                 self.policy.parameters(), self.config.max_grad_norm
             )
@@ -388,12 +431,14 @@ class NativeGRPOTrainer:
     def _optimizer_step(self):
         """Keep Adam state on CPU while preserving the native parameter objects.
 
-        Offload follows backward and gradient clipping. Only optimizer-owned
-        parameters move temporarily; the frozen reference and model buffers
-        keep their configured devices. The actor returns to its original
-        devices before scoring, exporting or starting the next update.
+        Offload follows backward and gradient clipping. Multi-rank actors use
+        owner CPU shadows, keeping their original devices and storage. The
+        legacy single-rank branch temporarily moves optimizer-owned tensors;
+        it restores devices before scoring, exporting or the next update.
         """
-        if self.config.optimizer_device is None:
+        if self.config.optimizer_device is None or isinstance(
+            self.optimizer, CPUOffloadedAdamW
+        ):
             self.optimizer.step()
             return
         parameters = [

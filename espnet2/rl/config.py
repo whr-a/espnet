@@ -42,6 +42,8 @@ class ESPnetRLConfig:
     device: str = field(default_factory=get_device_name)
     reference_device: str | None = None
     optimizer_device: str | None = None
+    distributed_strategy: str = "ddp"
+    allreduce_chunk_bytes: int = 64 * 1024 * 1024
     dtype: str = "float32"
     seed: int = 42
     steps: int = 10
@@ -184,6 +186,10 @@ class ESPnetRLConfig:
             raise ValueError("dtype must be float32, bfloat16 or float16")
         if self.optimizer_device not in (None, "cpu"):
             raise ValueError("optimizer_device must be null or cpu")
+        if self.distributed_strategy not in ("ddp", "native_allreduce"):
+            raise ValueError("distributed_strategy must be ddp or native_allreduce")
+        if self.allreduce_chunk_bytes < 1:
+            raise ValueError("allreduce_chunk_bytes must be positive")
         if self.learning_rate <= 0 or self.max_grad_norm <= 0 or self.kl_coef < 0:
             raise ValueError("Invalid optimizer or KL settings")
         if self.score_tolerance < 0:
