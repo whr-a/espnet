@@ -202,7 +202,7 @@ def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
     )
     assert single.train_ranks == 1 and single.rollout_replicas == 1
     assert single.collocated is True
-    assert (single.prompts_per_step, single.group_size) == (16, 4)
+    assert (single.prompts_per_step, single.group_size) == (32, 8)
     args = parser().parse_args(["--config", str(conf / "rl_miles_wer_1gpu.yaml")])
     command, environment = launch_command(args, python="pinned-python")
     assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
@@ -218,7 +218,7 @@ def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
     )
     assert pair.train_ranks == 1 and pair.rollout_replicas == 1
     assert pair.collocated is False
-    assert (pair.prompts_per_step, pair.group_size) == (16, 4)
+    assert (pair.prompts_per_step, pair.group_size) == (32, 8)
     selectors = [
         "--config",
         str(conf / "rl_miles_wer_2gpu_async.yaml"),

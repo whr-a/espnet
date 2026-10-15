@@ -157,19 +157,21 @@ between scales.
 
 | Recipe | Devices | Per optimizer update | Updates |
 |---|---|---|---|
-| `conf/rl_miles_wer_1gpu.yaml` | 1 (train and rollout share GPU 0) | 16 × 4 = 64 | 100 |
-| `conf/rl_miles_wer_2gpu_async.yaml` | 2 (1 train + 1 rollout, one node) | 16 × 4 = 64 | 100 |
+| `conf/rl_miles_wer_1gpu.yaml` | 1 (train and rollout share GPU 0) | 32 × 8 = 256 | 100 |
+| `conf/rl_miles_wer_2gpu_async.yaml` | 2 (1 train + 1 rollout, one node) | 32 × 8 = 256 | 100 |
 | `conf/rl_miles_wer_collocate.yaml` | 8 (4 train + 4 rollout, one node) | 32 × 8 = 256 | 5 |
 | `conf/rl_miles_wer_disagg_async.yaml` | 16 (8 + 8, two nodes) | 32 × 8 = 256 | 5 |
 
-The two small recipes keep the per-update geometry of the WEST
+The one- and two-GPU recipes use the same 32 prompts × 8 candidates per
+update as the larger profiles, in the spirit of the WEST
 [`examples/grpo`](https://github.com/wenet-e2e/west/tree/main/examples/grpo)
-AVQA reference (16 prompts × 4 candidates), so a one-GPU run and a two-GPU
-run optimize the same objective and only differ in whether the next rollout
-overlaps the current training step. Both keep the reference policy and the
-Adam state on CPU; `rollout_mem_fraction` sizes the engine, which matters when
-it shares a device. Temperature stays at 1 because the engine's raw log
-probabilities have to match the native actor's distribution.
+GRPO recipe, so a one-GPU run and a two-GPU run optimize the same objective
+and only differ in whether the next rollout overlaps the current training
+step. OWSM v4 base is small enough that the reference policy, the Adam state
+and native scoring stay on the training GPU; `rollout_mem_fraction` sizes the
+engine, which matters when it shares that device. Temperature stays at 1
+because the engine's raw log probabilities have to match the native actor's
+distribution.
 
 The 32×8 profiles use four training/four rollout GPUs on one node or eight
 training/eight rollout GPUs on separate nodes. The native source environment

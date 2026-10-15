@@ -1,5 +1,5 @@
 # Two H100s on one node: GPU 0 trains while GPU 1 runs the rollout engine,
-# driven by the pinned Miles async loop. Same 16 x 4 = 64 candidates per
+# driven by the pinned Miles async loop. Same 32 x 8 = 256 candidates per
 # optimizer update as the one-GPU recipe, so the two can be compared
 # directly; here the next rollout overlaps the current training step.
 family: owsm
@@ -15,9 +15,9 @@ train_encoder: true
 seed: 42
 steps: 100
 warmup_steps: 1
-prompts_per_step: 16
-group_size: 4
-micro_batch_size: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 16
 ppo_epochs: 1
 learning_rate: 1.0e-05
 weight_decay: 0.0
@@ -36,8 +36,8 @@ language: <eng>
 task: <asr>
 predict_timestamps: false
 device: cuda:0
-reference_device: cpu
-optimizer_device: cpu
+reference_device: cuda:0
+optimizer_device: null
 distributed_timeout_minutes: 4320
 update_weights_interval: 1
 max_weight_staleness: 1
@@ -49,3 +49,4 @@ rollout_mem_fraction: 0.6
 sglang_engine_kwargs:
   attention_backend: torch_native
   sampling_backend: pytorch
+  max_running_requests: 256

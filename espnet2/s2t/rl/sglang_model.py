@@ -1,6 +1,8 @@
 """Native OWSM decoder executed by SGLang's actual model runner and sampler.
 
-This first version prioritizes exact native probabilities over KV throughput.
+This version prioritizes exact native probabilities over KV throughput: each
+step recomputes every running request's full prefix with the native decoder,
+batched into padded calls exactly as the native scorer pads its candidates.
 It supports TP=1, full prefill and disabled radix cache/CUDA graph. The first
 input ID is an opaque source index that is stripped before native decoding;
 it never participates in the OWSM text context or response action mask.
@@ -13,8 +15,12 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 
 from espnet2.s2t.rl.policy import OWSMPolicy, load_audio
+
+# Upper bound on the full-vocabulary FP32 logits one decoder call materializes.
+LOGITS_BUDGET_BYTES = 2 * 1024**3
 
 
 class ESPnetOWSMForCausalLM(nn.Module):
@@ -134,9 +140,8 @@ class ESPnetOWSMForCausalLM(nn.Module):
             )
         else:
             raise ValueError("Unsupported SGLang forward mode for native OWSM")
-        outputs = []
-        prefix_logprobs = []
-        for row, (pool_id, chunk) in enumerate(zip(pool_ids, chunks, strict=True)):
+        rows = []
+        for pool_id, chunk in zip(pool_ids, chunks, strict=True):
             if forward_batch.forward_mode.is_decode():
                 if pool_id not in self.request_prefixes:
                     raise RuntimeError(
@@ -150,31 +155,48 @@ class ESPnetOWSMForCausalLM(nn.Module):
                 if not prefix:
                     raise ValueError("OWSM native decoder prefix is empty")
             self.request_prefixes[pool_id] = (source_index, prefix)
-            memory, memory_lengths = self._memory(source_index, device)
-            tokens = torch.tensor([prefix], dtype=torch.long, device=device)
-            logits, _ = self.policy.model.decoder(
-                memory,
-                memory_lengths,
-                tokens,
-                torch.tensor([len(prefix)], device=device),
+            rows.append((source_index, prefix))
+        audit = (
+            not forward_batch.forward_mode.is_decode() and forward_batch.return_logprob
+        )
+        if audit and any(len(prefix) < 2 for _, prefix in rows):
+            raise ValueError(
+                "OWSM prefix probability audit requires at least two native prompt tokens"
             )
-            outputs.append(logits[0, -1].float())
-            if (
-                not forward_batch.forward_mode.is_decode()
-                and forward_batch.return_logprob
-            ):
-                if len(prefix) < 2:
-                    raise ValueError(
-                        "OWSM prefix probability audit requires at least two native prompt tokens"
-                    )
-                prefix_logprobs.append(
-                    torch.log_softmax(logits[0, -2].float(), -1)[prefix[-1]]
-                )
-        result = LogitsProcessorOutput(next_token_logits=torch.stack(outputs))
-        if not forward_batch.forward_mode.is_decode() and forward_batch.return_logprob:
-            # logprob_start_len is deliberately the final prompt position, so
-            # SGLang returns the real final native prompt token probability.
-            result.input_token_logprobs = torch.stack(prefix_logprobs)
+        # Every running request goes through the native decoder together,
+        # padded exactly as the native scorer pads its candidates. The decoder
+        # still recomputes each full prefix; batching only removes the
+        # per-request launches. Rows are grouped so the full-vocabulary logits
+        # of one call stay within a fixed memory budget.
+        longest = max(len(prefix) for _, prefix in rows)
+        per_row = longest * self.config.vocab_size * 4
+        width = max(1, LOGITS_BUDGET_BYTES // per_row)
+        outputs, prefix_logprobs = [], []
+        for start in range(0, len(rows), width):
+            group = rows[start : start + width]
+            memories = [self._memory(source, device) for source, _ in group]
+            memory = pad_sequence([m[0] for m, _ in memories], batch_first=True)
+            memory_lengths = torch.cat([lengths for _, lengths in memories])
+            tokens = pad_sequence(
+                [torch.tensor(p, dtype=torch.long, device=device) for _, p in group],
+                batch_first=True,
+                padding_value=self.policy.model.eos,
+            )
+            token_lengths = torch.tensor([len(p) for _, p in group], device=device)
+            logits, _ = self.policy.model.decoder(
+                memory, memory_lengths, tokens, token_lengths
+            )
+            index = torch.arange(len(group), device=device)
+            last = token_lengths - 1
+            outputs.append(logits[index, last].float())
+            if audit:
+                # logprob_start_len is deliberately the final prompt position,
+                # so SGLang returns the real final native prompt token probability.
+                previous = torch.log_softmax(logits[index, last - 1].float(), -1)
+                prefix_logprobs.append(previous[index, tokens[index, last]])
+        result = LogitsProcessorOutput(next_token_logits=torch.cat(outputs))
+        if audit:
+            result.input_token_logprobs = torch.cat(prefix_logprobs)
         result.customized_info = {
             "owsm_source_sha256": [self.source_sha256] * len(pool_ids)
         }

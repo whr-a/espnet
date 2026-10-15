@@ -1,8 +1,7 @@
 # One H100: the training rank and its SGLang rollout engine share GPU 0.
-# 16 prompts x 4 candidates = 64 candidates per optimizer update, the same
-# per-update geometry as the WEST examples/grpo AVQA reference recipe.
-# The reference policy and the Adam state stay on CPU so the device holds
-# only the actor, its gradients and the rollout engine's static fraction.
+# 32 prompts x 8 candidates = 256 candidates per optimizer update. OWSM v4
+# base is small (102M), so the reference policy, Adam state and scoring stay
+# on the GPU; the engine keeps every candidate of an update in flight at once.
 family: owsm
 model_version: v4
 execution_mode: sync
@@ -16,9 +15,9 @@ train_encoder: true
 seed: 42
 steps: 100
 warmup_steps: 1
-prompts_per_step: 16
-group_size: 4
-micro_batch_size: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 16
 ppo_epochs: 1
 learning_rate: 1.0e-05
 weight_decay: 0.0
@@ -37,11 +36,12 @@ language: <eng>
 task: <asr>
 predict_timestamps: false
 device: cuda:0
-reference_device: cpu
-optimizer_device: cpu
+reference_device: cuda:0
+optimizer_device: null
 train_gpus: '0'
 rollout_gpus: '0'
 rollout_mem_fraction: 0.2
 sglang_engine_kwargs:
   attention_backend: torch_native
   sampling_backend: pytorch
+  max_running_requests: 256
