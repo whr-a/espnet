@@ -35,14 +35,11 @@ sglang_engine_kwargs:
   attention_backend: torch_native
   sampling_backend: pytorch
 execution_mode: disagg_async
-train_batch_size: 32
-n_samples_per_prompt: 8
 update_weights_interval: 1
 max_weight_staleness: 1
-async_off_policy_correction: icepop
 tis_clip_low: 0.5
 tis_clip: 2.0
 eval_manifest: data/rl/heldout.jsonl
 reference_device: cpu
+train_gpus: '0,1,2,3,4,5,6,7'
 rollout_gpus: 0,1,2,3,4,5,6,7
-rollout_num_replicas: 8

@@ -37,18 +37,8 @@ def main():
     if config.execution_mode != "sync":
         raise ValueError("Use rl_train_async for disagg_async execution")
     admission = None
-    if config.prompts_per_step == 32 and config.group_size == 8:
-        from espnet2.rl.short_run import (
-            validate_collocate_geometry,
-            verify_data_admission,
-        )
-
-        validate_collocate_geometry(config, running=not args.validate_only)
-        if args.data_admission is None:
-            raise ValueError("The 32×8 collocate profile requires --data-admission")
-        admission = verify_data_admission(config, args.data_admission)
-    elif args.data_admission:
-        from espnet2.rl.short_run import verify_data_admission
+    if args.data_admission:
+        from espnet2.rl.data import verify_data_admission
 
         admission = verify_data_admission(config, args.data_admission)
     if config.miles_source:

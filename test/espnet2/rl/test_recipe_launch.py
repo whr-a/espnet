@@ -15,7 +15,22 @@ from espnet2.rl.config import ESPnetRLConfig
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def frozen_config(tmp_path, mode, *, small=False):
+def frozen_config(tmp_path, mode, *, small=False, name=None, **overrides):
+    """Write a recipe yaml whose geometry is only its two device lists.
+
+    The small profile is the one-GPU recipe: a single training rank sharing
+    its device with the rollout engine. The full profiles keep the original
+    four collocated training ranks with four rollout replicas, and eight of
+    each for the disaggregated async node pair.
+    """
+    devices = (
+        dict(train_gpus="0", rollout_gpus="0")
+        if small
+        else dict(
+            train_gpus="0,1,2,3,4,5,6,7" if mode == "disagg_async" else "0,1,2,3",
+            rollout_gpus=("0,1,2,3,4,5,6,7" if mode == "disagg_async" else "4,5,6,7"),
+        )
+    )
     config = ESPnetRLConfig(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
@@ -25,12 +40,11 @@ def frozen_config(tmp_path, mode, *, small=False):
         group_size=4 if small else 8,
         steps=5,
         warmup_steps=0 if small else 1,
-        rollout_num_replicas=1 if small else (8 if mode == "disagg_async" else 4),
-        rollout_gpus="4,5,6,7",
         reference_device="cpu",
         manifest="train32.jsonl",
+        **{**devices, **overrides},
     )
-    path = tmp_path / f"{mode}.yaml"
+    path = tmp_path / f"{name or mode}.yaml"
     path.write_text(yaml.safe_dump(config.to_dict()))
     return path
 
@@ -83,13 +97,109 @@ def test_shared_launcher_routes_async_and_collocate_and_keeps_small_sync(
     args.rollout_node = None
     with pytest.raises(ValueError, match="rollout-node"):
         launch_command(args)
-    small = frozen_config(tmp_path, "sync", small=True)
+    # A one-GPU recipe trains in this process, on exactly its own device.
+    small = frozen_config(tmp_path, "sync", small=True, name="small")
     args = parser().parse_args(["--config", str(small)])
+    command, environment = launch_command(args, python="pinned-python")
+    assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
+    assert "torch.distributed.run" not in command
+    assert environment["CUDA_VISIBLE_DEVICES"] == "0"
+
+
+@pytest.mark.parametrize(
+    "train_gpus, rollout_gpus, ranks",
+    [
+        ("0", "0", 1),
+        ("3", "3", 1),
+        ("0", "1", 1),
+        ("0,1", "2,3", 2),
+        ("0,1,2,3", "4,5,6,7", 4),
+        ("0,1,2,3,4,5,6,7", "0,1,2,3,4,5,6,7", 8),
+    ],
+)
+def test_launcher_geometry_follows_the_recipe_train_gpus(
+    tmp_path, monkeypatch, train_gpus, rollout_gpus, ranks
+):
+    """One training rank per declared train GPU; torchrun only above one."""
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    path = frozen_config(
+        tmp_path, "sync", train_gpus=train_gpus, rollout_gpus=rollout_gpus
+    )
+    assert ESPnetRLConfig.load(path).train_ranks == ranks
+    args = parser().parse_args(["--config", str(path)])
+    command, environment = launch_command(args, python="pinned-python")
+    assert environment["CUDA_VISIBLE_DEVICES"] == train_gpus
+    if ranks == 1:
+        assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
+        assert "torch.distributed.run" not in command
+    else:
+        assert command[:7] == [
+            "pinned-python",
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc-per-node={ranks}",
+            "-m",
+            "espnet2.bin.rl_train",
+        ]
+
+
+def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
+    tmp_path, monkeypatch
+):
+    """The two new recipes carry the same geometry the launcher reads back."""
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    conf = ROOT / "egs2" / "owsm_v4" / "s2t1" / "conf"
+    single = ESPnetRLConfig.load(conf / "rl_miles_wer_1gpu.yaml")
+    assert (single.execution_mode, single.train_gpus, single.rollout_gpus) == (
+        "sync",
+        "0",
+        "0",
+    )
+    assert single.train_ranks == 1 and single.rollout_replicas == 1
+    assert single.collocated is True
+    assert (single.prompts_per_step, single.group_size) == (16, 4)
+    args = parser().parse_args(["--config", str(conf / "rl_miles_wer_1gpu.yaml")])
+    command, environment = launch_command(args, python="pinned-python")
+    assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
+    assert "torch.distributed.run" not in command
+    assert environment["CUDA_VISIBLE_DEVICES"] == "0"
+    pair = ESPnetRLConfig.load(conf / "rl_miles_wer_2gpu_async.yaml")
+    assert (pair.execution_mode, pair.train_gpus, pair.rollout_gpus) == (
+        "disagg_async",
+        "0",
+        "1",
+    )
+    assert pair.train_ranks == 1 and pair.rollout_replicas == 1
+    assert pair.collocated is False
+    assert (pair.prompts_per_step, pair.group_size) == (16, 4)
+    selectors = [
+        "--config",
+        str(conf / "rl_miles_wer_2gpu_async.yaml"),
+        "--ray-address",
+        "ray-address",
+        "--train-node",
+        "train-node",
+        "--rollout-node",
+        "rollout-node",
+    ]
+    args = parser().parse_args(selectors + ["--data-admission", "audit.json"])
     assert launch_command(args, python="pinned-python")[0][:3] == [
         "pinned-python",
         "-m",
-        "espnet2.bin.rl_train",
+        "espnet2.bin.rl_train_async",
     ]
+    # An admission receipt is optional for both launchers; the Ray selectors
+    # are not.
+    assert launch_command(parser().parse_args(selectors), python="pinned-python")[0][
+        :3
+    ] == ["pinned-python", "-m", "espnet2.bin.rl_train_async"]
+    for dropped in ("--ray-address", "--train-node", "--rollout-node"):
+        trimmed = list(selectors)
+        index = trimmed.index(dropped)
+        del trimmed[index : index + 2]
+        with pytest.raises(ValueError, match=dropped.lstrip("-")):
+            launch_command(parser().parse_args(trimmed), python="pinned-python")
 
 
 def mock_python(tmp_path):
@@ -209,7 +319,7 @@ def test_owsm_recipe_builder_preserves_five_updates_and_existing_manifest(
     heldout.write_text("already frozen heldout")
     observed = []
     monkeypatch.setattr(
-        "espnet2.rl.short_run.verify_data_admission",
+        "espnet2.rl.data.verify_data_admission",
         lambda config, path: observed.append((config.manifest, path)),
     )
     work = tmp_path / "work"
@@ -237,7 +347,9 @@ def test_owsm_recipe_builder_preserves_five_updates_and_existing_manifest(
     recipe.main()
     effective = ESPnetRLConfig.load(work / "rl_config.yaml")
     assert effective.steps == 5 and effective.warmup_steps == 1
-    assert effective.rollout_gpus == "4,5,6,7" and effective.reference_device == "cpu"
+    assert effective.train_gpus == "0,1,2,3" and effective.rollout_gpus == "4,5,6,7"
+    assert effective.train_ranks == 4 and effective.rollout_replicas == 4
+    assert effective.reference_device == "cpu"
     assert (
         effective.manifest == str(manifest)
         and manifest.read_text() == "already frozen data"

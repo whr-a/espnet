@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 
+from espnet2.rl.engine import engine_kwargs
+
 from .events import freeze_native_inputs, request_record
 from .integration import prepared_native_metadata, request_factory
 
@@ -27,23 +29,34 @@ def generate(config, model_path, sources, step):
     # Export directory is atomically moved after freezing. Resolve its current
     # path explicitly rather than leaving the staging path in server config.
     payload_path = model_path.parent / "payload.json"
-    kwargs = dict(config.sglang_engine_kwargs)
-    overrides = kwargs.get("json_model_override_args", "{}")
-    overrides = json.loads(overrides) if isinstance(overrides, str) else dict(overrides)
-    overrides["espnet_rl_payload_path"] = str(payload_path)
-    kwargs.update(
-        model_path=str(model_path),
-        dtype=config.dtype,
-        random_seed=config.seed + step,
-        tp_size=1,
-        disable_cuda_graph=True,
-        disable_radix_cache=True,
-        disable_overlap_schedule=True,
-        chunked_prefill_size=-1,
-        max_running_requests=1,
-        mem_fraction_static=0.65,
-        json_model_override_args=json.dumps(overrides),
+    model_args = config.sglang_engine_kwargs.get("json_model_override_args", "{}")
+    model_args = (
+        json.loads(model_args) if isinstance(model_args, str) else dict(model_args)
     )
+    model_args["espnet_rl_payload_path"] = str(payload_path)
+    kwargs = engine_kwargs(
+        config,
+        step,
+        defaults=dict(
+            model_path=str(model_path),
+            dtype=config.dtype,
+            max_running_requests=1,
+            mem_fraction_static=0.65,
+        ),
+        frozen=(
+            "model_path",
+            "dtype",
+            "tp_size",
+            "chunked_prefill_size",
+            "disable_cuda_graph",
+            "disable_radix_cache",
+            "disable_overlap_schedule",
+            # The native event capture assumes one request in flight.
+            "max_running_requests",
+        ),
+    )
+    # The payload path is resolved per run and is never a recipe setting.
+    kwargs["json_model_override_args"] = json.dumps(model_args)
     engine = sgl.Engine(**kwargs)
     generations = []
     events = model_path.parent / "sglang_events.jsonl"

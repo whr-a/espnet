@@ -43,7 +43,7 @@ def launch_command(args, *, python=sys.executable):
     command = [python, "-m"]
     environment = dict(os.environ)
     if config.execution_mode == "disagg_async":
-        for name in ("ray_address", "train_node", "rollout_node", "data_admission"):
+        for name in ("ray_address", "train_node", "rollout_node"):
             if not getattr(args, name):
                 raise ValueError(f"disagg_async requires --{name.replace('_', '-')}")
         command.append("espnet2.bin.rl_train_async")
@@ -53,38 +53,35 @@ def launch_command(args, *, python=sys.executable):
             for name in ("ray_address", "train_node", "rollout_node")
         ):
             raise ValueError("Ray node selectors require a disagg_async config")
-        if config.prompts_per_step == 32 and config.group_size == 8:
-            from espnet2.rl.short_run import validate_collocate_geometry
-
-            validate_collocate_geometry(config, running=False)
-            if not args.data_admission:
-                raise ValueError("The 32×8 collocate recipe requires --data-admission")
-            if not args.validate_only:
-                if int(environment.get("WORLD_SIZE", "1")) != 1:
-                    raise ValueError(
-                        "Invoke rl_launch once outside an existing distributed launcher"
-                    )
-                for name in (
-                    "RANK",
-                    "LOCAL_RANK",
-                    "WORLD_SIZE",
-                    "LOCAL_WORLD_SIZE",
-                    "MASTER_ADDR",
-                    "MASTER_PORT",
-                    "MILES_SUPERVISOR_SUBPROCESS_INDEX",
-                    "MILES_CELL_INDEX",
-                    "MILES_POD_INDEX",
-                    "MILES_BASE_GPU_ID",
-                    "MILES_K8S_NAMESPACE",
-                    "MILES_K8S_RELEASE",
-                ):
-                    environment.pop(name, None)
-                environment["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+        if not args.validate_only:
+            if int(environment.get("WORLD_SIZE", "1")) != 1:
+                raise ValueError(
+                    "Invoke rl_launch once outside an existing distributed launcher"
+                )
+            for name in (
+                "RANK",
+                "LOCAL_RANK",
+                "WORLD_SIZE",
+                "LOCAL_WORLD_SIZE",
+                "MASTER_ADDR",
+                "MASTER_PORT",
+                "MILES_SUPERVISOR_SUBPROCESS_INDEX",
+                "MILES_CELL_INDEX",
+                "MILES_POD_INDEX",
+                "MILES_BASE_GPU_ID",
+                "MILES_K8S_NAMESPACE",
+                "MILES_K8S_RELEASE",
+            ):
+                environment.pop(name, None)
+            # The recipe owns the geometry: one training rank per train GPU.
+            # A single rank runs in this process; several need torchrun.
+            environment["CUDA_VISIBLE_DEVICES"] = config.train_gpus
+            if config.train_ranks > 1:
                 command.extend(
                     [
                         "torch.distributed.run",
                         "--standalone",
-                        "--nproc-per-node=4",
+                        f"--nproc-per-node={config.train_ranks}",
                         "-m",
                     ]
                 )
@@ -123,7 +120,7 @@ def main():
         if getattr(args, field) is not None:
             setattr(effective, field, getattr(args, field))
     if args.data_admission:
-        from espnet2.rl.short_run import verify_data_admission
+        from espnet2.rl.data import verify_data_admission
 
         verify_data_admission(effective, args.data_admission)
     subprocess.run(command, env=environment, check=True)

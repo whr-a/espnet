@@ -1,5 +1,6 @@
 """Independent probability and gradient oracles for stale GRPO batches."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -21,11 +22,15 @@ def configuration(**kwargs):
     )
 
 
-def test_prompt_batch_aliases_and_frozen_roundtrip(tmp_path):
+def test_prompt_batch_geometry_and_frozen_roundtrip(tmp_path):
+    # prompts_per_step and group_size are the only names for the per-update
+    # geometry now, and they carry their own defaults.
+    plain = configuration()
+    assert (plain.prompts_per_step, plain.group_size) == (2, 4)
     config = configuration(
         execution_mode="disagg_async",
-        train_batch_size=32,
-        n_samples_per_prompt=8,
+        prompts_per_step=32,
+        group_size=8,
         steps=5,
         warmup_steps=1,
     )
@@ -33,20 +38,13 @@ def test_prompt_batch_aliases_and_frozen_roundtrip(tmp_path):
     assert config.prompts_per_step == 32
     assert config.group_size == 8
     assert config.global_candidate_batch_size == 256
-    import json
-
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config.to_dict()))
     assert ESPnetRLConfig.load(path).to_dict() == config.to_dict()
-    with pytest.raises(ValueError, match="conflicts"):
-        configuration(prompts_per_step=8, train_batch_size=32)
-    with pytest.raises(ValueError, match="conflicts"):
-        configuration(prompts_per_step=2, train_batch_size=32)
-    with pytest.raises(ValueError, match="conflicts"):
-        configuration(group_size=4, n_samples_per_prompt=8)
-    config.prompts_per_step = 16
-    with pytest.raises(ValueError, match="conflicts"):
-        config.validate()
+    # The former aliases cannot name the geometry under any value any more.
+    for alias in ("train_batch_size", "n_samples_per_prompt"):
+        with pytest.raises(TypeError):
+            configuration(**{alias: 32})
 
 
 @pytest.mark.parametrize(
@@ -55,10 +53,11 @@ def test_prompt_batch_aliases_and_frozen_roundtrip(tmp_path):
         {"rollout_backend": "vllm"},
         {"update_weights_interval": 2},
         {"max_weight_staleness": 2},
-        {"async_off_policy_correction": "none"},
         {"tis_clip_low": 1.1},
         {"tis_clip": float("nan")},
         {"warmup_steps": 5},
+        {"rollout_mem_fraction": 1.0},
+        {"rollout_mem_fraction": 0.0},
     ],
 )
 def test_invalid_async_profiles(change):
@@ -176,7 +175,7 @@ def async_batch(config):
 
 def test_behavior_numerical_audit_accepts_real_learner_drift():
     config = configuration(
-        execution_mode="disagg_async", train_batch_size=32, n_samples_per_prompt=8
+        execution_mode="disagg_async", prompts_per_step=32, group_size=8
     )
     trainer = NativeGRPOTrainer(Scorer(-0.7), config, reference=Scorer(-0.3))
     batch = async_batch(config)
@@ -199,7 +198,7 @@ def test_behavior_numerical_audit_accepts_real_learner_drift():
 )
 def test_behavior_audit_rejects_contract_violation(failure):
     config = configuration(
-        execution_mode="disagg_async", train_batch_size=32, n_samples_per_prompt=8
+        execution_mode="disagg_async", prompts_per_step=32, group_size=8
     )
     trainer = NativeGRPOTrainer(Scorer(-0.7), config, reference=Scorer(-0.3))
     batch = async_batch(config)

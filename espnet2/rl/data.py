@@ -45,6 +45,56 @@ def read_manifest(path):
     return records
 
 
+def verify_data_admission(config, path):
+    """Bind the live manifests and their media to a prepared admission receipt.
+
+    The receipt records the SHA256 of every manifest it admitted and the
+    record counts it saw. Training re-derives both from disk, re-hashes each
+    referenced audio file, and requires the training and heldout media to stay
+    disjoint. Recipe-specific provenance stays in the receipt itself.
+    """
+    from .rollout import sha256
+
+    admission = json.loads(Path(path).read_text())
+    if admission.get("training_ready") is not True:
+        raise ValueError("Data has not passed its preparation admission")
+    recorded = admission.get("manifest_sha256")
+    if not isinstance(recorded, dict) or not recorded:
+        raise ValueError("Data admission must record its manifest SHA256 values")
+    manifests = {"train": config.manifest, "heldout": config.eval_manifest}
+    splits = {}
+    for role, manifest in manifests.items():
+        if manifest is None:
+            continue
+        if sha256(manifest) not in set(recorded.values()):
+            raise ValueError(f"The {role} manifest differs from its admission")
+        splits[role] = read_manifest(manifest)
+    if "train" not in splits:
+        raise ValueError("Data admission requires a prepared training manifest")
+    counts = admission.get("counts")
+    if counts is not None and counts != {
+        role: len(rows) for role, rows in splits.items()
+    }:
+        raise ValueError("Manifest record counts differ from the admission")
+    media = {}
+    for role, rows in splits.items():
+        hashes = set()
+        for row in rows:
+            if (
+                not row.get("audio")
+                or not row.get("audio_sha256")
+                or sha256(row["audio"]) != row["audio_sha256"]
+            ):
+                raise ValueError("Admitted audio changed or lacks a frozen SHA256")
+            if row["audio_sha256"] in hashes:
+                raise ValueError("Independent prompts cannot duplicate admitted audio")
+            hashes.add(row["audio_sha256"])
+        media[role] = hashes
+    if media.get("train", set()) & media.get("heldout", set()):
+        raise ValueError("Training and heldout audio are not independent")
+    return admission
+
+
 def collate_rollouts(sources, generations, group_size):
     """Generations carry exactly the actions sampled by the inference worker."""
     if len(generations) != len(sources) * group_size:

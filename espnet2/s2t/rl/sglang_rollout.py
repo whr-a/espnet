@@ -5,6 +5,7 @@ import json
 import math
 from pathlib import Path
 
+from espnet2.rl.engine import engine_kwargs
 from espnet2.s2t.rl.policy import owsm_symbol_id
 
 
@@ -52,39 +53,30 @@ def generate(config, model_path, sources, step):
     request_path = Path(model_path).parent / "requests.json"
     if json.loads(request_path.read_text()) != sources:
         raise ValueError("SGLang sources differ from frozen rollout requests")
-    defaults = dict(
-        model_path=str(model_path),
-        dtype="float32",
-        tp_size=1,
-        skip_tokenizer_init=True,
-        disable_cuda_graph=True,
-        disable_overlap_schedule=True,
-        disable_radix_cache=True,
-        chunked_prefill_size=-1,
-        attention_backend="torch_native",
-        sampling_backend="pytorch",
-        mem_fraction_static=0.25,
-        context_length=2048,
-        max_running_requests=16,
-        random_seed=config.seed + step,
-        log_level="info",
+    settings = engine_kwargs(
+        config,
+        step,
+        defaults=dict(
+            model_path=str(model_path),
+            dtype="float32",
+            skip_tokenizer_init=True,
+            attention_backend="torch_native",
+            sampling_backend="pytorch",
+            mem_fraction_static=0.25,
+            context_length=2048,
+            max_running_requests=16,
+        ),
+        frozen=(
+            "model_path",
+            "dtype",
+            "tp_size",
+            "skip_tokenizer_init",
+            "disable_cuda_graph",
+            "disable_radix_cache",
+            "chunked_prefill_size",
+        ),
     )
-    overrides = dict(config.sglang_engine_kwargs)
-    frozen = {
-        "model_path",
-        "dtype",
-        "tp_size",
-        "skip_tokenizer_init",
-        "disable_cuda_graph",
-        "disable_radix_cache",
-        "chunked_prefill_size",
-    }
-    if any(key in overrides and overrides[key] != defaults[key] for key in frozen):
-        raise ValueError(
-            "sglang_engine_kwargs cannot change the native OWSM execution contract"
-        )
-    defaults.update(overrides)
-    engine = Engine(**defaults)
+    engine = Engine(**settings)
     prefixes = [_prefix(config, source, metadata) for source in sources]
     inputs, sampling = [], []
     for source_index, prefix in enumerate(prefixes):

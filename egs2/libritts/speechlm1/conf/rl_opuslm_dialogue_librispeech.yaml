@@ -6,12 +6,12 @@ manifest: data/rl/librispeech_train.jsonl
 output_dir: exp/rl_opuslm_dialogue_librispeech
 adapter_factory: espnet2.speechlm.rl.policy:factory
 exporter: espnet2.speechlm.rl.integration:exporter
-request_factory: espnet2.speechlm.rl.integration:request_factory
 sglang_generate_factory: espnet2.speechlm.rl.integration:sglang_generate
 reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
 rollout_backend: sglang
 sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
+train_gpus: '0'
 rollout_gpus: '1'
 device: cuda:0
 reference_device: cpu

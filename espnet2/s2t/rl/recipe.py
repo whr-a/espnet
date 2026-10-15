@@ -20,6 +20,7 @@ def main():
     parser.add_argument("--steps", type=int)
     parser.add_argument("--device")
     parser.add_argument("--reference-device")
+    parser.add_argument("--train-gpus")
     parser.add_argument("--rollout-gpus")
     parser.add_argument("--rollout-python")
     parser.add_argument("--sglang-source")
@@ -47,15 +48,15 @@ def main():
         manifest=str(manifest),
         output_dir=str(work / "train"),
     )
-    short_run = (
-        config.get("prompts_per_step", config.get("train_batch_size")) == 32
-        and config.get("group_size", config.get("n_samples_per_prompt")) == 8
-    )
+    # Single-GPU defaults: the reference policy stays on CPU and the rollout
+    # engine shares the one training device. A recipe yaml or these options
+    # override any of it.
     defaults = {
         "steps": 100,
         "device": "cuda:0",
-        "reference_device": "cuda:1",
-        "rollout_gpus": "2",
+        "reference_device": "cpu",
+        "train_gpus": "0",
+        "rollout_gpus": "0",
         "rollout_python": "python",
         "sglang_source": "",
         "miles_source": "",
@@ -65,20 +66,17 @@ def main():
         value = getattr(args, field)
         if value is not None:
             config[field] = value
-        elif field not in config and not short_run:
+        elif field not in config:
             config[field] = default
     if args.eval_manifest:
         config["eval_manifest"] = str(Path(args.eval_manifest).resolve())
-    if short_run:
-        from espnet2.rl.config import ESPnetRLConfig
-        from espnet2.rl.short_run import validate_short_run, verify_data_admission
+    from espnet2.rl.config import ESPnetRLConfig
 
-        native = ESPnetRLConfig(**config)
-        validate_short_run(native)
-        if not args.data_admission:
-            parser.error(
-                "The 32×8 profile requires a prepared --manifest and --data-admission"
-            )
+    native = ESPnetRLConfig(**config)
+    native.validate()
+    if args.data_admission:
+        from espnet2.rl.data import verify_data_admission
+
         verify_data_admission(native, args.data_admission)
     path = work / "rl_config.yaml"
     with path.open("x") as stream:

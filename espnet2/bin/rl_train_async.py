@@ -7,8 +7,7 @@ import sys
 from pathlib import Path
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.data import read_manifest
-from espnet2.rl.short_run import validate_short_run, verify_data_admission
+from espnet2.rl.data import read_manifest, verify_data_admission
 
 
 def parser():
@@ -29,15 +28,16 @@ def parser():
     )
     result.add_argument(
         "--data-admission",
-        required=True,
-        help="Frozen data admission JSON with manifest hashes and full component checks",
+        help="Prepared data admission JSON binding manifest and media SHA256 values",
     )
     result.add_argument("--validate-only", action="store_true")
     return result
 
 
-def resolve_nodes(nodes, train, rollout):
-    def resolve(selector):
+def resolve_nodes(nodes, train, rollout, *, train_ranks, rollout_replicas):
+    """Resolve the Ray nodes for both roles; one node may host both."""
+
+    def resolve(selector, needed):
         matches = [
             node
             for node in nodes
@@ -47,13 +47,16 @@ def resolve_nodes(nodes, train, rollout):
         if len(matches) != 1:
             raise ValueError(f"Expected exactly one live Ray node for {selector}")
         node = matches[0]
-        if node["Resources"].get("GPU", 0) != 8:
-            raise ValueError("Each requested node must expose exactly 8 GPUs")
+        if node["Resources"].get("GPU", 0) < needed:
+            raise ValueError(f"Node {selector} exposes fewer than {needed} GPUs")
         return node
 
-    first, second = resolve(train), resolve(rollout)
-    if first["NodeID"] == second["NodeID"]:
-        raise ValueError("The async profile requires two distinct nodes")
+    first = resolve(train, train_ranks)
+    second = resolve(rollout, rollout_replicas)
+    if first["NodeID"] == second["NodeID"] and first["Resources"].get("GPU", 0) < (
+        train_ranks + rollout_replicas
+    ):
+        raise ValueError("A shared node must expose both roles' GPUs at once")
     return first, second
 
 
@@ -72,16 +75,21 @@ def main():
     config.validate()
     if config.execution_mode != "disagg_async":
         raise ValueError("This launcher requires execution_mode=disagg_async")
-    validate_short_run(config)
     if config.miles_source:
         sys.path.insert(0, config.miles_source)
     from espnet2.rl.miles_library import verify_miles
 
     evidence = verify_miles(config)
-    admission = verify_data_admission(config, args.data_admission)
+    admission = (
+        verify_data_admission(config, args.data_admission)
+        if args.data_admission
+        else None
+    )
     sources = read_manifest(config.manifest)
-    if len({source["id"] for source in sources}) < 32:
-        raise ValueError("Training requires at least 32 independent prompts")
+    if len({source["id"] for source in sources}) < config.prompts_per_step:
+        raise ValueError(
+            f"Training requires at least {config.prompts_per_step} distinct prompts"
+        )
     if args.validate_only:
         print(
             json.dumps(
@@ -96,6 +104,7 @@ def main():
         return
     import ray
     from miles.utils.async_utils import with_disposer
+
     from espnet2.rl.miles_async_driver import load_async_loop, orchestration_args
     from espnet2.rl.miles_components import NativeComponents
 
@@ -106,12 +115,21 @@ def main():
         raise FileExistsError("Use a fresh output_dir for this run")
     config.output_dir = str(output)
     frozen.write_text(json.dumps(config.to_dict(), indent=2) + "\n")
-    (output / "data_admission.json").write_text(json.dumps(admission, indent=2) + "\n")
+    if admission is not None:
+        (output / "data_admission.json").write_text(
+            json.dumps(admission, indent=2) + "\n"
+        )
     for source in sources:
         source["reward_config"] = str(frozen)
     ray.init(address=args.ray_address)
     try:
-        first, second = resolve_nodes(ray.nodes(), args.train_node, args.rollout_node)
+        first, second = resolve_nodes(
+            ray.nodes(),
+            args.train_node,
+            args.rollout_node,
+            train_ranks=config.train_ranks,
+            rollout_replicas=config.rollout_replicas,
+        )
         (output / "placement.json").write_text(
             json.dumps({"train": first, "rollout": second}, indent=2) + "\n"
         )

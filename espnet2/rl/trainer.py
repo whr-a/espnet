@@ -125,9 +125,7 @@ class NativeGRPOTrainer:
             self.reference = self.reference.to(config.reference_device)
         self.reference.requires_grad_(False)
         optimizer_class = (
-            CPUOffloadedAdamW
-            if config.optimizer_device == "cpu" and self.world_size > 1
-            else torch.optim.AdamW
+            CPUOffloadedAdamW if config.optimizer_device == "cpu" else torch.optim.AdamW
         )
         self.optimizer = optimizer_class(
             [p for p in policy.parameters() if p.requires_grad],
@@ -455,7 +453,7 @@ class NativeGRPOTrainer:
                 raise FloatingPointError(
                     "Nonfinite gradient norm; optimizer was not stepped"
                 )
-            self._optimizer_step()
+            self.optimizer.step()
             metrics["actor/grad_norm"] = norm.item()
         if self.world_size > 1:
             keys = sorted(metrics)
@@ -464,37 +462,6 @@ class NativeGRPOTrainer:
             values /= self.world_size
             metrics = dict(zip(keys, values.cpu().tolist(), strict=True))
         return metrics
-
-    def _optimizer_step(self):
-        """Keep Adam state on CPU while preserving the native parameter objects.
-
-        Offload follows backward and gradient clipping. Multi-rank actors use
-        owner CPU shadows, keeping their original devices and storage. The
-        legacy single-rank branch temporarily moves optimizer-owned tensors;
-        it restores devices before scoring, exporting or the next update.
-        """
-        if self.config.optimizer_device is None or isinstance(
-            self.optimizer, CPUOffloadedAdamW
-        ):
-            self.optimizer.step()
-            return
-        parameters = [
-            parameter
-            for group in self.optimizer.param_groups
-            for parameter in group["params"]
-        ]
-        devices = [parameter.device for parameter in parameters]
-        try:
-            for parameter in parameters:
-                gradient = parameter.grad
-                parameter.data = parameter.detach().to("cpu")
-                if gradient is not None:
-                    parameter.grad = gradient.detach().to("cpu")
-            self.optimizer.step()
-        finally:
-            for parameter, device in zip(parameters, devices, strict=True):
-                parameter.grad = None
-                parameter.data = parameter.detach().to(device)
 
     def train(self, sources):
         if self.config.execution_mode != "sync":
@@ -518,6 +485,11 @@ class NativeGRPOTrainer:
                         ]
                         for i in range(self.config.prompts_per_step)
                     ]
+                    if self.config.collocated and self.device.type != "cpu":
+                        # A collocated rollout engine is a separate process on
+                        # this same device. Return cached allocator blocks so
+                        # it can reserve its own static fraction.
+                        get_torch_device().empty_cache()
                     self.rollout.sync_weights(self.policy, step)
                     generations = self.rollout.generate(chosen, step)
                     batch = collate_rollouts(
@@ -586,7 +558,7 @@ class NativeGRPOTrainer:
                     metrics.update(
                         {
                             "runtime/train_world_size": self.world_size,
-                            "runtime/rollout_replicas": self.config.rollout_num_replicas,
+                            "runtime/rollout_replicas": self.config.rollout_replicas,
                         }
                     )
                     with (output / "metrics.jsonl").open("a") as stream:
@@ -664,14 +636,21 @@ def run(config):
         )
     if distributed.is_initialized():
         distributed.barrier()
-    if config.prompts_per_step == 32 and config.group_size == 8:
-        local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
-        visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+    # Record where every training rank actually landed, then prove the ranks
+    # hold one distinct GPU each on a single host. The expected count comes
+    # from the recipe's train_gpus, so one rank is as valid as eight.
+    if torch.device(config.device).type != "cpu":
+        world_size = distributed.get_world_size() if distributed.is_initialized() else 1
+        # A single rank is not launched by torchrun and owns local device 0.
+        local_rank = int(os.environ.get("LOCAL_RANK", "0" if world_size == 1 else "-1"))
+        visible = [
+            item
+            for item in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",")
+            if item
+        ]
         census = {
             "rank": rank,
-            "world_size": (
-                distributed.get_world_size() if distributed.is_initialized() else 1
-            ),
+            "world_size": world_size,
             "local_rank": local_rank,
             "cuda_visible_devices": visible,
             "visible_gpu_count": get_torch_device().device_count(),
@@ -685,23 +664,30 @@ def run(config):
         Path(output, f"train-device-rank-{rank}.json").write_text(
             json.dumps(census, indent=2) + "\n"
         )
-        if (
-            census["world_size"] != 4
-            or visible != ["0", "1", "2", "3"]
-            or census["visible_gpu_count"] != 4
-            or census["current_device"] != local_rank
-        ):
+        expected = config.train_ranks
+        if world_size != expected or census["visible_gpu_count"] != expected:
             raise ValueError(
-                "Collocate native ranks require the four assigned training GPUs"
+                f"The recipe declares {expected} training GPUs; this rank sees "
+                f"world_size={world_size} and {census['visible_gpu_count']} devices"
             )
-        all_census = [None] * 4
-        distributed.all_gather_object(all_census, census)
-        if len({item["physical_gpu_id"] for item in all_census}) != 4 or any(
-            item["host_identity"] != census["host_identity"] for item in all_census
-        ):
+        if visible and visible != config.train_device_ids:
             raise ValueError(
-                "Collocate ranks do not occupy four distinct GPUs on one host"
+                f"Training ranks must occupy the recipe's train_gpus "
+                f"{config.train_device_ids}; this rank sees {visible}"
             )
+        if expected > 1 and census["current_device"] != local_rank:
+            raise ValueError("Each training rank must own its local device")
+        if distributed.is_initialized():
+            all_census = [None] * world_size
+            distributed.all_gather_object(all_census, census)
+            if len({item["physical_gpu_id"] for item in all_census}) != expected or any(
+                item["host_identity"] != census["host_identity"] for item in all_census
+            ):
+                raise ValueError(
+                    f"Training ranks do not occupy {expected} distinct GPUs on one host"
+                )
+        else:
+            all_census = [census]
         if rank == 0:
             Path(output, "train_census.json").write_text(
                 json.dumps(all_census, indent=2) + "\n"

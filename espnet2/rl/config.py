@@ -50,14 +50,11 @@ class ESPnetRLConfig:
     seed: int = 42
     steps: int = 10
     warmup_steps: int = 0
-    prompts_per_step: int | None = None
-    group_size: int | None = None
-    # These public names count prompts and candidates per prompt separately.
-    train_batch_size: int | None = None
-    n_samples_per_prompt: int | None = None
+    # Prompts drawn per optimizer update and candidates sampled per prompt.
+    prompts_per_step: int = 2
+    group_size: int = 4
     update_weights_interval: int = 1
     max_weight_staleness: int = 1
-    async_off_policy_correction: str = "icepop"
     tis_clip_low: float = 0.5
     tis_clip: float = 2.0
     micro_batch_size: int = 1
@@ -81,44 +78,58 @@ class ESPnetRLConfig:
     predict_timestamps: bool = False
     train_encoder: bool = True
     rollout_python: str = "python"
-    rollout_gpus: str = "6,7"
-    rollout_num_replicas: int = 1
+    # Physical GPU ids per role. One training rank per entry in train_gpus;
+    # collocate by naming the same device in both lists.
+    train_gpus: str = "0"
+    rollout_gpus: str = "0"
+    rollout_mem_fraction: float | None = None
     vllm_source: str = ""
     vllm_tensor_parallel_size: int = 1
-    vllm_gpu_memory_utilization: float = 0.8
     vllm_engine_kwargs: dict[str, Any] = field(default_factory=dict)
     # Additional families supply real ESPnet scorer/exporter/request factory.
     adapter_factory: str | None = None
     exporter: str | None = None
-    request_factory: str | None = None
     vllm_generate_factory: str | None = None
     reward_function: str | None = None
     adapter_options: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
-        for public, existing, default in (
-            ("train_batch_size", "prompts_per_step", 2),
-            ("n_samples_per_prompt", "group_size", 4),
-        ):
-            value = getattr(self, public)
-            existing_value = getattr(self, existing)
-            if value is not None and (type(value) is not int or value < 1):
-                raise ValueError(f"{public} must be a positive integer")
-            if value is not None and existing_value not in (None, value):
-                raise ValueError(f"{public} conflicts with {existing}")
-            setattr(
-                self,
-                existing,
-                (
-                    value
-                    if value is not None
-                    else (default if existing_value is None else existing_value)
-                ),
-            )
-
     @property
     def global_candidate_batch_size(self):
         return self.prompts_per_step * self.group_size
+
+    @staticmethod
+    def _devices(spec):
+        return [item for item in str(spec).split(",") if item != ""]
+
+    @property
+    def train_device_ids(self):
+        """Physical GPU ids of the training ranks, in rank order."""
+        return self._devices(self.train_gpus)
+
+    @property
+    def rollout_device_ids(self):
+        return self._devices(self.rollout_gpus)
+
+    @property
+    def train_ranks(self):
+        """One training rank per declared training GPU."""
+        return len(self.train_device_ids)
+
+    @property
+    def collocated(self):
+        """Whether both roles declare a common device id.
+
+        On one node that means the rollout engine shares a training GPU. Across
+        nodes the ids belong to different hosts and nothing is shared.
+        """
+        return bool(set(self.train_device_ids) & set(self.rollout_device_ids))
+
+    @property
+    def rollout_replicas(self):
+        """One SGLang replica per rollout GPU; vLLM uses one tensor-parallel engine."""
+        if self.rollout_backend == "vllm":
+            return 1
+        return len(self.rollout_device_ids)
 
     def validate(self):
         if self.execution_mode not in ("sync", "disagg_async"):
@@ -128,14 +139,6 @@ class ESPnetRLConfig:
             or not 0 <= self.warmup_steps < self.steps
         ):
             raise ValueError("warmup_steps must be within the total update budget")
-        for public, existing in (
-            ("train_batch_size", "prompts_per_step"),
-            ("n_samples_per_prompt", "group_size"),
-        ):
-            if getattr(self, public) is not None and getattr(self, public) != getattr(
-                self, existing
-            ):
-                raise ValueError(f"{public} conflicts with {existing}")
         if self.execution_mode == "disagg_async":
             if self.rollout_backend != "sglang":
                 raise ValueError("Disaggregated async training requires SGLang")
@@ -143,14 +146,20 @@ class ESPnetRLConfig:
                 raise ValueError(
                     "The one-step async pipeline requires weight interval and staleness 1"
                 )
-            if self.async_off_policy_correction != "icepop":
-                raise ValueError("The async profile requires Miles IcePop correction")
             if not 0 < self.tis_clip_low <= 1 <= self.tis_clip:
                 raise ValueError("Invalid IcePop importance-ratio bounds")
-        if type(self.rollout_num_replicas) is not int or self.rollout_num_replicas < 1:
-            raise ValueError("rollout_num_replicas must be a positive integer")
-        if self.rollout_num_replicas > 1 and self.rollout_backend != "sglang":
-            raise ValueError("Independent rollout replicas currently require SGLang")
+        for name in ("train_gpus", "rollout_gpus"):
+            devices = self._devices(getattr(self, name))
+            if not devices or len(set(devices)) != len(devices):
+                raise ValueError(f"{name} must list distinct physical GPU ids")
+        if self.rollout_backend == "vllm" and (
+            len(self.rollout_device_ids) != self.vllm_tensor_parallel_size
+        ):
+            raise ValueError("vLLM rollout_gpus must match vllm_tensor_parallel_size")
+        if self.rollout_mem_fraction is not None and not (
+            0 < self.rollout_mem_fraction < 1
+        ):
+            raise ValueError("rollout_mem_fraction must lie in (0, 1)")
         if self.group_size < 2:
             raise ValueError("GRPO requires group_size >= 2")
         for name in (

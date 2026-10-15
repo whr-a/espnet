@@ -76,8 +76,10 @@ class Policy(nn.Module):
 def config(root, mode="disagg_async"):
     return ESPnetRLConfig(
         execution_mode=mode,
-        train_batch_size=32,
-        n_samples_per_prompt=8,
+        prompts_per_step=32,
+        group_size=8,
+        # Eight training ranks, one declared device each, as the worker spawns.
+        train_gpus="0,1,2,3,4,5,6,7",
         device="cpu",
         optimizer_device="cpu",
         reference_device="cpu",

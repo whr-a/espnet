@@ -14,38 +14,34 @@ import pytest
 
 from espnet2.bin.rl_train_async import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.rollout import sha256
+from espnet2.rl.data import verify_data_admission
+from espnet2.rl.engine import engine_kwargs
 from espnet2.rl.process_identity import host_identity
+from espnet2.rl.rollout import sha256
 from espnet2.rl.rollout_replicas import (
     _process_start_ticks,
     run_owned_subprocess,
     run_replica,
     terminate_owned_process,
 )
-from espnet2.rl.short_run import (
-    validate_collocate_geometry,
-    verify_data_admission,
-)
 
 
 def configuration(**kwargs):
-    return ESPnetRLConfig(
+    defaults = dict(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
         sglang_generate_factory="unused:generate",
-        train_batch_size=32,
-        n_samples_per_prompt=8,
+        prompts_per_step=32,
+        group_size=8,
         steps=5,
         warmup_steps=1,
-        rollout_num_replicas=4,
+        train_gpus="0,1,2,3",
         rollout_gpus="4,5,6,7",
-        **kwargs,
     )
+    return ESPnetRLConfig(**{**defaults, **kwargs})
 
 
 def admission_files(tmp_path):
-    protected = tmp_path / "registered.json"
-    protected.write_text("registered protected metadata")
     rows = []
     for index in range(40):
         audio = tmp_path / f"{index}.wav"
@@ -57,41 +53,20 @@ def admission_files(tmp_path):
     train.write_text("".join(json.dumps(row) + "\n" for row in rows[:32]))
     heldout.write_text("".join(json.dumps(row) + "\n" for row in rows[32:]))
     receipt = {
-        "schema": "espnet-short-run-data-v1",
         "training_ready": True,
-        "scoped_component_admission": "VERIFIED_REGISTERED_PROTECTION",
-        "exact_key_gate": "PASSED",
-        "verified_protection_scope": {
-            "specialist_records": 1389,
-            "registered_audio_count": 1201,
-            "registered_audio_decoded": 1201,
-        },
-        "protection_bindings": {str(protected): sha256(protected)},
-        "manifest_sha256": {"train32": sha256(train), "heldout": sha256(heldout)},
+        "manifest_sha256": {"train": sha256(train), "heldout": sha256(heldout)},
         "counts": {"train": 32, "heldout": 8},
     }
     path = tmp_path / "admission.json"
     path.write_text(json.dumps(receipt))
-    return (
-        configuration(manifest=str(train), eval_manifest=str(heldout)),
-        path,
-        protected,
-    )
+    return configuration(manifest=str(train), eval_manifest=str(heldout)), path
 
 
 @pytest.mark.parametrize(
-    "changed",
-    [
-        "audio",
-        "train_manifest",
-        "heldout_manifest",
-        "protected",
-        "bindings",
-        "specialist_scope",
-    ],
+    "changed", ["audio", "train_manifest", "heldout_manifest", "counts", "not_ready"]
 )
-def test_admission_detects_live_file_or_protection_changes(tmp_path, changed):
-    config, path, protected = admission_files(tmp_path)
+def test_admission_detects_live_file_or_receipt_changes(tmp_path, changed):
+    config, path = admission_files(tmp_path)
     assert verify_data_admission(config, path)["counts"]["train"] == 32
     if changed == "audio":
         (tmp_path / "0.wav").write_bytes(b"different audio")
@@ -99,36 +74,92 @@ def test_admission_detects_live_file_or_protection_changes(tmp_path, changed):
         Path(config.manifest).write_text("changed manifest")
     elif changed == "heldout_manifest":
         Path(config.eval_manifest).write_text("changed manifest")
-    elif changed == "protected":
-        protected.write_text("changed protection")
     else:
         receipt = json.loads(path.read_text())
-        if changed == "bindings":
-            receipt["protection_bindings"] = {}
+        if changed == "counts":
+            receipt["counts"]["train"] = 31
         else:
-            receipt["verified_protection_scope"]["specialist_records"] = 1374
+            receipt["training_ready"] = False
         path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError):
         verify_data_admission(config, path)
 
 
-def test_collocate_geometry_checks_actual_torchrun_environment(monkeypatch):
-    config = configuration()
-    validate_collocate_geometry(config, running=False)
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1,2,3")
-    monkeypatch.setenv("WORLD_SIZE", "4")
-    monkeypatch.setenv("LOCAL_WORLD_SIZE", "4")
-    monkeypatch.setenv("LOCAL_RANK", "3")
-    validate_collocate_geometry(config, running=True)
-    monkeypatch.setenv("WORLD_SIZE", "8")
-    with pytest.raises(ValueError, match="four torchrun"):
-        validate_collocate_geometry(config, running=True)
-    config.rollout_gpus = "0,1,2,3"
-    with pytest.raises(ValueError, match="physical GPUs"):
-        validate_collocate_geometry(config, running=False)
+@pytest.mark.parametrize(
+    "train, rollout, ranks, replicas, collocated",
+    [
+        ("0", "0", 1, 1, True),
+        ("0", "1", 1, 1, False),
+        ("0,1,2,3", "4,5,6,7", 4, 4, False),
+        ("0,1,2,3,4,5,6,7", "0,1,2,3,4,5,6,7", 8, 8, True),
+    ],
+)
+def test_geometry_comes_from_the_declared_devices(
+    train, rollout, ranks, replicas, collocated
+):
+    config = configuration(train_gpus=train, rollout_gpus=rollout)
+    config.validate()
+    assert config.train_ranks == ranks
+    assert config.rollout_replicas == replicas
+    assert config.collocated is collocated
 
 
-def test_exact_two_node_resolution_rejects_same_or_fragmented_node():
+@pytest.mark.parametrize("name", ["train_gpus", "rollout_gpus"])
+def test_repeated_or_empty_device_lists_are_rejected(name):
+    for value in ("0,0", ""):
+        config = configuration(**{name: value})
+        with pytest.raises(ValueError, match="distinct physical GPU ids"):
+            config.validate()
+
+
+def test_engine_kwargs_sizes_the_engine_and_keeps_frozen_settings():
+    """rollout_mem_fraction is the one way a recipe sizes its engine."""
+    sized = configuration(rollout_mem_fraction=0.2)
+    sized.validate()
+    settings = engine_kwargs(sized, 3, defaults={"mem_fraction_static": 0.65})
+    assert settings["mem_fraction_static"] == 0.2
+    assert settings["random_seed"] == sized.seed + 3
+    assert settings["tp_size"] == 1
+    assert settings["disable_cuda_graph"] is True
+    assert settings["disable_radix_cache"] is True
+    assert settings["chunked_prefill_size"] == -1
+    # Left unset, the family's own default survives untouched.
+    assert (
+        engine_kwargs(configuration(), 0, defaults={"mem_fraction_static": 0.65})[
+            "mem_fraction_static"
+        ]
+        == 0.65
+    )
+    # A recipe may repeat a frozen value but never change one.
+    repeated = configuration(sglang_engine_kwargs={"dtype": "float32", "tp_size": 1})
+    assert (
+        engine_kwargs(
+            repeated, 0, defaults={"dtype": "float32"}, frozen=("dtype", "tp_size")
+        )["dtype"]
+        == "float32"
+    )
+    changed = configuration(sglang_engine_kwargs={"dtype": "bfloat16"})
+    with pytest.raises(ValueError, match="native execution contract"):
+        engine_kwargs(
+            changed, 0, defaults={"dtype": "float32"}, frozen=("dtype", "tp_size")
+        )
+    # An unfrozen setting stays a recipe decision.
+    assert engine_kwargs(changed, 0, defaults={"dtype": "float32"})["dtype"] == (
+        "bfloat16"
+    )
+    # The two ways to size the engine may not disagree.
+    conflict = configuration(
+        rollout_mem_fraction=0.2, sglang_engine_kwargs={"mem_fraction_static": 0.5}
+    )
+    with pytest.raises(ValueError, match="disagree"):
+        engine_kwargs(conflict, 0)
+    agreed = configuration(
+        rollout_mem_fraction=0.2, sglang_engine_kwargs={"mem_fraction_static": 0.2}
+    )
+    assert engine_kwargs(agreed, 0)["mem_fraction_static"] == 0.2
+
+
+def test_node_resolution_allows_one_node_that_holds_both_roles():
     nodes = [
         {
             "NodeID": str(i),
@@ -138,12 +169,24 @@ def test_exact_two_node_resolution_rejects_same_or_fragmented_node():
         }
         for i in range(2)
     ]
-    assert resolve_nodes(nodes, "0", "10.0.0.1") == tuple(nodes)
-    with pytest.raises(ValueError, match="distinct"):
-        resolve_nodes(nodes, "0", "10.0.0.0")
-    nodes[1]["Resources"]["GPU"] = 6
-    with pytest.raises(ValueError, match="8 GPUs"):
-        resolve_nodes(nodes, "0", "1")
+    assert resolve_nodes(
+        nodes, "0", "10.0.0.1", train_ranks=8, rollout_replicas=8
+    ) == tuple(nodes)
+    # One node may host both roles when it exposes enough GPUs for each.
+    first, second = resolve_nodes(
+        nodes, "0", "10.0.0.0", train_ranks=1, rollout_replicas=1
+    )
+    assert first["NodeID"] == second["NodeID"] == "0"
+    with pytest.raises(ValueError, match="both roles"):
+        resolve_nodes(nodes, "0", "10.0.0.0", train_ranks=4, rollout_replicas=8)
+    with pytest.raises(ValueError, match="fewer than 8"):
+        resolve_nodes(
+            [nodes[0], {**nodes[1], "Resources": {"GPU": 6}}],
+            "0",
+            "1",
+            train_ranks=8,
+            rollout_replicas=8,
+        )
 
 
 def test_replica_keeps_rollout_id_distinct_from_behavior_version(tmp_path, monkeypatch):

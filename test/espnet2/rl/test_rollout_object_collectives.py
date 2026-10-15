@@ -120,8 +120,10 @@ def _delayed_training(rank, root):
             distributed_timeout_minutes=0.2,
             output_dir=root,
             steps=1,
-            train_batch_size=32,
-            n_samples_per_prompt=8,
+            prompts_per_step=32,
+            group_size=8,
+            # Two training ranks, one declared device each.
+            train_gpus="0,1",
             micro_batch_size=32,
             adapter_factory="unused:factory",
             exporter="unused:exporter",

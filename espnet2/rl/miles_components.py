@@ -126,7 +126,9 @@ class NativeRolloutExecutor:
                 for i in range(config.prompts_per_step)
             ]
             if len({source["id"] for source in sources}) != config.prompts_per_step:
-                raise ValueError("A rollout requires 32 distinct prompts")
+                raise ValueError(
+                    f"A rollout requires {config.prompts_per_step} distinct prompts"
+                )
             policy = dict(self.policy)
             tasks = self._tasks = []
             replicas = self.components.rollout_replicas
@@ -164,8 +166,12 @@ class NativeRolloutExecutor:
                 or len({tuple(result["gpu_ids"]) for result in results}) != replicas
             ):
                 raise ValueError(
-                    "Rollout replicas did not occupy eight distinct GPUs on the requested node"
+                    f"Rollout replicas did not occupy {replicas} distinct GPUs "
+                    "on the requested node"
                 )
+            occupied = self.components.train_gpu_ids
+            if occupied & {str(gpu) for result in results for gpu in result["gpu_ids"]}:
+                raise ValueError("A rollout replica landed on a training GPU")
             from .rollout_replicas import merge_generations
 
             for result in results:
@@ -177,7 +183,9 @@ class NativeRolloutExecutor:
             generations = merge_generations(sources, results, config.group_size)
             batch = collate_rollouts(sources, generations, config.group_size)
             if len(batch) != config.global_candidate_batch_size:
-                raise ValueError("Incomplete 256-candidate rollout")
+                raise ValueError(
+                    f"Incomplete {config.global_candidate_batch_size}-candidate rollout"
+                )
             payload = {
                 "batch": batch,
                 "behavior_policy_version": policy["step"],
@@ -261,26 +269,20 @@ class NativeInferenceController:
 
 
 class NativeComponents:
-    def __init__(
-        self,
-        config,
-        sources,
-        train_node,
-        rollout_node,
-        *,
-        train_ranks=8,
-        rollout_replicas=8,
-    ):
-        if train_node == rollout_node:
-            raise ValueError("disagg_async requires separate train and rollout nodes")
-        if (train_ranks, rollout_replicas) != (8, 8):
-            raise ValueError("The requested profile fixes one 8-GPU node per role")
-        from .short_run import validate_short_run
-
-        validate_short_run(config)
+    def __init__(self, config, sources, train_node, rollout_node):
+        config.validate()
         self.config, self.sources = config, sources
         self.train_node, self.rollout_node = train_node, rollout_node
-        self.train_ranks, self.rollout_replicas = train_ranks, rollout_replicas
+        # Geometry comes from the recipe: one training rank and one rollout
+        # replica per declared GPU. Both roles may share a node as long as
+        # they hold disjoint devices.
+        self.train_ranks = config.train_ranks
+        self.rollout_replicas = config.rollout_replicas
+        self.train_gpu_ids = set()
+        if train_node == rollout_node and config.collocated:
+            raise ValueError(
+                "A shared node requires disjoint train_gpus and rollout_gpus"
+            )
         self.rollout = NativeRolloutExecutor(self)
         self.inference = NativeInferenceController()
         self.trainer = None
@@ -352,12 +354,18 @@ class NativeComponents:
         census = await group.call("get_device_census")
         if (
             any(item["ray_node_id"] != self.train_node for item in census)
-            or sorted(item["rank"] for item in census) != list(range(8))
-            or len({tuple(item["ray_gpu_ids"]) for item in census}) != 8
+            or sorted(item["rank"] for item in census) != list(range(self.train_ranks))
+            or len({tuple(item["ray_gpu_ids"]) for item in census}) != self.train_ranks
         ):
             raise ValueError(
-                "Training workers do not occupy eight distinct GPUs on the requested node"
+                f"Training workers do not occupy {self.train_ranks} distinct GPUs "
+                "on the requested node"
             )
+        # Remember the occupied devices so a shared node can prove that the
+        # rollout replicas never land on a training GPU.
+        self.train_gpu_ids = {
+            str(gpu) for item in census for gpu in item["ray_gpu_ids"]
+        }
         Path(self.config.output_dir, "train_census.json").write_text(
             json.dumps(census, indent=2) + "\n"
         )

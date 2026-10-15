@@ -8,11 +8,11 @@ output_dir: exp/rl-think
 rollout_backend: sglang
 adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
 exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
-request_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:request_factory
 sglang_generate_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:generate
 reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_think_reward
 device: cuda:0
 reference_device: cuda:1
+train_gpus: '0'
 rollout_gpus: '2'
 rollout_python: python
 sglang_source: ../../../tools/sglang

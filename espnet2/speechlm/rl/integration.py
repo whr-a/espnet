@@ -10,6 +10,8 @@ from pathlib import Path
 import torch
 import yaml
 
+from espnet2.rl.engine import engine_kwargs
+
 
 def prepared_native_metadata(source):
     fields = (
@@ -218,20 +220,19 @@ def sglang_generate(config, model_path, sources, step):
         )
     requests, prefixes = request_factory(config, model_path, sources)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    kwargs = dict(config.sglang_engine_kwargs)
-    kwargs.setdefault("disable_cuda_graph", True)
-    kwargs.setdefault("disable_radix_cache", True)
-    kwargs.setdefault("skip_tokenizer_init", True)
-    kwargs.setdefault("log_level", "info")
-    kwargs.setdefault("attention_backend", "triton")
-    kwargs.setdefault("mem_fraction_static", config.vllm_gpu_memory_utilization)
-    engine = sgl.Engine(
-        model_path=model_path,
-        dtype=config.dtype,
-        random_seed=config.seed + step,
-        tp_size=config.vllm_tensor_parallel_size,
-        **kwargs,
+    kwargs = engine_kwargs(
+        config,
+        step,
+        defaults=dict(
+            model_path=model_path,
+            dtype=config.dtype,
+            skip_tokenizer_init=True,
+            attention_backend="triton",
+            mem_fraction_static=0.8,
+        ),
+        frozen=("model_path", "dtype", "tp_size"),
     )
+    engine = sgl.Engine(**kwargs)
     generations = []
     try:
         for source, request, prefix in zip(sources, requests, prefixes, strict=True):

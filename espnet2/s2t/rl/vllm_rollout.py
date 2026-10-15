@@ -60,7 +60,7 @@ def generate(config, model_path, sources, step):
         model=str(model_path),
         seed=config.seed + step,
         tensor_parallel_size=config.vllm_tensor_parallel_size,
-        gpu_memory_utilization=config.vllm_gpu_memory_utilization,
+        gpu_memory_utilization=config.rollout_mem_fraction or 0.8,
         dtype=config.dtype,
         logprobs_mode="raw_logprobs",
         **kwargs,
