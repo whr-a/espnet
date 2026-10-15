@@ -167,7 +167,6 @@ class NativeRolloutExecutor:
             payload = {
                 "batch": batch,
                 "behavior_policy_version": policy["step"],
-                "behavior_checkpoint": str(Path(policy["path"], "native.pt")),
                 "behavior_checkpoint_sha256": policy["native_sha256"],
             }
             with Path(config.output_dir, "rollout_timing.jsonl").open("a") as stream:

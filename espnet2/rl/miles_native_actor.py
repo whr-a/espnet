@@ -15,11 +15,51 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 
 from .config import ESPnetRLConfig
-from .rollout import CheckpointRollout, save_checkpoint, sha256
+from .rollout import CheckpointRollout, save_checkpoint
 from .scoring import score_native_batch
 from .timing import learner_timing
 from .trainer import NativeGRPOTrainer
 from .utils import build_policy
+
+
+class BehaviorSnapshot:
+    """One policy version's trainable weights, held on the CPU in their dtype.
+
+    Scoring with the snapshot (a context manager, see the trainer's
+    ``_score_chunks``) swaps these values into the learner's own module and
+    the current ones back out afterwards, so a stale batch is audited by the
+    native scorer with exactly the weights that generated it, without a
+    second model. Frozen parameters never change and are not copied.
+    """
+
+    def __init__(self, policy):
+        self.policy = policy
+        self.version = None
+        self.parameters = [p for p in policy.parameters() if p.requires_grad]
+        self.values = [
+            torch.empty(p.shape, dtype=p.dtype, pin_memory=p.is_cuda)
+            for p in self.parameters
+        ]
+
+    @torch.no_grad()
+    def take(self, version):
+        for parameter, value in zip(self.parameters, self.values, strict=True):
+            value.copy_(parameter)
+        self.version = version
+
+    @torch.no_grad()
+    def _swap(self):
+        for parameter, value in zip(self.parameters, self.values, strict=True):
+            current = parameter.detach().clone()
+            parameter.copy_(value)
+            value.copy_(current)
+
+    def __enter__(self):
+        self._swap()
+        return self.policy
+
+    def __exit__(self, *failure):
+        self._swap()
 
 
 class ESPnetTrainRayActor(TrainRayActor):
@@ -80,7 +120,10 @@ class ESPnetTrainRayActor(TrainRayActor):
         self.trainer = NativeGRPOTrainer(build_policy(config, config.device), config)
         self.config = config
         self.version = 0
+        self.snapshot = BehaviorSnapshot(self.trainer.policy)
         self.exporter = CheckpointRollout(config) if self._rank == 0 else None
+        # Rank zero's record of each exported version's native sha256.
+        self.exported = {}
         self.last_end = None
         self.last_metrics = None
         return 0
@@ -121,12 +164,6 @@ class ESPnetTrainRayActor(TrainRayActor):
                 with object_store.get_instance().get(rollout_data_ref) as data:
                     batch = data["batch"]
                     version = data["behavior_policy_version"]
-                    checkpoint = Path(data["behavior_checkpoint"])
-                    actual_hash = sha256(checkpoint)
-                    if actual_hash != data["behavior_checkpoint_sha256"]:
-                        raise ValueError(
-                            "Behavior checkpoint file differs from rollout identity"
-                        )
                     if (
                         type(version) is not int
                         or version < 0
@@ -135,11 +172,17 @@ class ESPnetTrainRayActor(TrainRayActor):
                         <= self.config.max_weight_staleness
                     ):
                         raise ValueError("Invalid behavior checkpoint staleness")
+                    digest = data["behavior_checkpoint_sha256"]
+                    if digest != self.exported.get(version):
+                        raise ValueError(
+                            "Behavior checkpoint differs from this learner's export"
+                        )
+                    if version != self.version and self.snapshot.version != version:
+                        raise ValueError("No snapshot holds the behavior policy")
                     payload[0] = {
                         "batch": batch,
                         "behavior_version": version,
-                        "behavior_checkpoint": str(checkpoint),
-                        "behavior_checkpoint_sha256": actual_hash,
+                        "behavior_checkpoint_sha256": digest,
                         "error": None,
                     }
             except Exception as error:
@@ -151,32 +194,11 @@ class ESPnetTrainRayActor(TrainRayActor):
             raise RuntimeError(data["error"])
         batch = data["batch"]
         version = data["behavior_version"]
-        # Each actor scores only its native shard. A stale behavior actor is a
-        # frozen policy copy like the reference, so it is loaded independently
-        # onto the reference's device: CPU for recipes that keep the reference
-        # there, the training GPU for small models that keep it on the GPU.
+        # Each actor scores only its native shard. A stale batch is audited by
+        # the learner's own module holding the weights that generated it, which
+        # every rank snapshotted just before that version's update.
         # Rank-zero-only reward decoding avoids TTS races.
-        behavior = None
-        load_error = None
-        try:
-            if version != self.version:
-                config = copy.deepcopy(self.config)
-                config.checkpoint = data["behavior_checkpoint"]
-                device = self.config.reference_device or self.config.device
-                behavior = build_policy(config, device).eval().requires_grad_(False)
-        except Exception as error:
-            load_error = f"rank {self._rank}: {type(error).__name__}: {error}"
-            self._record_rollout_error(rollout_id)
-        if self._world_size > 1:
-            failures = [None] * self._world_size
-            dist.all_gather_object(
-                failures, load_error, group=self.trainer._object_collective_group()
-            )
-        else:
-            failures = [load_error]
-        failures = [failure for failure in failures if failure]
-        if failures:
-            raise RuntimeError("Behavior loading failed: " + "; ".join(failures))
+        behavior = self.snapshot if version != self.version else None
         try:
             native_scores = score_native_batch(self.trainer, batch, behavior)
         except Exception:
@@ -200,12 +222,16 @@ class ESPnetTrainRayActor(TrainRayActor):
             except Exception as error:
                 self._record_rollout_error(rollout_id)
                 payload[0] = {"error": f"{type(error).__name__}: {error}"}
-        del behavior, native_scores
+        del native_scores
         self._broadcast_payload(payload)
         prepared = payload[0]
         if prepared["error"]:
             raise RuntimeError(prepared["error"])
         batch, metrics = prepared["batch"], prepared["metrics"]
+        # Nothing changes these weights before the optimizer step below. They
+        # were exported as this version, so they generate the next batch and
+        # this copy audits it.
+        self.snapshot.take(self.version)
         metrics.update(self.trainer.update_actor(batch))
         if self.trainer.device.type == "cuda":
             torch.cuda.synchronize(self.trainer.device)
@@ -268,6 +294,7 @@ class ESPnetTrainRayActor(TrainRayActor):
             return None
         # Export only: the rollout actors load it onto the rollout GPUs.
         metadata = self.exporter.export(self.trainer.policy, self.version)
+        self.exported[self.version] = metadata["native_sha256"]
         return {**metadata, "path": str(self.exporter.version.resolve())}
 
     def update_weights(self, info):

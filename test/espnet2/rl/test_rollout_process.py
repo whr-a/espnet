@@ -375,6 +375,12 @@ def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
     assert [reply["replica"] for reply in acknowledgment["rollout_ack"]] == [0, 1]
     assert {reply["version"] for reply in acknowledgment["rollout_ack"]} == {0}
     (payload,) = stored
+    # The behavior audit swaps in the learner's own snapshot: no file path.
+    assert set(payload) == {
+        "batch",
+        "behavior_policy_version",
+        "behavior_checkpoint_sha256",
+    }
     generations = payload["batch"].non_tensor_batch["generation"]
     assert [row["source_id"] for row in generations] == [
         source["id"] for source in sources for _ in range(2)

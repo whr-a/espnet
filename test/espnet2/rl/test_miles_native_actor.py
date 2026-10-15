@@ -23,13 +23,13 @@ from torch.nn import functional as F
 import espnet2.rl.miles_native_actor as actor_module
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
-from espnet2.rl.miles_native_actor import ESPnetTrainRayActor
+from espnet2.rl.miles_native_actor import BehaviorSnapshot, ESPnetTrainRayActor
 from espnet2.rl.rollout import sha256
+from espnet2.rl.scoring import score_native_batch
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 
 _REWARD_CALLS = 0
-_LOAD_CALLS = 0
 
 
 def counting_reward(source, generation):
@@ -49,7 +49,8 @@ class Policy(nn.Module):
         self.scored = 0
         self.backward_calls = 0
         self.weight.register_hook(self._backward)
-        self.fail = False
+        # Fail once this many candidates have been scored without gradients.
+        self.fail = None
 
     def _backward(self, gradient):
         self.backward_calls += 1
@@ -59,7 +60,7 @@ class Policy(nn.Module):
         return self.state_dict()
 
     def forward(self, batch):
-        if self.fail:
+        if self.fail is not None and self.scored >= self.fail:
             raise ValueError("deliberate local scorer failure")
         if not torch.is_grad_enabled():
             self.scored += len(batch)
@@ -169,7 +170,7 @@ class FrozenRollout:
 
 
 def _actor_worker(rank, root):
-    global _REWARD_CALLS, _LOAD_CALLS
+    global _REWARD_CALLS
     torch.set_num_threads(1)
     dist.init_process_group(
         "gloo",
@@ -189,7 +190,6 @@ def _actor_worker(rank, root):
         data = {
             "batch": batch_for(checkpoint, digest),
             "behavior_policy_version": 0,
-            "behavior_checkpoint": str(checkpoint),
             "behavior_checkpoint_sha256": digest,
         }
         store = Store(data)
@@ -199,28 +199,25 @@ def _actor_worker(rank, root):
         actor.config = cfg
         actor.trainer = NativeGRPOTrainer(Policy(), cfg)
         actor.version, actor.last_end, actor.last_metrics = 0, None, None
-        loaded, devices = [], []
+        actor.snapshot = BehaviorSnapshot(actor.trainer.policy)
+        # Rank zero exported the initial policy as version 0.
+        actor.exported = {0: digest} if rank == 0 else {}
 
-        def load_behavior(load_cfg, device):
-            global _LOAD_CALLS
-            _LOAD_CALLS += 1
-            devices.append(device)
-            if load_cfg.adapter_options.get("bad_load") and rank == 3:
-                raise ValueError("deliberate behavior loading failure")
-            policy = Policy()
-            policy.load_state_dict(torch.load(load_cfg.checkpoint, weights_only=True))
-            loaded.append(policy)
-            return policy
+        def rebuild(*args):
+            raise AssertionError("The behavior audit never rebuilds a model")
 
-        actor_module.build_policy = load_behavior
+        actor_module.build_policy = rebuild
         initial = copy.deepcopy(actor.trainer.policy.state_dict())
-        for step in range(2):
+
+        def update(step):
             actor.trainer.policy.scored = 0
             actor.trainer.reference.scored = 0
             result = actor.train(step, "rollout")
             assert result.outcome == TrainStepOutcome.NORMAL
             assert actor.version == step + 1
-            assert actor.trainer.policy.scored == 32
+            # A stale batch is scored again by the learner's own module,
+            # holding the snapshot of the version that generated it.
+            assert actor.trainer.policy.scored == (32 if step == 0 else 64)
             assert actor.trainer.reference.scored == 32
             assert actor.trainer.policy.backward_calls == (step + 1) * 4
             for value in actor.trainer.policy.parameters():
@@ -231,26 +228,33 @@ def _actor_worker(rank, root):
             for name, value in actor.trainer.reference.state_dict().items():
                 torch.testing.assert_close(value, initial[name], rtol=0, atol=0)
             actor.save_model(step)
-        assert _LOAD_CALLS == 1 and loaded[0].scored == 32
-        # The stale behavior actor is a frozen copy placed like the reference.
-        assert devices == [cfg.reference_device or cfg.device]
-        if rank == 0:
-            assert _REWARD_CALLS == 512 and store.calls == 2
-            metrics = actor.last_metrics
-            assert metrics["rollout/global_candidate_batch_size"] == 256
-            assert metrics["rollout/logprob_max_error"] == 0
-            assert metrics["rollout/weight_staleness"] == 1
-            assert metrics["rollout/current_behavior_logprob_max_difference"] > 0
-        else:
-            assert _REWARD_CALLS == 0 and store.calls == 0
 
-        for failure in ("read", "hash", "load", "scorer", "numerical", "reward"):
-            actor.version = 1
+        update(0)
+        # The first update kept the weights it started from as version 0.
+        assert actor.snapshot.version == 0
+        (saved,) = actor.snapshot.values
+        torch.testing.assert_close(saved, initial["weight"], rtol=0, atol=0)
+
+        # The stale update fails on every rank and leaves the learner and the
+        # snapshot as they were, wherever the failure happens.
+        for failure in (
+            "read",
+            "hash",
+            "snapshot",
+            "scorer",
+            "behavior",
+            "numerical",
+            "reward",
+        ):
             previous = copy.deepcopy(actor.trainer.policy.state_dict())
             store.data = copy.deepcopy(data)
             store.fail = failure == "read"
-            cfg.adapter_options["bad_load"] = failure == "load"
-            actor.trainer.policy.fail = failure == "scorer" and rank == 3
+            actor.snapshot.version = 7 if failure == "snapshot" else 0
+            actor.trainer.policy.scored = 0
+            # The behavior pass begins after the 32 current candidates.
+            actor.trainer.policy.fail = (
+                {"scorer": 0, "behavior": 32}.get(failure) if rank == 3 else None
+            )
             if failure == "hash":
                 store.data["behavior_checkpoint_sha256"] = "0" * 64
             elif failure == "numerical":
@@ -266,7 +270,24 @@ def _actor_worker(rank, root):
             assert actor.version == 1
             for name, value in actor.trainer.policy.state_dict().items():
                 torch.testing.assert_close(value, previous[name], rtol=0, atol=0)
-            actor.trainer.policy.fail = False
+            torch.testing.assert_close(saved, initial["weight"], rtol=0, atol=0)
+            actor.trainer.policy.fail = None
+        store.data, store.fail, actor.snapshot.version = data, False, 0
+        _REWARD_CALLS = 0
+        update(1)
+        if rank == 0:
+            assert _REWARD_CALLS == 256
+            metrics = actor.last_metrics
+            assert metrics["rollout/global_candidate_batch_size"] == 256
+            # The snapshot reproduces the generating policy exactly.
+            assert metrics["rollout/logprob_max_error"] == 0
+            assert metrics["rollout/logprob_mean_error"] == 0
+            assert metrics["rollout/logprob_p99_error"] == 0
+            assert metrics["rollout/weight_staleness"] == 1
+            assert metrics["rollout/current_behavior_logprob_max_difference"] > 0
+        else:
+            assert _REWARD_CALLS == 0 and store.calls == 0
+        assert actor.snapshot.version == 1
 
         # The synchronous recipe likewise shards native scores, and invokes
         # generation/reward once per global batch before broadcasting preparation.
@@ -354,43 +375,58 @@ class TestMilesNativeActor(unittest.TestCase):
             self.assertEqual(saved["runtime/train_world_size"], 8)
 
 
+class TestBehaviorSnapshot(unittest.TestCase):
+    def test_weight_swap_audit_equals_a_separately_loaded_behavior_model(self):
+        class Scorer(Policy):
+            def __init__(self):
+                super().__init__()
+                self.bias = nn.Parameter(torch.tensor([0.3, 0.0, -0.3]))
+                self.bias.requires_grad_(False)
+
+            def forward(self, batch):
+                scores = super().forward(batch)
+                return TokenScores(
+                    scores.log_probs + self.bias[batch.batch["responses"]],
+                    scores.entropy,
+                    scores.response_mask,
+                )
+
+        with tempfile.TemporaryDirectory() as root:
+            cfg = config(root)
+            learner = Scorer()
+            trainer = NativeGRPOTrainer(learner, cfg)
+            snapshot = BehaviorSnapshot(learner)
+            snapshot.take(0)
+            behavior = Scorer()
+            behavior.load_state_dict(learner.state_dict())
+            # The learner moves on to version 1.
+            with torch.no_grad():
+                learner.weight.add_(torch.tensor([0.5, -0.2, 0.1]))
+            current = copy.deepcopy(learner.state_dict())
+            checkpoint = Path(root) / "rollout.pth"
+            torch.save(Policy().state_dict(), checkpoint)
+            batch = batch_for(checkpoint, "a" * 64)
+            with torch.no_grad():
+                expected = trainer._score_chunks(behavior, batch)
+                expected_current = trainer._score_chunks(learner, batch)
+            old, audited, _ = score_native_batch(trainer, batch, snapshot)
+            torch.testing.assert_close(audited, expected, rtol=0, atol=0)
+            torch.testing.assert_close(old, expected_current, rtol=0, atol=0)
+            self.assertFalse(torch.equal(old, audited))
+            # The learner holds its own weights again, and the snapshot only
+            # the trainable ones, ready for the next audit.
+            for name, value in learner.state_dict().items():
+                torch.testing.assert_close(value, current[name], rtol=0, atol=0)
+            (saved,) = snapshot.values
+            torch.testing.assert_close(saved, behavior.weight, rtol=0, atol=0)
+            # A failure while it holds the snapshot still gives them back.
+            learner.fail = learner.scored
+            with self.assertRaisesRegex(ValueError, "deliberate"):
+                trainer._score_chunks(snapshot, batch)
+            for name, value in learner.state_dict().items():
+                torch.testing.assert_close(value, current[name], rtol=0, atol=0)
+            torch.testing.assert_close(saved, behavior.weight, rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
-
-
-class TestStaleBehaviorPlacement(unittest.TestCase):
-    def test_stale_behavior_actor_is_loaded_onto_the_reference_device(self):
-        """A behavior copy follows the reference, not a hardcoded CPU."""
-        with tempfile.TemporaryDirectory() as root:
-            checkpoint = Path(root) / "behavior.pth"
-            torch.save(Policy().state_dict(), checkpoint)
-            digest = sha256(checkpoint)
-            object_store._INSTANCE = Store(
-                {
-                    "batch": None,
-                    "behavior_policy_version": 0,
-                    "behavior_checkpoint": str(checkpoint),
-                    "behavior_checkpoint_sha256": digest,
-                }
-            )
-            actor = ESPnetTrainRayActor.__new__(ESPnetTrainRayActor)
-            actor._rank, actor._world_size, actor.version = 0, 1, 1
-            requested = []
-
-            def load_behavior(load_cfg, device):
-                requested.append((load_cfg.checkpoint, device))
-                raise RuntimeError("stop after placement")
-
-            original = actor_module.build_policy
-            actor_module.build_policy = load_behavior
-            try:
-                for reference, expected in (("cpu:0", "cpu:0"), (None, "cpu")):
-                    actor.config = ESPnetRLConfig(
-                        **{**config(root).to_dict(), "reference_device": reference}
-                    )
-                    with self.assertRaisesRegex(RuntimeError, "Behavior loading"):
-                        actor.train(1, "rollout")
-                    self.assertEqual(requested[-1], (str(checkpoint), expected))
-            finally:
-                actor_module.build_policy = original
-                object_store._INSTANCE = None

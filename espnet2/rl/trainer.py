@@ -19,7 +19,7 @@ import os
 import random
 import time
 import traceback
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from datetime import timedelta
 from pathlib import Path
 
@@ -149,6 +149,10 @@ class NativeGRPOTrainer:
         )
 
     def _score_chunks(self, policy, batch):
+        if isinstance(policy, AbstractContextManager):
+            # A weight snapshot lends its values to a module for this pass.
+            with policy as module:
+                return self._score_chunks(module, batch)
         results = []
         scoring_device = next(policy.parameters()).device
         for start in range(0, len(batch), self.config.micro_batch_size):
@@ -296,9 +300,7 @@ class NativeGRPOTrainer:
         if behavior_version == learner_version:
             behavior_policy = self.policy
         elif behavior_policy is None:
-            raise ValueError(
-                "Stale rollout requires the independently loaded behavior policy"
-            )
+            raise ValueError("Stale rollout requires the policy that generated it")
         elif behavior_policy is self.policy:
             raise ValueError("Stale rollout cannot be audited with the current actor")
         if native_scores is None:
