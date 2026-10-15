@@ -18,6 +18,7 @@ import json
 import os
 import random
 import traceback
+import time
 from contextlib import nullcontext
 from pathlib import Path
 
@@ -466,7 +467,10 @@ class NativeGRPOTrainer:
         output.mkdir(parents=True, exist_ok=True)
         if self.rollout is None and self.rank == 0:
             self.rollout = CheckpointRollout(self.config)
+        if len({source["id"] for source in sources}) < self.config.prompts_per_step:
+            raise ValueError("The prompt batch requires distinct source records")
         for step in range(self.config.steps):
+            step_start = time.monotonic()
             if self.rank == 0:
                 try:
                     chosen = [
@@ -497,11 +501,27 @@ class NativeGRPOTrainer:
                 raise RuntimeError(
                     f"Rollout/score stage failed at step {step}: {error}"
                 )
+            update_start = time.monotonic()
             metrics.update(self.update_actor(batch))
+            if self.device.type != "cpu":
+                get_torch_device().synchronize()
+            update_end = time.monotonic()
             status = [None]
             if self.rank == 0:
                 try:
                     metrics["step"] = step + 1
+                    elapsed, wait = update_end - update_start, update_start - step_start
+                    metrics.update(
+                        {
+                            "perf/train_time": elapsed,
+                            "perf/train_wait_time": wait,
+                            "perf/step_time": elapsed + wait,
+                            "perf/wait_time_ratio": wait / (elapsed + wait),
+                            "perf/warmup": step < self.config.warmup_steps,
+                            "runtime/train_world_size": self.world_size,
+                            "runtime/rollout_replicas": self.config.rollout_num_replicas,
+                        }
+                    )
                     with (output / "metrics.jsonl").open("a") as stream:
                         stream.write(json.dumps(metrics) + "\n")
                     print(json.dumps(metrics), flush=True)

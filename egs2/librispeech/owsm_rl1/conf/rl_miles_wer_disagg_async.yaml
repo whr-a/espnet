@@ -1,7 +1,4 @@
-# New short-run template: 32 independent prompts x 8 candidates = 256.
-# Five optimizer updates total; FP32, unchanged 1536-token cap.
-# Public collocate maps to execution_mode=sync; disagg_async needs its driver.
-# Resolve model/data/environment paths and freeze the data admission first.
+# 32 independent prompts x 8 candidates; one 8-GPU node per role.
 family: owsm
 model_version: v4
 rollout_backend: sglang
@@ -47,3 +44,5 @@ tis_clip_low: 0.5
 tis_clip: 2.0
 eval_manifest: data/rl/heldout.jsonl
 reference_device: cpu
+rollout_gpus: 0,1,2,3,4,5,6,7
+rollout_num_replicas: 8

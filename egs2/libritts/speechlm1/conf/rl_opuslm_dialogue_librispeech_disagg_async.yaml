@@ -1,7 +1,4 @@
-# New short-run template: 32 independent prompts x 8 candidates = 256.
-# Five optimizer updates total; FP32, unchanged 1536-token cap.
-# Public collocate maps to execution_mode=sync; disagg_async needs its driver.
-# Resolve model/data/environment paths and freeze the data admission first.
+# 32 independent prompts x 8 candidates; one 8-GPU node per role.
 family: opuslm_dialogue
 train_config: /path/to/released/config.yaml
 checkpoint: /path/to/released/model.pth
@@ -15,7 +12,7 @@ reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
 rollout_backend: sglang
 sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
-rollout_gpus: '1'
+rollout_gpus: 0,1,2,3,4,5,6,7
 device: cuda:0
 reference_device: cpu
 optimizer_device: cpu
@@ -49,3 +46,4 @@ tis_clip: 2.0
 eval_manifest: data/rl/heldout.jsonl
 distributed_strategy: native_allreduce
 allreduce_chunk_bytes: 67108864
+rollout_num_replicas: 8

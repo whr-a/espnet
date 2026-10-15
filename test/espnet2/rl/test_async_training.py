@@ -235,13 +235,24 @@ def test_async_cannot_enter_synchronous_driver():
 
 def test_replica_merge_keeps_groups_and_rejects_partial_or_duplicate_results():
     from espnet2.rl.rollout_replicas import merge_generations
+
     sources = [{"id": f"p{i}"} for i in range(32)]
-    results = [{"generations": [{"source_id": source["id"], "sample": sample}
-        for source in sources[replica::8] for sample in range(8)]} for replica in range(8)]
+    results = [
+        {
+            "generations": [
+                {"source_id": source["id"], "sample": sample}
+                for source in sources[replica::8]
+                for sample in range(8)
+            ]
+        }
+        for replica in range(8)
+    ]
     merged = merge_generations(sources, results, 8)
     assert len(merged) == 256
-    assert [row["source_id"] for row in merged] == [source["id"] for source in sources for _ in range(8)]
+    assert [row["source_id"] for row in merged] == [
+        source["id"] for source in sources for _ in range(8)
+    ]
     with pytest.raises(ValueError, match="complete"):
         merge_generations(sources, results[:-1], 8)
     with pytest.raises(ValueError, match="complete"):
-        merge_generations(sources, results+[results[0]], 8)
+        merge_generations(sources, results + [results[0]], 8)

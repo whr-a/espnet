@@ -130,6 +130,7 @@ class NativeRolloutExecutor:
                 tasks.append(task)
             results = await asyncio.gather(*tasks)
             from .rollout_replicas import merge_generations
+
             for result in results:
                 for generation in result["generations"]:
                     generation.update(
