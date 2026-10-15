@@ -77,6 +77,7 @@ def score_native_batch(trainer, batch, behavior_policy=None):
     """
     world_size = distributed.get_world_size() if distributed.is_initialized() else 1
     rank = distributed.get_rank() if distributed.is_initialized() else 0
+    group = trainer._object_collective_group() if world_size > 1 else None
     payload = {"rank": rank, "error": None}
     try:
         if trainer.rank != rank or trainer.world_size != world_size:
@@ -129,7 +130,7 @@ def score_native_batch(trainer, batch, behavior_policy=None):
     if world_size > 1:
         # Tensor scoring above performs no collectives, so all local exceptions
         # reach this single gather and cannot strand other ranks in later phases.
-        distributed.all_gather_object(replicas, payload)
+        distributed.all_gather_object(replicas, payload, group=group)
     else:
         replicas[0] = payload
     failures = [

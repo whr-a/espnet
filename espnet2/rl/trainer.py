@@ -20,6 +20,7 @@ import random
 import time
 import traceback
 from contextlib import nullcontext
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -91,6 +92,8 @@ class NativeGRPOTrainer:
         self.world_size = (
             distributed.get_world_size() if distributed.is_initialized() else 1
         )
+        if self.world_size > 1:
+            self._object_collective_group()
         self.policy = policy.eval()
         self.device = next(policy.parameters()).device
         if self.world_size > 1:
@@ -496,6 +499,9 @@ class NativeGRPOTrainer:
     def train(self, sources):
         if self.config.execution_mode != "sync":
             raise ValueError("Use the Miles async driver for disagg_async training")
+        # Every rank must create the group before rank zero starts generation.
+        # Lazy creation after a long rollout leaves other ranks in new_group.
+        group = self._object_collective_group() if self.world_size > 1 else None
         output = Path(self.config.output_dir)
         output.mkdir(parents=True, exist_ok=True)
         if self.rollout is None and self.rank == 0:
@@ -527,7 +533,6 @@ class NativeGRPOTrainer:
                 payload = [None, None]
             train_start, train_start_wall = time.monotonic(), time.time()
             if self.world_size > 1:
-                group = self._object_collective_group()
                 distributed.broadcast_object_list(payload, src=0, group=group)
             batch, error = payload
             if error:
@@ -608,11 +613,16 @@ class NativeGRPOTrainer:
                 )
 
     def _object_collective_group(self):
-        """Use Gloo for CPU rollout objects, avoiding GPU-sized serialization."""
-        if distributed.get_backend() == "gloo":
-            return None
+        """Use one explicit-timeout Gloo group for native rollout/score objects.
+
+        Call collectively before any rank-zero rollout or reward preparation.
+        Even a Gloo default group may have a shorter caller-supplied timeout.
+        """
         if not hasattr(self, "_rollout_object_group"):
-            self._rollout_object_group = distributed.new_group(backend="gloo")
+            self._rollout_object_group = distributed.new_group(
+                backend="gloo",
+                timeout=timedelta(minutes=self.config.distributed_timeout_minutes),
+            )
         return self._rollout_object_group
 
 
@@ -632,7 +642,8 @@ def run(config):
     if int(os.getenv("WORLD_SIZE", "1")) > 1:
         device_type = torch.device(config.device).type
         distributed.init_process_group(
-            get_nccl_backend() if device_type != "cpu" else "gloo"
+            get_nccl_backend() if device_type != "cpu" else "gloo",
+            timeout=timedelta(minutes=config.distributed_timeout_minutes),
         )
         if device_type != "cpu":
             get_torch_device().set_device(int(os.environ["LOCAL_RANK"]))

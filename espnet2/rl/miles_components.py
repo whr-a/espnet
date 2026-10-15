@@ -319,7 +319,7 @@ class NativeComponents:
             espnet_config=self.config.to_dict(),
             trainer_model_id=None,
             distributed_backend="nccl",
-            distributed_timeout_minutes=60,
+            distributed_timeout_minutes=self.config.distributed_timeout_minutes,
             debug_deterministic_collective=False,
             object_store_backend="ray",
             worker_comm_backend="ray",

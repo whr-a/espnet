@@ -43,6 +43,8 @@ class ESPnetRLConfig:
     reference_device: str | None = None
     optimizer_device: str | None = None
     distributed_strategy: str = "ddp"
+    # Cover the full collocate runtime budget, including rank-zero rollout waits.
+    distributed_timeout_minutes: float = 72 * 60
     allreduce_chunk_bytes: int = 64 * 1024 * 1024
     dtype: str = "float32"
     seed: int = 42
@@ -188,6 +190,11 @@ class ESPnetRLConfig:
             raise ValueError("optimizer_device must be null or cpu")
         if self.distributed_strategy not in ("ddp", "native_allreduce"):
             raise ValueError("distributed_strategy must be ddp or native_allreduce")
+        if type(self.distributed_timeout_minutes) not in (
+            int,
+            float,
+        ) or not 0 < self.distributed_timeout_minutes < float("inf"):
+            raise ValueError("distributed_timeout_minutes must be positive and finite")
         if self.allreduce_chunk_bytes < 1:
             raise ValueError("allreduce_chunk_bytes must be positive")
         if self.learning_rate <= 0 or self.max_grad_norm <= 0 or self.kl_coef < 0:

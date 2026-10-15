@@ -50,6 +50,15 @@ requests, raw responses, rewards, masks and optimizer state are retained. Use a
 new output directory for every run. This initial implementation does not resume
 partially completed runs or silently switch to another inference backend.
 
+Multi-rank trainers create their ESPnet Gloo object group collectively before
+rank zero starts rollout. Rollout payloads, native scoring results, behavior-load
+errors and reward preparation share that group. `distributed_timeout_minutes`
+defaults to a finite 4320 minutes (72 hours), covering the collocate runtime
+budget and the 48-hour disaggregated async budget. The default training group
+uses the same timeout. The runtime supervisor enforces each frozen run's
+own deadline and health checks. Set this field before freezing a new run when a
+different runtime budget is required.
+
 The correctness profiles use full precision, independent TP=1 rollout replicas
 and full prompt prefill. Collocate uses four native training ranks and four
 rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs

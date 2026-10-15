@@ -36,8 +36,11 @@ class ESPnetTrainRayActor(TrainRayActor):
     ):
         if role != "actor" or with_opd_teacher or recv_ckpt_src_rank is not None:
             raise ValueError("The native short-run actor supports fresh GRPO only")
-        self._init_common(args, role, with_ref=with_ref)
         config = ESPnetRLConfig(**args.espnet_config)
+        config.validate()
+        args = copy.copy(args)
+        args.distributed_timeout_minutes = config.distributed_timeout_minutes
+        self._init_common(args, role, with_ref=with_ref)
         assigned = ray.get_gpu_ids()
         visible = [
             value
@@ -161,10 +164,10 @@ class ESPnetTrainRayActor(TrainRayActor):
             load_error = f"rank {self._rank}: {type(error).__name__}: {error}"
             self._record_rollout_error(rollout_id)
         if self._world_size > 1:
-            from miles.utils.distributed_utils import get_gloo_group
-
             failures = [None] * self._world_size
-            dist.all_gather_object(failures, load_error, group=get_gloo_group())
+            dist.all_gather_object(
+                failures, load_error, group=self.trainer._object_collective_group()
+            )
         else:
             failures = [load_error]
         failures = [failure for failure in failures if failure]
@@ -230,9 +233,9 @@ class ESPnetTrainRayActor(TrainRayActor):
 
     def _broadcast_payload(self, payload):
         if self._world_size > 1:
-            from miles.utils.distributed_utils import get_gloo_group
-
-            dist.broadcast_object_list(payload, src=0, group=get_gloo_group())
+            dist.broadcast_object_list(
+                payload, src=0, group=self.trainer._object_collective_group()
+            )
 
     def _record_rollout_error(self, rollout_id):
         """Preserve failures without masking them with a logging-path exception."""
