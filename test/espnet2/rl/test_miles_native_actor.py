@@ -199,11 +199,12 @@ def _actor_worker(rank, root):
         actor.config = cfg
         actor.trainer = NativeGRPOTrainer(Policy(), cfg)
         actor.version, actor.last_end, actor.last_metrics = 0, None, None
-        loaded = []
+        loaded, devices = [], []
 
         def load_behavior(load_cfg, device):
             global _LOAD_CALLS
             _LOAD_CALLS += 1
+            devices.append(device)
             if load_cfg.adapter_options.get("bad_load") and rank == 3:
                 raise ValueError("deliberate behavior loading failure")
             policy = Policy()
@@ -231,6 +232,8 @@ def _actor_worker(rank, root):
                 torch.testing.assert_close(value, initial[name], rtol=0, atol=0)
             actor.save_model(step)
         assert _LOAD_CALLS == 1 and loaded[0].scored == 32
+        # The stale behavior actor is a frozen copy placed like the reference.
+        assert devices == [cfg.reference_device or cfg.device]
         if rank == 0:
             assert _REWARD_CALLS == 512 and store.calls == 2
             metrics = actor.last_metrics
@@ -353,3 +356,41 @@ class TestMilesNativeActor(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestStaleBehaviorPlacement(unittest.TestCase):
+    def test_stale_behavior_actor_is_loaded_onto_the_reference_device(self):
+        """A behavior copy follows the reference, not a hardcoded CPU."""
+        with tempfile.TemporaryDirectory() as root:
+            checkpoint = Path(root) / "behavior.pth"
+            torch.save(Policy().state_dict(), checkpoint)
+            digest = sha256(checkpoint)
+            object_store._INSTANCE = Store(
+                {
+                    "batch": None,
+                    "behavior_policy_version": 0,
+                    "behavior_checkpoint": str(checkpoint),
+                    "behavior_checkpoint_sha256": digest,
+                }
+            )
+            actor = ESPnetTrainRayActor.__new__(ESPnetTrainRayActor)
+            actor._rank, actor._world_size, actor.version = 0, 1, 1
+            requested = []
+
+            def load_behavior(load_cfg, device):
+                requested.append((load_cfg.checkpoint, device))
+                raise RuntimeError("stop after placement")
+
+            original = actor_module.build_policy
+            actor_module.build_policy = load_behavior
+            try:
+                for reference, expected in (("cpu:0", "cpu:0"), (None, "cpu")):
+                    actor.config = ESPnetRLConfig(
+                        **{**config(root).to_dict(), "reference_device": reference}
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "Behavior loading"):
+                        actor.train(1, "rollout")
+                    self.assertEqual(requested[-1], (str(checkpoint), expected))
+            finally:
+                actor_module.build_policy = original
+                object_store._INSTANCE = None

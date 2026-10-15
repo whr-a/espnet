@@ -151,15 +151,19 @@ class ESPnetTrainRayActor(TrainRayActor):
             raise RuntimeError(data["error"])
         batch = data["batch"]
         version = data["behavior_version"]
-        # Each actor scores only its native shard. CPU behavior replicas are
-        # loaded independently; rank-zero-only reward decoding avoids TTS races.
+        # Each actor scores only its native shard. A stale behavior actor is a
+        # frozen policy copy like the reference, so it is loaded independently
+        # onto the reference's device: CPU for recipes that keep the reference
+        # there, the training GPU for small models that keep it on the GPU.
+        # Rank-zero-only reward decoding avoids TTS races.
         behavior = None
         load_error = None
         try:
             if version != self.version:
                 config = copy.deepcopy(self.config)
                 config.checkpoint = data["behavior_checkpoint"]
-                behavior = build_policy(config, "cpu").eval().requires_grad_(False)
+                device = self.config.reference_device or self.config.device
+                behavior = build_policy(config, device).eval().requires_grad_(False)
         except Exception as error:
             load_error = f"rank {self._rank}: {type(error).__name__}: {error}"
             self._record_rollout_error(rollout_id)
