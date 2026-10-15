@@ -48,6 +48,40 @@ rl_wav_scp=""
 rl_text=""
 rl_manifest=""
 rl_prepare_args=""
+rl_eval_manifest=""
+rl_data_admission=""
+rl_ray_address=""
+rl_train_node=""
+rl_rollout_node=""
+rl_output_dir=""
+rl_checkpoint=""
+rl_train_config=""
+rl_validate_only=false
+
+launch_rl_stage() {
+    log "Stage 10: Miles RL post-training with SGLang"
+    local rl_root
+    rl_root=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../.." && pwd)
+    export PYTHONPATH="${rl_root}${PYTHONPATH:+:${PYTHONPATH}}"
+    if [ -n "${rl_wav_scp}" ]; then
+        [ -n "${rl_text}" ] && [ -n "${rl_manifest}" ] || {
+            log "ERROR: --rl_wav_scp requires --rl_text and --rl_manifest"; exit 2;
+        }
+        # shellcheck disable=SC2086
+        ${python} -m espnet2.speechlm.rl.prepare --wav-scp "${rl_wav_scp}" \
+            --text "${rl_text}" --output "${rl_manifest}" ${rl_prepare_args}
+    fi
+    local key option
+    local -a rl_data_args=()
+    for key in manifest eval_manifest data_admission ray_address train_node rollout_node output_dir checkpoint train_config; do
+        option=rl_${key}
+        [ -z "${!option}" ] || rl_data_args+=(--${key//_/-} "${!option}")
+    done
+    if "${rl_validate_only}"; then
+        rl_data_args+=(--validate-only)
+    fi
+    ${python} -m espnet2.bin.rl_launch --config "${rl_config}" "${rl_data_args[@]}"
+}
 
 # Data preparation related
 local_data_opts=""  # Options to be passed to local/data.sh.
@@ -121,6 +155,11 @@ if [ $# -ne 0 ]; then
     log "${help_message}"
     log "Error: No positional arguments are required."
     exit 2
+fi
+
+if [ "${stage}" -eq 10 ] && [ "${stop_stage}" -ge 10 ] && [ -n "${rl_config}" ]; then
+    launch_rl_stage
+    exit 0
 fi
 
 . ./path.sh
@@ -592,20 +631,7 @@ fi
 
 
 if [ "${stage}" -le 10 ] && [ "${stop_stage}" -ge 10 ] && [ -n "${rl_config}" ]; then
-    log "Stage 10: Miles RL post-training with SGLang"
-    if [ -n "${rl_wav_scp}" ]; then
-        [ -n "${rl_text}" ] && [ -n "${rl_manifest}" ] || {
-            log "ERROR: --rl_wav_scp requires --rl_text and --rl_manifest"; exit 2;
-        }
-        # shellcheck disable=SC2086
-        ${python} -m espnet2.speechlm.rl.prepare --wav-scp "${rl_wav_scp}" \
-            --text "${rl_text}" --output "${rl_manifest}" ${rl_prepare_args}
-    fi
-    rl_data_args=()
-    if [ -n "${rl_manifest}" ]; then
-        rl_data_args+=(--manifest "${rl_manifest}")
-    fi
-    ${python} -m espnet2.bin.rl_train --config "${rl_config}" "${rl_data_args[@]}"
+    launch_rl_stage
 fi
 
 log "Successfully finished. [elapsed=${SECONDS}s]"

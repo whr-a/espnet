@@ -47,6 +47,14 @@ rl_questions=
 rl_choices=
 rl_hf_revision=
 rl_qa_template=default
+rl_eval_manifest=
+rl_data_admission=
+rl_ray_address=
+rl_train_node=
+rl_rollout_node=
+rl_output_dir=
+rl_checkpoint=
+rl_train_config=
 
 
 # Launch
@@ -309,7 +317,7 @@ if (( stage <= 6 && stop_stage >= 6 && node_rank == 0 )); then
     if [[ -n ${rl_manifest} && -z ${rl_data_input} && -z ${rl_wav_scp} ]]; then
         rl_args+=(--stage 2)
     fi
-    for key in manifest data_input wav_scp text questions choices hf_revision qa_template; do
+    for key in manifest data_input wav_scp text questions choices hf_revision qa_template eval_manifest data_admission ray_address train_node rollout_node output_dir checkpoint train_config; do
         option=rl_${key}
         [[ -z ${!option} ]] || rl_args+=(--${key//_/-} "${!option}")
     done

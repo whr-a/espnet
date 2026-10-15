@@ -37,7 +37,7 @@ while (($#)); do
         --rl-*|--rl_*)
             key=${1#--rl}; key=${key#[-_]}; key=${key//-/_}
             case ${key} in
-                wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|rollout_gpus|rollout_python|sglang_source|miles_source|language) ;;
+                wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|rollout_gpus|rollout_python|sglang_source|miles_source|language|manifest|eval_manifest|data_admission|ray_address|train_node|rollout_node) ;;
                 *) die "Unknown RL option: $1" ;;
             esac
             require_value "$@"
@@ -68,25 +68,27 @@ while (($#)); do
 done
 
 validate_rl_args() {
-    local key option wav_scp= text= train_config= checkpoint=
+    local key option wav_scp= text= train_config= checkpoint= manifest=
     local config=${recipe_dir}/conf/rl_miles_wer.yaml
     while (($#)); do
         option=$1
+        if [[ ${option} == --validate-only ]]; then shift; continue; fi
         key=${option#--}; key=${key//-/_}
         case ${key} in
-            wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|rollout_gpus|rollout_python|sglang_source|miles_source|language) ;;
+            wav_scp|text|train_config|checkpoint|config|work_dir|steps|device|reference_device|rollout_gpus|rollout_python|sglang_source|miles_source|language|manifest|eval_manifest|data_admission|ray_address|train_node|rollout_node) ;;
             *) die "Unknown RL option: ${option}" ;;
         esac
         require_value "$@"
         case ${key} in
-            wav_scp|text|train_config|checkpoint|config) printf -v "${key}" '%s' "$2" ;;
+            wav_scp|text|train_config|checkpoint|config|manifest) printf -v "${key}" '%s' "$2" ;;
             steps) [[ $2 =~ ^[1-9][0-9]*$ ]] || die "${option} requires a positive integer" ;;
         esac
         shift 2
     done
-    for key in wav_scp text train_config checkpoint; do
+    for key in train_config checkpoint; do
         [[ -n ${!key} ]] || die "RL requires --${key//_/-} (or --rl-${key//_/-} for a combined run)"
     done
+    [[ -n ${manifest} || ( -n ${wav_scp} && -n ${text} ) ]] || die "RL requires --manifest or both --wav-scp and --text"
     [[ -f ${config} && -r ${config} ]] || die "RL config is not a readable file: ${config}"
 }
 

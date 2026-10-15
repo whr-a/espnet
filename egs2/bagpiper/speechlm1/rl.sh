@@ -19,6 +19,14 @@ choices=
 hf_revision=
 limit=
 qa_template=default
+eval_manifest=
+data_admission=
+ray_address=
+train_node=
+rollout_node=
+output_dir=
+checkpoint=
+train_config=
 while [[ $# -gt 0 ]]; do
     [[ $# -ge 2 ]] || { echo "Missing value for $1" >&2; exit 2; }
     case "$1" in
@@ -35,6 +43,14 @@ while [[ $# -gt 0 ]]; do
         --limit) limit=$2 ;;
         --qa-template) qa_template=$2 ;;
         --python) python_cmd=$2 ;;
+        --eval-manifest) eval_manifest=$2 ;;
+        --data-admission) data_admission=$2 ;;
+        --ray-address) ray_address=$2 ;;
+        --train-node) train_node=$2 ;;
+        --rollout-node) rollout_node=$2 ;;
+        --output-dir) output_dir=$2 ;;
+        --checkpoint) checkpoint=$2 ;;
+        --train-config) train_config=$2 ;;
         *) echo "Unknown RL option $1" >&2; exit 2 ;;
     esac
     shift 2
@@ -65,9 +81,13 @@ if (( stage <= 1 && stop_stage >= 1 )); then
         "${python_cmd}" -m espnet2.speechlm.model.speechlm.rl.bagpiper.data "${args[@]}"
     fi
 fi
+launch_args=(--config "$rl_config" --manifest "$manifest")
+for key in eval_manifest data_admission ray_address train_node rollout_node output_dir checkpoint train_config; do
+    [[ -z ${!key} ]] || launch_args+=(--${key//_/-} "${!key}")
+done
 if (( stage <= 2 && stop_stage >= 2 )); then
-    "${python_cmd}" -m espnet2.bin.rl_train --config "$rl_config" --manifest "$manifest" --validate-only
+    "${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}" --validate-only
 fi
 if (( stage <= 3 && stop_stage >= 3 )); then
-    "${python_cmd}" -m espnet2.bin.rl_train --config "$rl_config" --manifest "$manifest"
+    "${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}"
 fi

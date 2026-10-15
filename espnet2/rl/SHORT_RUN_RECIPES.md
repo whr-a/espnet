@@ -54,7 +54,7 @@ For AVQA's local partition, both true splits are `train` and add `--heldout-is-t
 
 ## Resolve and launch
 
-Resolve native checkpoint/config, model assets, exact ESPnet/SGLang/Miles revisions, interpreters, manifests and fresh output directory before freezing. Old OWSM `rl.sh` and `espnet2.s2t.rl.recipe` default `--steps` to100: explicitly supply `--steps 5` or use the frozen config directly. Bagpiper wrapper stages1/2/3 prepare/validate/train; Opus `speechlm.sh` stage10 accepts `--rl_config`.
+Resolve native checkpoint/config, model assets, exact ESPnet/SGLang/Miles revisions, interpreters, manifests and fresh output directory before freezing. OWSM `rl.sh` and `espnet2.s2t.rl.recipe` preserve the selected template's update budget, including the new five-update profile. Older small synchronous templates keep their declared 100 updates unless explicitly overridden. Bagpiper wrapper stages1/2/3 prepare/validate/train; Opus `speechlm.sh` stage10 accepts `--rl_config`.
 
 The async public entry resolves two already available Ray nodes:
 
@@ -69,3 +69,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --standalone --nproc-per-node=4 -m espnet2
 ```
 
 The config's `rollout_num_replicas: 4` and `rollout_gpus: '4,5,6,7'` are physical inference GPU IDs; training ranks bind their torchrun local IDs. Four-rank/four-replica execution must be verified before claiming eight-GPU usage. Preserve raw rollout, behavior/current/reference probabilities, masks, versions, loss, checkpoints and timing for all five updates.
+
+The existing recipe stages route either config through `espnet2.bin.rl_launch`. A 32×8 synchronous config starts four torchrun ranks automatically; an async config calls the original Miles loop entry and requires `--ray-address`, `--train-node`, `--rollout-node`. Both require `--data-admission` and verify current manifest/media/protection hashes before training. Earlier small synchronous recipes keep their single-process entry.
+
+For OWSM, use `egs2/owsm_v4/s2t1/rl.sh` or `egs2/librispeech/owsm_rl1/run.sh` with `--config`, `--manifest`, `--eval-manifest`, `--data-admission`, `--train-config`, `--checkpoint`, and a fresh `--work-dir`; add the Ray options for async. The template's five-update budget and CPU reference remain intact unless explicitly overridden. `--validate-only` builds and verifies the effective recipe config without training.
+
+For Bagpiper QA/TTS, select the existing optional RL stage (`run.sh --stage 6` / `run.sh --stage 4`) or call `rl.sh --stage 2 --stop-stage 3 --rl-config ... --manifest ... --eval-manifest ... --data-admission ...`; add the same Ray options for async. Stage2 validates; stage3 trains. For Opus, `speechlm.sh --stage 10 --stop_stage 10 --rl_config ... --rl_manifest ... --rl_eval_manifest ... --rl_data_admission ...` routes either mode; async adds `--rl_ray_address`, `--rl_train_node`, `--rl_rollout_node`. `--rl_validate_only true` performs only the actual CLI/data validation.

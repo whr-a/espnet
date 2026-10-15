@@ -1,0 +1,287 @@
+"""Recipe routes and effective config checks without launching training."""
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from espnet2.bin.rl_launch import launch_command, parser
+from espnet2.rl.config import ESPnetRLConfig
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def frozen_config(tmp_path, mode, *, small=False):
+    config = ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_generate_factory="unused:generate",
+        execution_mode=mode,
+        prompts_per_step=2 if small else 32,
+        group_size=4 if small else 8,
+        steps=5,
+        warmup_steps=0 if small else 1,
+        rollout_num_replicas=1 if small else (8 if mode == "disagg_async" else 4),
+        rollout_gpus="4,5,6,7",
+        reference_device="cpu",
+        manifest="train32.jsonl",
+    )
+    path = tmp_path / f"{mode}.yaml"
+    path.write_text(yaml.safe_dump(config.to_dict()))
+    return path
+
+
+def test_shared_launcher_routes_async_and_collocate_and_keeps_small_sync(
+    tmp_path, monkeypatch
+):
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    sync = frozen_config(tmp_path, "sync")
+    args = parser().parse_args(
+        ["--config", str(sync), "--data-admission", "audit.json"]
+    )
+    command, environment = launch_command(args, python="pinned-python")
+    assert command[:7] == [
+        "pinned-python",
+        "-m",
+        "torch.distributed.run",
+        "--standalone",
+        "--nproc-per-node=4",
+        "-m",
+        "espnet2.bin.rl_train",
+    ]
+    assert environment["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
+    args.validate_only = True
+    assert launch_command(args, python="pinned-python")[0][:3] == [
+        "pinned-python",
+        "-m",
+        "espnet2.bin.rl_train",
+    ]
+    async_path = frozen_config(tmp_path, "disagg_async")
+    args = parser().parse_args(
+        [
+            "--config",
+            str(async_path),
+            "--data-admission",
+            "audit.json",
+            "--ray-address",
+            "ray-address",
+            "--train-node",
+            "train-node",
+            "--rollout-node",
+            "rollout-node",
+        ]
+    )
+    assert launch_command(args, python="pinned-python")[0][:3] == [
+        "pinned-python",
+        "-m",
+        "espnet2.bin.rl_train_async",
+    ]
+    args.rollout_node = None
+    with pytest.raises(ValueError, match="rollout-node"):
+        launch_command(args)
+    small = frozen_config(tmp_path, "sync", small=True)
+    args = parser().parse_args(["--config", str(small)])
+    assert launch_command(args, python="pinned-python")[0][:3] == [
+        "pinned-python",
+        "-m",
+        "espnet2.bin.rl_train",
+    ]
+
+
+def mock_python(tmp_path):
+    path = tmp_path / "python-route"
+    path.write_text(
+        "#!" + sys.executable + "\n"
+        "import json,os,sys\n"
+        "from pathlib import Path\n"
+        "with Path(os.environ['ROUTE_LOG']).open('a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+        "if 'espnet2.s2t.rl.recipe' in sys.argv: print(os.environ['GENERATED_CONFIG'])\n"
+    )
+    path.chmod(0o755)
+    return path
+
+
+@pytest.mark.parametrize("recipe", ["bagpiper", "bagpiper_tts"])
+def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
+    command_python = mock_python(tmp_path)
+    log = tmp_path / "route.jsonl"
+    config = frozen_config(tmp_path, "disagg_async")
+    env = {**os.environ, "ROUTE_LOG": str(log), "GENERATED_CONFIG": str(config)}
+    args = [
+        "bash",
+        str(ROOT / "egs2" / recipe / "speechlm1/rl.sh"),
+        "--stage",
+        "2",
+        "--stop-stage",
+        "3",
+        "--python",
+        str(command_python),
+        "--rl-config",
+        str(config),
+        "--manifest",
+        "train manifest.jsonl",
+        "--eval-manifest",
+        "heldout.jsonl",
+        "--data-admission",
+        "audit.json",
+        "--ray-address",
+        "ray-address",
+        "--train-node",
+        "train-node",
+        "--rollout-node",
+        "rollout-node",
+    ]
+    subprocess.run(args, env=env, check=True)
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 2
+    assert all(call[:2] == ["-m", "espnet2.bin.rl_launch"] for call in calls)
+    assert "--validate-only" in calls[0] and "--validate-only" not in calls[1]
+    assert all(
+        call[call.index("--manifest") + 1] == "train manifest.jsonl" for call in calls
+    )
+    assert all(
+        call[call.index("--rollout-node") + 1] == "rollout-node" for call in calls
+    )
+
+
+def test_owsm_and_librispeech_recipe_routes_keep_template_step_budget(tmp_path):
+    command_python = mock_python(tmp_path)
+    config = frozen_config(tmp_path, "disagg_async")
+    for index, relative in enumerate(
+        ("egs2/owsm_v4/s2t1/rl.sh", "egs2/librispeech/owsm_rl1/run.sh")
+    ):
+        log = tmp_path / f"route{index}.jsonl"
+        env = {
+            **os.environ,
+            "PYTHON": str(command_python),
+            "ROUTE_LOG": str(log),
+            "GENERATED_CONFIG": str(config),
+        }
+        subprocess.run(
+            [
+                "bash",
+                str(ROOT / relative),
+                "--config",
+                str(config),
+                "--manifest",
+                "train32.jsonl",
+                "--eval-manifest",
+                "heldout.jsonl",
+                "--data-admission",
+                "audit.json",
+                "--train-config",
+                "native.yaml",
+                "--checkpoint",
+                "native.pt",
+                "--work-dir",
+                str(tmp_path / f"work{index}"),
+                "--ray-address",
+                "ray-address",
+                "--train-node",
+                "train-node",
+                "--rollout-node",
+                "rollout-node",
+            ],
+            env=env,
+            check=True,
+        )
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        assert calls[0][:2] == ["-m", "espnet2.s2t.rl.recipe"]
+        assert "--steps" not in calls[0]
+        assert calls[1][:2] == ["-m", "espnet2.bin.rl_launch"]
+        assert calls[2][:2] == ["-m", "espnet2.bin.rl_launch"]
+        assert calls[2][calls[2].index("--rollout-node") + 1] == "rollout-node"
+
+
+def test_owsm_recipe_builder_preserves_five_updates_and_existing_manifest(
+    tmp_path, monkeypatch
+):
+    from espnet2.s2t.rl import recipe
+
+    config = frozen_config(tmp_path, "sync")
+    manifest = tmp_path / "train32.jsonl"
+    manifest.write_text("already frozen data")
+    heldout = tmp_path / "heldout.jsonl"
+    heldout.write_text("already frozen heldout")
+    observed = []
+    monkeypatch.setattr(
+        "espnet2.rl.short_run.verify_data_admission",
+        lambda config, path: observed.append((config.manifest, path)),
+    )
+    work = tmp_path / "work"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "recipe",
+            "--config",
+            str(config),
+            "--manifest",
+            str(manifest),
+            "--eval-manifest",
+            str(heldout),
+            "--data-admission",
+            "audit.json",
+            "--train-config",
+            "native.yaml",
+            "--checkpoint",
+            "native.pt",
+            "--work-dir",
+            str(work),
+        ],
+    )
+    recipe.main()
+    effective = ESPnetRLConfig.load(work / "rl_config.yaml")
+    assert effective.steps == 5 and effective.warmup_steps == 1
+    assert effective.rollout_gpus == "4,5,6,7" and effective.reference_device == "cpu"
+    assert (
+        effective.manifest == str(manifest)
+        and manifest.read_text() == "already frozen data"
+    )
+    assert observed == [(str(manifest), "audit.json")]
+
+
+def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
+    command_python = mock_python(tmp_path)
+    config = frozen_config(tmp_path, "disagg_async")
+    log = tmp_path / "opus_route.jsonl"
+    env = {**os.environ, "ROUTE_LOG": str(log), "GENERATED_CONFIG": str(config)}
+    subprocess.run(
+        [
+            "bash",
+            "speechlm.sh",
+            "--stage",
+            "10",
+            "--stop_stage",
+            "10",
+            "--python",
+            str(command_python),
+            "--rl_config",
+            str(config),
+            "--rl_manifest",
+            "train32.jsonl",
+            "--rl_eval_manifest",
+            "heldout.jsonl",
+            "--rl_data_admission",
+            "audit.json",
+            "--rl_ray_address",
+            "ray-address",
+            "--rl_train_node",
+            "train-node",
+            "--rl_rollout_node",
+            "rollout-node",
+            "--rl_validate_only",
+            "true",
+        ],
+        cwd=ROOT / "egs2/libritts/speechlm1",
+        env=env,
+        check=True,
+    )
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert len(calls) == 1 and calls[0][:2] == ["-m", "espnet2.bin.rl_launch"]
+    assert "--validate-only" in calls[0]
+    assert calls[0][calls[0].index("--rollout-node") + 1] == "rollout-node"
