@@ -21,6 +21,8 @@ rollout_python: /path/to/rl-env/bin/python
 miles_source: /path/to/pinned/miles
 sglang_source: /path/to/pinned/sglang
 sglang_engine_kwargs:
+  # Buffered safetensors loading on shared filesystems; the same exact tensors.
+  weight_loader_disable_mmap: true
   attention_backend: fa3
   context_length: 4096
   max_running_requests: 32
