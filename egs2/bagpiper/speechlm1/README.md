@@ -418,7 +418,7 @@ distinct official-release result. This pair uses the recorded `790bb1...`
 public-HF initialization, not official SFT `509807...`.
 
 For caption-first QA, start with the [native QA protocol](NATIVE_QA_PROTOCOL.md):
-`--qa-template bagpiper`, native SFT system conditioning, and correctness 1.0
+`--qa-template bagpiper`, historical native QA system conditioning, and correctness 1.0
 plus format 0.1. The earlier WEST profile used the same public-HF initialization
 with different prompting and extraction; its 28.9% baseline does not reproduce
 the official SFT MMAU-Mini result of 74.5.
@@ -428,10 +428,10 @@ probability and memory preflights before use; these CPU checks do not validate
 GPU training or the one-/two-GPU Bagpiper layouts.
 
 The RL changes below are a local, unpublished feature branch,
-`codex/bagpiper-west-h100-fp32-20261016`. A standard upstream ESPnet checkout
+`codex/bagpiper-native-qa-20261016`. A standard upstream ESPnet checkout
 does not yet contain this profile. Follow the
 [source-bundle instructions](../../../espnet2/rl/ENVIRONMENT.md#4-obtain-the-reviewed-rl-sources)
-to import the reviewed `espnet-bagpiper-west-h100-fp32-20261016.bundle` and check
+to import the reviewed `espnet-bagpiper-native-qa-20261016.bundle` and check
 its supplied revision/hash receipt; no published feature URL is assumed.
 
 The default `conf/rl.yaml` (also `conf/rl_collocate.yaml`) shares **one H100
