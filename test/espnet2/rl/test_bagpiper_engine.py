@@ -886,8 +886,13 @@ def test_batched_learner_equals_the_learner_per_candidate(
         )
 
 
-def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypatch):
-    engine = build_engine(native, tmp_path, monkeypatch, dtype="bfloat16")
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_sampling_override_and_retraction_free_sizing(
+    native, tmp_path, monkeypatch, temperature
+):
+    engine = build_engine(
+        native, tmp_path, monkeypatch, dtype="bfloat16", temperature=temperature
+    )
     assert engine.engine.settings["attention_backend"] == "fa3"
     override = {"temperature": 0.0, "max_new_tokens": 6, "samples": 1}
     greedy = [engine.generate(rollout_sources(), 1, override) for _ in range(2)]
@@ -895,6 +900,8 @@ def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypa
     assert [g["source_id"] for g in greedy[0]] == ["qa", "tts"]
     assert all(len(g["token_ids"]) <= 6 for g in greedy[0])
     assert {g["sampling_contract"]["temperature"] for g in greedy[0]} == {0.0}
+    assert engine.engine.model.temperature == 0.0
+    assert {params["temperature"] for params in engine.engine.params} == {0.0}
     with pytest.raises(ValueError, match="overrides temperature"):
         engine.generate(rollout_sources(), 2, {"top_p": 0.5})
     # SGLang serves an 8-frame prompt whole with at most 2,038 new tokens.
@@ -908,7 +915,10 @@ def test_sampling_override_and_retraction_free_sizing(native, tmp_path, monkeypa
         build_engine(native, tmp_path / "small", monkeypatch)
 
 
-def test_held_out_evaluation_decodes_through_the_engine(native, tmp_path, monkeypatch):
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_held_out_evaluation_decodes_through_the_engine(
+    native, tmp_path, monkeypatch, temperature
+):
     """The evaluator's generate on BagpiperEngine itself: greedy and sampled
     candidates in rollouts of one prompt each, records that MMAU scoring and
     the native verification accept."""
@@ -924,6 +934,7 @@ def test_held_out_evaluation_decodes_through_the_engine(native, tmp_path, monkey
         "BagpiperEngine",
         group_size=1,
         max_tokens=10,
+        temperature=temperature,
     )
     sources = rollout_sources()
     sources[0].update(reference="20 2", choices=["20 2", "7"])
@@ -943,9 +954,11 @@ def test_held_out_evaluation_decodes_through_the_engine(native, tmp_path, monkey
     config.group_size = 4
     torch.manual_seed(2)
     generations = evaluate.generate(
-        config, sources, sampled, {"temperature": 1.0, "max_new_tokens": 10}, 1
+        config, sources, sampled, {"temperature": temperature, "max_new_tokens": 10}, 1
     )
-    policy = NativeSpeechLMPolicy(core, GEOMETRY, token_chunk_size=4)
+    policy = NativeSpeechLMPolicy(
+        core, GEOMETRY, token_chunk_size=4, temperature=temperature
+    )
     errors, drift = evaluate.verify_native_log_probs(
         policy, collate_rollouts(sources, generations, 4), config
     )

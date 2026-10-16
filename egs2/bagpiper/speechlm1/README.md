@@ -486,9 +486,12 @@ line after the last answer cue ("final answer", "correct answer", "answer is",
 "choice is", "answer:"), else of the whole response; format is exactly one
 answer block anywhere. Accuracy, format and the extraction path are logged as
 `reward/acc`, `reward/format` and `reward/path_{tag,cue,text}`.
-`rewards:qa_reward` is WEST's default reward exactly (exact-string answer,
-whole response one answer tag), the reward earlier runs' frozen configs name.
-Both use Miles' normalized GRPO advantages and KL objective. Prepare the AVQA
+`rewards:qa_reward` retains the historical half-scaled WEST default reward:
+exact-string accuracy plus the whole-response answer-format check, divided by
+two. `rewards:qa_west_default_reward` uses the original upstream scalar,
+`accuracy + format`, without tolerant answer extraction. These are rule-based
+rewards, not LLM-judge scores. Both components are logged separately. All
+profiles use Miles' normalized GRPO advantages and KL objective. Prepare the AVQA
 training manifest with `--shuffle-seed 42`: prompts are taken in manifest
 order, so the shuffle gives each update new prompts drawn across the corpus.
 

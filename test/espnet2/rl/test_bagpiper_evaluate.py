@@ -238,7 +238,10 @@ class FakeEngine:
         FakeEngine.calls.append("closed")
 
 
-def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch):
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_greedy_mmau_evaluation_through_the_rollout_engine(
+    tmp_path, monkeypatch, temperature
+):
     clips = []
     for index, seconds in enumerate((0.5, 2.0)):
         clips.append(tmp_path / f"clip-{index}.wav")
@@ -264,6 +267,7 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
                 "sglang_engine": f"{__name__}:FakeEngine",
                 "manifest": str(train),
                 "group_size": 8,
+                "temperature": temperature,
                 "max_tokens": 1536,
                 "sglang_engine_kwargs": {
                     "context_length": 2048,
@@ -321,6 +325,8 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
     assert summary["by_category"]["task"]["music"]["count"] == 1
     frozen = json.loads((output / "frozen_config.json").read_text())
     assert (frozen["group_size"], frozen["max_tokens"]) == (1, 2048)
+    assert frozen["temperature"] == temperature
+    assert summary["sampling"] == greedy
     # 512 more new tokens than the recipe's on its KV budget of 32 x 2048.
     assert frozen["sglang_engine_kwargs"] == {
         "context_length": 2560,
@@ -356,12 +362,12 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(tmp_path, monkeypatch
         evaluate.run(arguments("never", verify_native=True))
     assert not (tmp_path / "never").exists()
     # Sampled responses saved without their features cannot be verified.
-    evaluate.run(arguments("sampled", temperature=1.0))
+    evaluate.run(arguments("sampled", temperature=temperature))
     with pytest.raises(ValueError, match="no native features"):
         evaluate.run(
             arguments(
                 "verified",
-                temperature=1.0,
+                temperature=temperature,
                 verify_native=True,
                 responses=str(tmp_path / "sampled" / "responses.json"),
             )

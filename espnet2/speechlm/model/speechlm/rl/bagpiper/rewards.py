@@ -85,7 +85,7 @@ def west_accuracy(source, text):
 
 
 def qa_reward(source, generation):
-    """WEST's default GRPO reward exactly, as every earlier run used it:
+    """Historical half-scaled WEST default reward, as earlier runs used it:
     exact-string accuracy and a response that is nothing but one answer tag,
     with equal weights."""
     text = generation["text"]
@@ -96,6 +96,18 @@ def qa_reward(source, generation):
         "acc": accuracy,
         "format": answer_format,
     }
+
+
+def qa_west_default_reward(source, generation):
+    """WEST's default accuracy-plus-format reward, with its original scale.
+
+    Matches west/utils/rewards.py and west/bin/train_grpo.py at upstream
+    b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb: exact, case-sensitive answer
+    accuracy plus the whole-completion answer-format check, each weighted 1.
+    Keep ``qa_reward`` unchanged for runs frozen with its historical scale.
+    """
+    components = qa_reward(source, generation)
+    return {**components, "reward": components["acc"] + components["format"]}
 
 
 def qa_v1_reward(source, generation):

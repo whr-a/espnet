@@ -17,6 +17,7 @@ from espnet2.speechlm.model.speechlm.rl.bagpiper.rewards import (
     qa_reward,
     qa_think_reward,
     qa_v1_reward,
+    qa_west_default_reward,
 )
 
 
@@ -55,6 +56,33 @@ def test_west_think_reward(prediction, expected):
 def test_strict_west_reward(prediction, accuracy, answer_format):
     assert qa_reward({"reference": "Car"}, {"text": prediction}) == {
         "reward": 0.5 * (accuracy + answer_format),
+        "acc": accuracy,
+        "format": answer_format,
+    }
+
+
+@pytest.mark.parametrize(
+    "prediction,accuracy,answer_format",
+    [
+        ("<answer>Car</answer>", 1, 1),
+        ("Car", 1, 0),
+        ("<answer>car</answer>", 0, 1),
+        ("<answer>\nCar\n</answer>", 0, 1),
+        ("caption <answer>Car</answer>", 1, 0),
+        ("<think>reason</think><answer>Car</answer>", 1, 0),
+        # Upstream's fullmatch regex spans adjacent answer blocks; preserve it.
+        ("<answer>Car</answer><answer>Other</answer>", 1, 1),
+        ("<answer>Other</answer>", 0, 1),
+        ("<answer>Car</answer>\n", 1, 0),
+        ("<answer>Car", 0, 0),
+        ("", 0, 0),
+    ],
+)
+def test_west_default_original_scale(prediction, accuracy, answer_format):
+    # Expected components checked against WEST rewards.py and train_grpo.py
+    # at b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb, including regex edge cases.
+    assert qa_west_default_reward({"reference": "Car"}, {"text": prediction}) == {
+        "reward": accuracy + answer_format,
         "acc": accuracy,
         "format": answer_format,
     }

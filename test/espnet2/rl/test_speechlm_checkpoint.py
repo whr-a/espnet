@@ -44,7 +44,8 @@ class ScoreCore(nn.Module):
         self.lm_head = nn.Linear(7, 64, bias=False)
 
 
-def test_chunk_checkpoint_preserves_joint_distribution_and_gradients():
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_chunk_checkpoint_preserves_joint_distribution_and_gradients(temperature):
     torch.manual_seed(13)
     core = ScoreCore()
     with torch.no_grad():
@@ -81,7 +82,11 @@ def test_chunk_checkpoint_preserves_joint_distribution_and_gradients():
     for recompute in (False, True):
         model = copy.deepcopy(core)
         policy = NativeSpeechLMPolicy(
-            model, GEOMETRY, token_chunk_size=2, score_checkpointing=recompute
+            model,
+            GEOMETRY,
+            token_chunk_size=2,
+            score_checkpointing=recompute,
+            temperature=temperature,
         )
         hidden = torch.eye(7).requires_grad_()
         lp, entropy, per_stream = policy._score_frames(
@@ -103,6 +108,60 @@ def test_chunk_checkpoint_preserves_joint_distribution_and_gradients():
         torch.testing.assert_close(
             results[0][-1][name], results[1][-1][name], rtol=1e-6, atol=1e-6
         )
+
+
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
+def test_tempered_multistream_head_matches_categorical_scores_and_gradients(
+    temperature,
+):
+    """Every sampled stream, entropy and derivative use the same policy at T."""
+    torch.manual_seed(53)
+    core = ScoreCore()
+    policy = NativeSpeechLMPolicy(core, GEOMETRY, temperature=temperature)
+    hidden = torch.randn(2, 7, requires_grad=True)
+    labels = torch.tensor([[20, 0, 0, 0], [41, 45, 49, 53]])
+    active = torch.tensor([[1, 0, 0, 0], [1, 1, 1, 1]], dtype=torch.bool)
+    support = torch.tensor([TEXT, CODEC])
+    stream_scores, entropy, _, _ = policy._head(
+        hidden, labels, active, support, torch.tensor([1])
+    )
+    reference_scores, reference_entropies = [], []
+    for row in range(2):
+        row_scores, row_entropies = [], []
+        for stream in range(core.num_stream):
+            if not active[row, stream]:
+                row_scores.append(hidden.new_zeros(()))
+                continue
+            if stream == 0:
+                ids = policy.allowed[support[row]].nonzero()[:, 0]
+                logits = core.lm_head(hidden[row])[ids]
+                target = (ids == labels[row, stream]).nonzero()[0, 0]
+            else:
+                lo = GEOMETRY["codec_base_offset"] + stream * 4
+                logits = core.lm_head(hidden[row] + core.stream_emb.weight[stream])[
+                    lo : lo + 4
+                ]
+                target = labels[row, stream] - lo
+            distribution = torch.distributions.Categorical(
+                logits=logits / logits.new_tensor(temperature)
+            )
+            row_scores.append(distribution.log_prob(target))
+            row_entropies.append(distribution.entropy())
+        reference_scores.append(torch.stack(row_scores))
+        reference_entropies.append(torch.stack(row_entropies).sum())
+    expected_scores = torch.stack(reference_scores)
+    expected_entropy = torch.stack(reference_entropies)
+    torch.testing.assert_close(stream_scores, expected_scores)
+    torch.testing.assert_close(entropy, expected_entropy)
+    parameters = (hidden, core.lm_head.weight, core.stream_emb.weight)
+    actual_gradients = torch.autograd.grad(
+        stream_scores.sum() + 0.03 * entropy.sum(), parameters, retain_graph=True
+    )
+    expected_gradients = torch.autograd.grad(
+        expected_scores.sum() + 0.03 * expected_entropy.sum(), parameters
+    )
+    for actual, expected in zip(actual_gradients, expected_gradients, strict=True):
+        torch.testing.assert_close(actual, expected)
 
 
 def test_native_layer_checkpoint_preserves_eval_and_backbone_gradient():

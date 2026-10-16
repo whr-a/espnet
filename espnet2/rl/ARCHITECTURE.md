@@ -101,7 +101,9 @@ substantial for large models.
 The original Miles function is rebound through a private globals namespace
 because this pin exposes factories as module globals. This is not a stable
 plugin API: changing the pin requires reviewing the binding and its tests.
-Interrupted-run training recovery is not implemented. Sampling currently
-requires temperature 1 without top-p/top-k truncation; the separate temperature
-experiment is not part of this delivery. Refer to family recipe documentation
+Interrupted-run training recovery is not implemented. OWSM and Bagpiper support
+temperatures in (0, 1] without top-p/top-k truncation; engine, native learner and
+reference logprobs all use the tempered policy, as described in the
+[sampling contract](README.md#sampling-temperature). Other families and the
+vLLM path require temperature 1. Refer to family recipe documentation
 for the distinction between implemented paths and complete GPU validation.

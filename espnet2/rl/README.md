@@ -118,7 +118,11 @@ validation keeps every other family, and the vLLM backend, whose frozen
 
 A greedy decode (temperature 0) samples no π_T: the Bagpiper evaluator verifies
 native probabilities only for candidates sampled at the recipe's temperature.
-WEST's GRPO samples at 0.7 (`examples/grpo/run.sh`) but scores the untempered
-log_softmax(z) (`west/trainer/grpo_trainer.py`), so its gradient and KL are the
-T = 1 policy's at actions drawn at 0.7; here every term is the sampling
-policy's.
+In WEST revision
+[`b9a629d68`](https://github.com/wenet-e2e/west/blob/b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb/west/trainer/grpo_trainer.py#L149),
+`_get_per_token_logps` passes raw model logits to
+`selective_log_softmax(logits, input_ids)` without a temperature argument,
+while `examples/grpo/run.sh` samples at 0.7. That implementation scores the
+untempered policy; here every term scores the sampling policy π_T. Matching
+WEST's prompt, rule-based reward and sampling settings therefore does not
+establish identical objectives or numerical reproduction of its training run.
