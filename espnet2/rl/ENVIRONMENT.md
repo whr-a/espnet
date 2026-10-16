@@ -25,13 +25,14 @@ Installing `espnet[speechlm]`, running `make extra`, or upgrading packages insid
 the locked RL environment would change that profile. Transfer native model
 checkpoints and their matching assets between the environments instead.
 
-**Source availability:** this RL implementation is a feature checkout, not an
-already merged upstream release. Its implementation baseline is
-`91918fb42a7994db17d28d2c78f4c7aad80787a4`. An ordinary clone of
+**Source availability:** this RL implementation is a local, unpublished feature
+branch, `codex/bagpiper-west-h100-fp32-20261016`, not an already merged upstream
+release. An ordinary clone of
 `https://github.com/espnet/espnet.git` provides standard ESPnet; it does not
-by itself supply this unpublished RL feature. Obtain the reviewed feature
-checkout/branch from the contributor before section 4. No public ESPnet feature
-URL is assumed here. Once published or merged, use that exact reviewed revision.
+by itself supply this RL feature or its four-GPU FP32 profile. Obtain the
+reviewed source bundle and its exact revision/hash receipt from the contributor
+before section 4. No public feature URL is assumed here. Once published or
+merged, use the exact reviewed revision provided with that release.
 
 ![Overall RL architecture](../../doc/image/espnet_rl_architecture.svg)
 
@@ -139,22 +140,32 @@ vocoder and model requirements.
 
 ## 4. Obtain the reviewed RL sources
 
-Use a source URL or local Git checkout actually containing this change. For a
-local review checkout, the following creates an independent clean copy:
+For this unpublished draft, obtain the contributor's source bundle named
+**`espnet-bagpiper-west-h100-fp32-20261016.bundle`**, together with its SHA256 and
+Git revision receipt. The name identifies a delivery artifact; this guide does
+not claim that the bundle or feature branch is already publicly hosted. Clone
+the supplied bundle into an independent clean checkout:
 
 ```bash
-export ESPNET_RL_GIT_SOURCE=/absolute/path/to/reviewed/espnet-checkout
-export ESPNET_RL_GIT_REF=codex/rl-local-wrapup-20261016
+export ESPNET_RL_BUNDLE=/absolute/path/to/espnet-bagpiper-west-h100-fp32-20261016.bundle
+export ESPNET_RL_GIT_REF=codex/bagpiper-west-h100-fp32-20261016
 export ESPNET_RL_SOURCE="$ESPNET_WORK/src/espnet-rl"
-git clone --no-hardlinks --single-branch --branch "$ESPNET_RL_GIT_REF" \
-  "$ESPNET_RL_GIT_SOURCE" "$ESPNET_RL_SOURCE"
+sha256sum "$ESPNET_RL_BUNDLE"  # Compare with the supplied delivery receipt.
+git clone --single-branch --branch "$ESPNET_RL_GIT_REF" \
+  "$ESPNET_RL_BUNDLE" "$ESPNET_RL_SOURCE"
+git -C "$ESPNET_RL_SOURCE" checkout "$ESPNET_RL_GIT_REF"
+git -C "$ESPNET_RL_SOURCE" bundle verify "$ESPNET_RL_BUNDLE"
 test -f "$ESPNET_RL_SOURCE/tools/installers/install_miles_async_env.sh"
+test -f "$ESPNET_RL_SOURCE/egs2/bagpiper/speechlm1/conf/rl_west_4gpu_async.yaml"
 git -C "$ESPNET_RL_SOURCE" rev-parse HEAD
 ```
 
-For a published feature fork, substitute its real URL and reviewed branch/tag
-for the two variables; do not substitute upstream `master` while the feature is
-unmerged. Record the printed ESPnet revision with the environment receipt.
+Compare the printed commit with the supplied revision receipt. A clean local Git
+checkout containing that same reviewed branch may replace the bundle as the
+clone source. If a feature fork is later published, use its actual URL and
+reviewed branch/tag. Do not substitute upstream `master` or the older
+`codex/rl-local-wrapup-20261016` branch: the older branch does not contain this
+four-GPU profile. Record the selected ESPnet revision with the environment receipt.
 
 Clone the unchanged Miles library and reviewed SGLang fork at exact pins:
 

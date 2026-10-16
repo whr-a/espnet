@@ -5,6 +5,11 @@ Existing `egs2` recipes add an optional RL stage through
 existing behavior. See the [recipe guide](SHORT_RUN_RECIPES.md),
 [architecture diagram](ARCHITECTURE.md) and [optional environment](ENVIRONMENT.md).
 
+This is the local, unpublished `codex/bagpiper-west-h100-fp32-20261016` feature
+branch. Import the reviewed contributor bundle and verify its revision/hash as
+described in the [source setup](ENVIRONMENT.md#4-obtain-the-reviewed-rl-sources);
+an ordinary upstream clone does not yet provide this feature.
+
 ESPnet owns data preparation, native speech models, rollout adapters, AdamW
 and checkpoints. It calls unchanged Miles v0.1.2 at
 `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` for GRPO normalization/returns,

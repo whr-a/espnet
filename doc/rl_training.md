@@ -30,6 +30,8 @@ most four GPUs. Large models may also need substantial CPU RAM. These layouts
 are not a claim that every family has completed GPU acceptance or improved
 held-out quality; the environment guide lists the current validation boundary.
 
-This is a feature checkout. The guide explicitly explains how to obtain that
-checkout; a normal upstream ESPnet clone does not automatically contain it before
-publication or merge.
+This is the local, unpublished `codex/bagpiper-west-h100-fp32-20261016` feature
+branch. The environment guide explains how to import the contributor's
+`espnet-bagpiper-west-h100-fp32-20261016.bundle` and check its revision/hash
+receipt; no public feature URL is assumed. A normal upstream ESPnet clone does
+not automatically contain these changes before publication or merge.

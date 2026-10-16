@@ -406,6 +406,13 @@ shared output paths.
 
 ## Optional Miles RL stage
 
+The RL changes below are a local, unpublished feature branch,
+`codex/bagpiper-west-h100-fp32-20261016`. A standard upstream ESPnet checkout
+does not yet contain this profile. Follow the
+[source-bundle instructions](../../../espnet2/rl/ENVIRONMENT.md#4-obtain-the-reviewed-rl-sources)
+to import the reviewed `espnet-bagpiper-west-h100-fp32-20261016.bundle` and check
+its supplied revision/hash receipt; no published feature URL is assumed.
+
 The default `conf/rl.yaml` (also `conf/rl_collocate.yaml`) shares **one H100
 80 GB** between the BF16 learner and a persistent SGLang engine.
 `conf/rl_disagg_async.yaml` uses **two H100s**, one learner GPU and one rollout
@@ -548,9 +555,11 @@ matches, categories) and `summary.json` (accuracies, counts, truncations,
 per-category results and the checkpoint, manifest and config hashes), and its
 own completion status and failure traceback. The evaluator rejects
 training/held-out ID overlap and requires the export to match every native
-tensor except the nonpolicy `vocab_weight`. `--temperature 1 --samples 4
---verify-native` (the recipe's `temperature`) instead samples the RL policy and
+tensor except the nonpolicy `vocab_weight`. `--temperature 0.7 --samples 4
+--verify-native` instead samples the four-GPU WEST profile's RL policy and
 verifies every sampled action's probability against the native checkpoint.
+For another profile, use its exact configured temperature; verification rejects
+a different value. Greedy MMAU evaluation retains `--temperature 0 --samples 1`.
 `--responses` scores existing outputs again without generation under the
 sampling and audio cut they were decoded with; give the saved `policy_step`.
 Relative config paths resolve from the command's current directory, so run
