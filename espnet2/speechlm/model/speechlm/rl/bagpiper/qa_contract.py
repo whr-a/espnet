@@ -1,6 +1,6 @@
 # Copyright 2026 Haoran Wang
 # SPDX-License-Identifier: Apache-2.0
-"""Reference-independent final answers for Bagpiper's native SFT QA format.
+"""Reference-independent final answers for Bagpiper's historical native QA format.
 
 The system and user prompts reproduce ``bagpiper/eval/prompt_common.py``.
 Choice mapping intentionally omits that historical evaluator's substring,
@@ -33,7 +33,7 @@ _DECORATION = " \t\r\n*_`\"'“”‘’.,;:!?"
 
 
 def native_qa_prompt(question, choices):
-    """Render the native SFT user text, without imposing an answer-tag style."""
+    """Render historical native QA user text without imposing an answer-tag style."""
     question = (question or "").strip()
     options = "; ".join(choice.strip() for choice in choices)
     return f"question: {question}\n Options: {options}"
