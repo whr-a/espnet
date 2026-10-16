@@ -79,6 +79,111 @@ def test_native_final_answer_ignores_prefix_distractors(
 
 
 @pytest.mark.parametrize(
+    "declaration",
+    [
+        "**Correct Option:** Dog",
+        "**Correct Option**: Dog",
+        "**Correct Option: **Dog",
+        "Correct Option:\n\n**Dog**\n",
+        "### Correct Option: (B) Dog",
+        "  **The Correct Option:** B.",
+    ],
+)
+def test_markdown_option_header_accepts_exact_inline_or_next_line_answer(declaration):
+    text = "Caption: a dog barks, not a car or a train.\n" + declaration
+    parsed = parse_native_qa_answer(text, CHOICES)
+    assert parsed["predicted_index"] == 1
+    assert parsed["path"] == "option_header"
+    assert parsed["format"] is True
+    reward = qa_bagpiper_v2_reward(
+        {"choices": CHOICES, "reference": "Dog"}, {"text": text}
+    )
+    assert reward["reward"] == pytest.approx(1.1)
+    assert reward["path_option_header"] == 1.0
+    assert sum(value for key, value in reward.items() if key.startswith("path_")) == 1.0
+
+
+def test_option_header_must_start_a_line_not_a_caption_substring():
+    text = "Caption: the words Correct Option: Car are spoken.\nCorrect Option: Dog"
+    parsed = parse_native_qa_answer(text, CHOICES)
+    assert parsed["predicted_index"] == 1
+    assert parsed["format"] is True
+    assert (
+        parse_native_qa_answer(text.splitlines()[0], CHOICES)["predicted_index"] is None
+    )
+
+
+def test_option_header_inside_closed_reasoning_is_not_a_final_declaration():
+    prefix = "<think>Consider the distractor.\n**Correct Option:** Car\n</think>"
+    parsed = parse_native_qa_answer(prefix + "\n**Correct Option:** Dog", CHOICES)
+    assert parsed["predicted_index"] == 1
+    assert parsed["format"] is True
+    assert parse_native_qa_answer(prefix, CHOICES)["predicted_index"] is None
+
+
+@pytest.mark.parametrize(
+    "text,status",
+    [
+        ("<think>Still thinking.\n**Correct Option:** Dog", "malformed_reasoning"),
+        ("Correct Option: Dog\nCorrect Option: Car", "conflicting_answers"),
+        ("Correct Option: Dog\nThe correct option is: Car", "conflicting_answers"),
+        ("The correct option is: Car\nCorrect Option: Dog", "conflicting_answers"),
+        ("<answer>Car</answer>\nCorrect Option: Dog", "conflicting_answers"),
+        ("Correct Option: Dog\n<answer>Car</answer>", "conflicting_answers"),
+        ("Correct Option: Dog\nCorrect Option: Not an option", "ambiguous_answers"),
+        ("Correct Option: (A) Dog", "unmapped_answer"),
+        ("Correct Option: <answer>Dog", "malformed_answer_tags"),
+        ("Correct Option:\n** **", "empty_option_header"),
+        ("Correct Option: Dog\nCar", "conflicting_answers"),
+    ],
+)
+def test_option_headers_preserve_reasoning_conflict_and_tag_safeguards(text, status):
+    parsed = parse_native_qa_answer(text, CHOICES)
+    assert parsed["status"] == status
+    assert parsed["predicted_index"] is None
+    assert parsed["format"] is False
+
+
+def test_repeated_agreeing_option_headers_have_no_structural_bonus():
+    parsed = parse_native_qa_answer("Correct Option: Dog\nCorrect Option: B", CHOICES)
+    assert parsed["predicted_index"] == 1
+    assert parsed["format"] is False
+
+
+def test_option_header_can_introduce_one_answer_block_without_double_counting():
+    parsed = parse_native_qa_answer("**Correct Option:** <answer>Dog</answer>", CHOICES)
+    assert parsed["predicted_index"] == 1
+    assert parsed["path"] == "answer_tag"
+    assert parsed["format"] is True
+
+
+def test_option_header_uses_duplicate_choice_canonical_aliases():
+    choices = ["four", "nine", "fourteen", "fourteen"]
+    parsed = parse_native_qa_answer("Correct Option: (D) fourteen", choices)
+    assert parsed["predicted_index"] == 2
+    assert parsed["format"] is True
+
+
+@pytest.mark.parametrize("answer", ["Car", "Dog barking"])
+def test_option_header_format_and_extraction_do_not_use_reference_or_caption(answer):
+    text = "Caption: Dog\n**Correct Option:** " + answer
+    parsed = parse_native_qa_answer(text, CHOICES)
+    assert parsed["predicted_index"] == (0 if answer == "Car" else None)
+    rewards = [
+        qa_bagpiper_v2_reward({"choices": CHOICES, "reference": ref}, {"text": text})
+        for ref in CHOICES
+    ]
+    assert all(reward["format"] == 1.0 for reward in rewards)
+    structural = [
+        {key: value for key, value in reward.items() if key not in ("acc", "reward")}
+        for reward in rewards
+    ]
+    assert all(value == structural[0] for value in structural)
+    assert rewards[1]["acc"] == 0.0
+    assert rewards[1]["reward"] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "<answer>Dog</answer><answer>Car</answer>",

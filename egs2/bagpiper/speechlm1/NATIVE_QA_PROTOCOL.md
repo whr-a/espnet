@@ -62,9 +62,15 @@ MMAU evaluation requires its own newly prepared native QA manifest.
 
 `qa_bagpiper_v2_reward` gives **1.0 for the correct final choice plus 0.1 for
 valid terminal structure**. Captions and reasoning may precede the answer.
-Both the native marker followed by an option and a single final `<answer>`
-block qualify for the structural bonus. A correct exact plain option can earn
-1.0 without the bonus. The format component is independent of correctness.
+Three terminal styles qualify for the structural bonus:
+
+- The native `the correct option is:` marker followed by an option.
+- A line-anchored `Correct Option:` header, optionally using Markdown bold,
+  followed by the option inline or on the first following nonempty line.
+- A single final `<answer>` block containing the option.
+
+A correct exact plain option can earn 1.0 without the bonus. The format
+component is independent of correctness.
 
 The parser receives only the response and available choices. It resolves a
 normalized exact option or an unambiguous option label; the reference
@@ -75,7 +81,9 @@ Harmless Unicode, case, spacing and decoration are
 normalized. Musical answers such as `a minor` and `b flat` retain their first
 word. There is no substring/Jaccard scoring, whole-caption choice search or
 ground-truth-directed fallback. Malformed answer tags and contradictory
-terminal choices fail closed.
+terminal choices fail closed. Repeated declarations do not earn the format bonus;
+conflicting declarations do not supply a prediction. A header inside reasoning
+does not count as the final answer, and an unclosed think block is rejected.
 
 The original profiles retain their original semantics:
 
@@ -83,7 +91,7 @@ The original profiles retain their original semantics:
 | --- | --- |
 | WEST default | Accuracy 1.0 + whole-completion format 1.0 |
 | WEST think | Accuracy 0.8 + one answer block 0.1 + one think block 0.1 |
-| New Bagpiper native QA | Final-choice accuracy 1.0 + native/tag terminal format 0.1 |
+| New Bagpiper native QA | Final-choice accuracy 1.0 + native/header/tag terminal format 0.1 |
 
 ## Evaluation and separate metrics
 

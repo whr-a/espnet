@@ -21,6 +21,10 @@ BAGPIPER_QA_SYSTEM_PROMPT = (
 )
 BAGPIPER_QA_ANSWER_MARKER = "the correct option is:"
 _NATIVE_CUE = re.compile(re.escape(BAGPIPER_QA_ANSWER_MARKER), re.I)
+_OPTION_HEADER = re.compile(
+    r"^[ \t]*[*# ]*(?:the[ \t]+)?correct[ \t]+option[* \t]*:[* \t]*",
+    re.I | re.M,
+)
 _ANSWER = re.compile(r"<answer>(.*?)</answer>", re.I | re.S)
 _ANSWER_START = re.compile(r"<\s*/?\s*answer\b", re.I)
 _ANSWER_OPEN = re.compile(r"<answer>", re.I)
@@ -147,13 +151,14 @@ def _line(tail):
 
 
 def parse_native_qa_answer(text, choices):
-    """Parse a terminal native cue, final answer tag, or exact plain option.
+    """Parse a terminal native cue, option header, answer tag or exact option.
 
     Returns a JSON-safe dict with ``path``, ``status``, ``raw_answer``,
     ``predicted_choice``, ``predicted_index``, ``match_method``, ``format`` and
-    ``format_reason``. A valid native marker or final answer block earns the
-    structural flag independently of answer correctness. An exact plain or
-    post-think option can be correct without the structural flag. No renderer
+    ``format_reason``. A native marker, line-anchored ``Correct Option:``
+    header or final answer block earns the structural flag independently of
+    answer correctness. Exact plain or post-think options can be correct without
+    the structural flag. No renderer
     control tokens are discarded here; callers must decode text consistently.
 
     A completed think prefix may omit its opening marker after a renderer
@@ -210,20 +215,24 @@ def parse_native_qa_answer(text, choices):
         if not _clean(raw):
             return reject("empty_answer_tag", "answer_tag")
         candidates.append((raw, "answer_tag", text[block.end() :]))
-    for cue in _NATIVE_CUE.finditer(text, boundary):
-        if block and block.start() <= cue.start() < block.end():
-            continue
-        raw, suffix = _line(text[cue.end() :])
-        # A native cue may introduce the single final answer block directly.
-        if (
-            block
-            and cue.end() <= block.start()
-            and not text[cue.end() : block.start()].strip(_DECORATION)
-        ):
-            continue
-        if not raw:
-            return reject("empty_native_cue", "native_cue")
-        candidates.append((raw, "native_cue", suffix))
+    for pattern, path in (
+        (_NATIVE_CUE, "native_cue"),
+        (_OPTION_HEADER, "option_header"),
+    ):
+        for cue in pattern.finditer(text, boundary):
+            if block and block.start() <= cue.start() < block.end():
+                continue
+            raw, suffix = _line(text[cue.end() :])
+            # A declaration may introduce the single final answer block directly.
+            if (
+                block
+                and cue.end() <= block.start()
+                and not text[cue.end() : block.start()].strip(_DECORATION)
+            ):
+                continue
+            if not raw:
+                return reject(f"empty_{path}", path)
+            candidates.append((raw, path, suffix))
     if not candidates:
         candidates = [(region.strip(), "post_think" if boundary else "plain", "")]
     mapped = [
@@ -240,7 +249,7 @@ def parse_native_qa_answer(text, choices):
         trailing_index, _ = match_choice(trailing, choices)
         if index is not None and trailing_index is not None and trailing_index != index:
             return reject("conflicting_answers", path)
-    structured = path in ("answer_tag", "native_cue")
+    structured = path in ("answer_tag", "native_cue", "option_header")
     terminal = not tail.strip(_DECORATION)
     valid_format = structured and terminal and len(mapped) == 1
     if index is None and method in ("contradictory_label", "ambiguous_answer"):

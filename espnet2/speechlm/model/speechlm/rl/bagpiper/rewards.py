@@ -153,9 +153,10 @@ def qa_think_reward(source, generation):
 def qa_bagpiper_v2_reward(source, generation):
     """Native Bagpiper QA: correct final choice 1.0 plus terminal format 0.1.
 
-    Caption and reasoning may precede a native final-option marker or answer
-    block. Parse without the reference, then compare canonical choice indices;
-    identical normalized option texts share their first index.
+    Caption and reasoning may precede a native final-option marker, Markdown
+    option header or answer block. Parse without the reference, then compare
+    canonical choice indices. Identical normalized option texts share their
+    first index.
     This is a new protocol; the historical WEST and V1 rewards stay unchanged.
     """
     parsed = parse_native_qa_answer(generation["text"], source["choices"])
@@ -173,7 +174,14 @@ def qa_bagpiper_v2_reward(source, generation):
         "parsed": float(parsed["predicted_index"] is not None),
         **{
             f"path_{path}": float(parsed["path"] == path)
-            for path in ("native_cue", "answer_tag", "post_think", "plain", "none")
+            for path in (
+                "native_cue",
+                "option_header",
+                "answer_tag",
+                "post_think",
+                "plain",
+                "none",
+            )
         },
     }
 
