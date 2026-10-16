@@ -23,10 +23,15 @@ import torch
 
 from .batch import RolloutBatch
 from .types import validate_binary_mask
-from .utils import object_array
+from .utils import object_array, resolve_callable
 
 
-def read_manifest(path):
+def read_manifest(path, *, config=None):
+    """Read sources and optionally enforce the configured reward's contract.
+
+    A reward may expose ``validate_sources(records)`` for CPU checks before
+    models or distributed workers start. Legacy readers do not resolve hooks.
+    """
     records = []
     with Path(path).open() as stream:
         for line_number, line in enumerate(stream, 1):
@@ -43,6 +48,11 @@ def read_manifest(path):
             records.append(record)
     if not records or len({r["id"] for r in records}) != len(records):
         raise ValueError("The manifest must be nonempty and contain unique ids")
+    if config is not None and config.reward_function:
+        callback = resolve_callable(config.reward_function)
+        validator = getattr(callback, "validate_sources", None)
+        if validator is not None:
+            validator(records)
     return records
 
 

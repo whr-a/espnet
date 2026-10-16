@@ -76,6 +76,7 @@ def main():
     config.validate()
     if config.execution_mode != "disagg_async":
         raise ValueError("This launcher requires execution_mode=disagg_async")
+    sources = read_manifest(config.manifest, config=config)
     engine_class(config)
     if config.miles_source:
         sys.path.insert(0, config.miles_source)
@@ -87,7 +88,6 @@ def main():
         if args.data_admission
         else None
     )
-    sources = read_manifest(config.manifest)
     if len({source["id"] for source in sources}) < config.prompts_per_step:
         raise ValueError(
             f"Training requires at least {config.prompts_per_step} distinct prompts"

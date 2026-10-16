@@ -56,6 +56,39 @@ def qa_system_prompt(template):
     return None
 
 
+def validate_native_qa_sources(records):
+    """Reject mismatched native QA conditioning before training starts.
+
+    Existing manifests are read-only: regenerate them with the native template
+    rather than silently changing the prompt under an admitted experiment.
+    """
+    contract = _native_qa_contract()
+    for record in records:
+        choices = record.get("choices")
+        question = record.get("question")
+        valid = (
+            record.get("task") == "qa"
+            and record.get("qa_template") == "bagpiper"
+            and record.get("system_prompt") == contract.BAGPIPER_QA_SYSTEM_PROMPT
+            and isinstance(question, str)
+            and bool(question.strip())
+            and isinstance(choices, list)
+            and len(choices) >= 2
+            and all(isinstance(choice, str) and choice.strip() for choice in choices)
+            and record.get("prompt") == contract.native_qa_prompt(question, choices)
+            and isinstance(record.get("reference"), str)
+            and contract.match_choice(record.get("reference", ""), choices)[0]
+            is not None
+        )
+        if not valid:
+            raise ValueError(
+                f"Native Bagpiper QA source {record.get('id')!r} requires matching "
+                "task, qa_template=bagpiper, system, question/options and reference; "
+                "regenerate the manifest with --qa-template bagpiper "
+                "(run.sh: --rl-qa-template bagpiper). Existing manifests are not rewritten."
+            )
+
+
 def _kaldi(path):
     values = {}
     for row in Path(path).read_text().splitlines():

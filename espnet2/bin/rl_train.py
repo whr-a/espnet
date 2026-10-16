@@ -36,6 +36,9 @@ def main():
     config.validate()
     if config.execution_mode != "sync":
         raise ValueError("Use rl_train_async for disagg_async execution")
+    from espnet2.rl.data import read_manifest
+
+    sources = read_manifest(config.manifest, config=config)
     admission = None
     if args.data_admission:
         from espnet2.rl.data import verify_data_admission
@@ -47,9 +50,6 @@ def main():
 
     verify_miles(config)
     if args.validate_only:
-        from espnet2.rl.data import read_manifest
-
-        sources = read_manifest(config.manifest)
         print(f"Validated pinned Miles, configuration and {len(sources)} records")
     else:
         from espnet2.rl.trainer import run

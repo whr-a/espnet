@@ -42,6 +42,16 @@ with system-prompt SHA256
 The native final marker is `the correct option is:`. Do not append a WEST
 answer-only instruction or drop the system message while keeping this name.
 
+With the native reward profile, explicitly pass `./rl.sh --qa-template bagpiper`
+alongside the config/data options. The main recipe forwards the same setting
+through `./run.sh --stage 6 --stop-stage 6 --rl-qa-template bagpiper`. The
+historical shell defaults remain `default` for other profiles. Selecting the
+native reward now checks the prepared training manifest before model or
+distributed initialization, including `--validate-only`: task, template,
+system instruction, question/options, rendered prompt and reference must match.
+A mismatch requests regeneration with `--qa-template bagpiper`; passing the flag
+does not rewrite an already prepared WEST manifest or its admission receipt.
+
 For a local AVQA training parquet, the public preparation entry is:
 
 ```bash

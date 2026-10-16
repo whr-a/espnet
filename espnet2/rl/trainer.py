@@ -674,6 +674,8 @@ class NativeGRPOTrainer:
 
 
 def run(config):
+    config.validate()
+    sources = read_manifest(config.manifest, config=config)
     if config.dtype == "float32":
         # Actor and rollout must use the same declared full FP32 precision.
         # Rollout sets Triton's independent tl.dot option before child imports.
@@ -681,7 +683,6 @@ def run(config):
         if backend is not None and hasattr(backend, "matmul"):
             backend.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-    config.validate()
     engine_class(config)
     miles_evidence = verify_miles(config)
     torch.manual_seed(config.seed)
@@ -775,7 +776,6 @@ def run(config):
             Path(output, "train_census.json").write_text(
                 json.dumps(all_census, indent=2) + "\n"
             )
-    sources = read_manifest(config.manifest)
     # Reward implementations read the same effective configuration as the
     # actor and rollout, including command-line overrides. This path is host
     # metadata and does not become part of the model's prompt.

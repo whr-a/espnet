@@ -14,7 +14,7 @@ from pathlib import Path
 
 from espnet2.rl.rewards import word_error_rate
 
-from .data import OPTION_LABEL
+from .data import OPTION_LABEL, validate_native_qa_sources
 from .qa_contract import match_choice, parse_native_qa_answer
 
 ANSWER = re.compile(r"<answer>(.*?)</answer>", re.S)
@@ -184,6 +184,9 @@ def qa_bagpiper_v2_reward(source, generation):
             )
         },
     }
+
+
+qa_bagpiper_v2_reward.validate_sources = validate_native_qa_sources
 
 
 def aligned_codes(token_ids):
