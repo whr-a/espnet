@@ -180,7 +180,8 @@ def prepare(train_config, output, text, audio, codec):
     require(
         recipe.get("job_type") == "speechlm"
         and list(modalities) == ["text", "discrete_audio", "continuous_audio"],
-        "Expected the released Bagpiper native modality order: text, discrete_audio, continuous_audio",
+        "Expected the released Bagpiper native modality order: "
+        "text, discrete_audio, continuous_audio",
     )
     require(
         recipe["model"]["model_choice"] == "parallel"
@@ -351,7 +352,10 @@ def prepare(train_config, output, text, audio, codec):
             "audio": str(audio),
             "codec": str(codec),
         },
-        "local_input_note": "Explicit local directories are caller-supplied metadata; upstream revision identity is not independently attested for local overrides.",
+        "local_input_note": (
+            "Explicit local directories are caller-supplied metadata; upstream "
+            "revision identity is not independently attested for local overrides."
+        ),
         "sha256": {
             path.relative_to(output)
             .as_posix(): hashlib.sha256(path.read_bytes())

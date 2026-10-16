@@ -155,7 +155,8 @@ def prepare(args):
             break
     if len(selected) != args.train_count + args.heldout_count:
         raise ValueError(
-            f"Only {len(selected)} eligible independent questions; need {args.train_count + args.heldout_count}"
+            f"Only {len(selected)} eligible independent questions; "
+            f"need {args.train_count + args.heldout_count}"
         )
     splits = {
         "heldout": selected[: args.heldout_count],
@@ -190,9 +191,13 @@ def prepare(args):
             "rows": len(records),
         },
         "source_split": {role: args.source_split for role in splits},
-        "source_split_attestation": "User-declared native split; available metadata checked for contradictions",
+        "source_split_attestation": (
+            "User-declared native split; available metadata checked for contradictions"
+        ),
         "observed_source_split_metadata": observed,
-        "heldout_scope": "deterministic disjoint local train partition; not official validation/test",
+        "heldout_scope": (
+            "deterministic disjoint local train partition; not official validation/test"
+        ),
         "selection": {
             "seed": args.seed,
             "order": "SHA256(seed NUL source_id); heldout first, then train",
@@ -200,12 +205,18 @@ def prepare(args):
             "qa_template": args.qa_template,
         },
         "excluded_manifests": exclusion_bindings,
-        "verified_scope": "unique/disjoint question IDs, prepared audio file bytes and decoded PCM; supplied exclusion manifests only",
+        "verified_scope": (
+            "unique/disjoint question IDs, prepared audio file bytes and decoded PCM; "
+            "supplied exclusion manifests only"
+        ),
         "full_component_admission": "NOT_ASSERTED",
         "limitations": [
-            "Dataset revision/split provenance is attested, not fetched or authenticated by this helper.",
-            "No resampling, perceptual/semantic, case/group/component or SFT-exposure closure is established.",
-            "This public receipt does not replace additional project-specific protected-data admission.",
+            "Dataset revision/split provenance is attested, not fetched or "
+            "authenticated by this helper.",
+            "No resampling, perceptual/semantic, case/group/component or "
+            "SFT-exposure closure is established.",
+            "This public receipt does not replace additional project-specific "
+            "protected-data admission.",
         ],
     }
     (output / "admission.json").write_bytes(json_bytes(admission) + b"\n")
