@@ -406,6 +406,13 @@ shared output paths.
 
 ## Optional Miles RL stage
 
+For caption-first QA, start with the [native QA protocol](NATIVE_QA_PROTOCOL.md):
+`--qa-template bagpiper`, native SFT system conditioning, and correctness 1.0
+plus format 0.1. The historical WEST profile below uses a different checkpoint
+and prompt; its 28.9% baseline is not the official SFT MMAU-Mini result of 74.5.
+The new native training profile still needs independent probability and memory
+preflights before use.
+
 The RL changes below are a local, unpublished feature branch,
 `codex/bagpiper-west-h100-fp32-20261016`. A standard upstream ESPnet checkout
 does not yet contain this profile. Follow the

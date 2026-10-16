@@ -190,7 +190,19 @@ def _bagpiper_audio_source(config, metadata, source):
         "text": [(metadata["text_token_offset"], metadata["text_token_end"])],
     }
     question = source.get("prompt", source.get("question", ""))
-    dialogue = [["user", "audio", (waveform[None], int(frontend.sampling_rate))]]
+    dialogue = []
+    native_qa = source.get("qa_template") == "bagpiper"
+    if native_qa:
+        from .qa_contract import BAGPIPER_QA_SYSTEM_PROMPT, native_qa_prompt
+
+        if (
+            source.get("task") != "qa"
+            or source.get("system_prompt") != BAGPIPER_QA_SYSTEM_PROMPT
+            or question != native_qa_prompt(source["question"], source["choices"])
+        ):
+            raise ValueError("Native Bagpiper QA requires its matching user prompt")
+        dialogue.append(["system", "text", BAGPIPER_QA_SYSTEM_PROMPT])
+    dialogue.append(["user", "audio", (waveform[None], int(frontend.sampling_rate))])
     if question:
         dialogue.append(["user", "text", question])
     processed = preprocessor.preprocessing(
@@ -227,7 +239,11 @@ def _bagpiper_audio_source(config, metadata, source):
         ).hexdigest(),
         "feature_length": len(features),
         "encoder_length": int(encoded_length),
-        "chat_template": "native SpeechLMPreprocessor/dialogue/user-audio,user-text/v1",
+        "chat_template": (
+            "native SpeechLMPreprocessor/dialogue/system,user-audio,user-text/bagpiper-qa-v2"
+            if native_qa
+            else "native SpeechLMPreprocessor/dialogue/user-audio,user-text/v1"
+        ),
         "text_tokenizer_source": recipe["multimodal_io"]["text"]["tokenizer_name"],
         "native_prefix_sha256": hashlib.sha256(prefix.tobytes()).hexdigest(),
         "conditioning": "native recipe mel; trainable encoder/adaptor; SGLang precomputed feature input",

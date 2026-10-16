@@ -48,8 +48,9 @@ def arguments(tmp_path, output="prepared", **overrides):
     )
 
 
+@pytest.mark.parametrize("qa_template", ["default", "bagpiper"])
 def test_raw_parquet_split_excludes_equivalent_pcm_and_passes_runtime_admission(
-    tmp_path,
+    tmp_path, qa_template
 ):
     source_parquet(tmp_path / "train.parquet")
     benchmark_audio = tmp_path / "benchmark.wav"
@@ -59,7 +60,9 @@ def test_raw_parquet_split_excludes_equivalent_pcm_and_passes_runtime_admission(
     benchmark.write_text(
         json.dumps({"id": "other-question", "audio": "benchmark.wav"}) + "\n"
     )
-    args = arguments(tmp_path, exclude_manifest=[str(benchmark)])
+    args = arguments(
+        tmp_path, exclude_manifest=[str(benchmark)], qa_template=qa_template
+    )
     receipt = prepare(args)
     train = read_manifest(tmp_path / "prepared/train.jsonl")
     dev = read_manifest(tmp_path / "prepared/dev.jsonl")
@@ -67,9 +70,16 @@ def test_raw_parquet_split_excludes_equivalent_pcm_and_passes_runtime_admission(
     assert "question-2" not in {row["id"] for row in train + dev}
     assert len({row["decoded_audio_sha256"] for row in train + dev}) == 4
     assert all(
-        row["qa_template"] == "default" and row["reference"] == "Dog"
+        row["qa_template"] == qa_template and row["reference"] == "Dog"
         for row in train + dev
     )
+    if qa_template == "bagpiper":
+        assert all(
+            row["prompt"] == "question: What is heard?\n Options: Dog; Door"
+            for row in train + dev
+        )
+        assert all("detailed caption" in row["system_prompt"] for row in train + dev)
+        assert "native_qa_contract" in receipt["preparation_sha256"]
     assert all(row["provenance"]["split"] == "train" for row in train + dev)
     assert receipt["source_split"] == {"train": "train", "heldout": "train"}
     assert "not official" in receipt["heldout_scope"]
@@ -83,7 +93,12 @@ def test_raw_parquet_split_excludes_equivalent_pcm_and_passes_runtime_admission(
         verify_data_admission(config, tmp_path / "prepared/admission.json") == receipt
     )
     second = prepare(
-        arguments(tmp_path, output="repeated", exclude_manifest=[str(benchmark)])
+        arguments(
+            tmp_path,
+            output="repeated",
+            exclude_manifest=[str(benchmark)],
+            qa_template=qa_template,
+        )
     )
     assert second["counts"] == receipt["counts"]
     for filename in ("train.jsonl", "dev.jsonl"):

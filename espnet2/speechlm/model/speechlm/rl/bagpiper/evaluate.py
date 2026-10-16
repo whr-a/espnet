@@ -13,6 +13,7 @@ policy.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -37,7 +38,57 @@ from espnet2.rl.types import (
 from espnet2.rl.utils import build_policy, resolve_callable
 from espnet2.speechlm.rl.evaluate import validate_export_files
 
+from .qa_contract import (
+    BAGPIPER_QA_SYSTEM_PROMPT,
+    native_qa_prompt,
+    parse_native_qa_answer,
+)
+from .qa_legacy_eval import parse_prediction
 from .rewards import ANSWER, ASRWERReward, mmau_answer, mmau_match, qa_answer
+
+
+def validate_qa_protocol(sources, qa_protocol):
+    """Bind a named evaluator to its generation prompt, before model loading."""
+    if qa_protocol not in {"west", "bagpiper_native"}:
+        raise ValueError(f"Unsupported QA protocol: {qa_protocol}")
+    if qa_protocol == "bagpiper_native":
+        for source in sources:
+            if (
+                source.get("task") != "qa"
+                or source.get("qa_template") != "bagpiper"
+                or source.get("system_prompt") != BAGPIPER_QA_SYSTEM_PROMPT
+                or source.get("prompt")
+                != native_qa_prompt(source.get("question"), source["choices"])
+            ):
+                raise ValueError(
+                    "Native QA evaluation requires the exact bagpiper manifest "
+                    "template, system prompt and user question/options"
+                )
+    elif any(source.get("qa_template") == "bagpiper" for source in sources):
+        raise ValueError(
+            "A native Bagpiper manifest requires --qa-protocol bagpiper_native"
+        )
+    payload = [
+        {
+            key: source.get(key)
+            for key in ("id", "qa_template", "prompt", "system_prompt")
+        }
+        for source in sources
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+    ).hexdigest()
+
+
+def validate_saved_qa_protocol(result, qa_protocol, prompt_contract_sha256):
+    """Legacy WEST results remain readable; native generations need evidence."""
+    saved_protocol = result.get("qa_protocol", "west")
+    if saved_protocol != qa_protocol:
+        raise ValueError("Saved response QA protocol differs from the evaluation")
+    if qa_protocol == "bagpiper_native" and (
+        result.get("prompt_contract_sha256") != prompt_contract_sha256
+    ):
+        raise ValueError("Saved native responses lack the matching prompt contract")
 
 
 def validate_manifests(training, heldout):
@@ -228,20 +279,33 @@ def generate(config, sources, directory, sampling, batch_size):
     return generations
 
 
-def _accuracy(items):
+def _accuracy(items, qa_protocol="west"):
     count = len(items)
     west = sum(item["west_correct"] for item in items)
     v1 = sum(item["v1_correct"] for item in items)
-    return {
+    result = {
         "count": count,
         "west_correct": west,
         "west_accuracy": west / count,
         "v1_correct": v1,
         "v1_accuracy": v1 / count,
     }
+    if qa_protocol == "bagpiper_native":
+        native = sum(item["native_choice_correct"] for item in items)
+        strict = sum(item["native_strict_correct"] for item in items)
+        formatted = sum(item["native_strict"]["format"] for item in items)
+        result.update(
+            native_choice_correct=native,
+            native_choice_accuracy=native / count,
+            native_strict_correct=strict,
+            native_strict_accuracy=strict / count,
+            native_strict_format_count=formatted,
+            native_strict_format_rate=formatted / count,
+        )
+    return result
 
 
-def score_mmau(sources, generations, samples):
+def score_mmau(sources, generations, samples, qa_protocol="west"):
     """Official MMAU matches of WEST's and of the v1 reward's extracted answer,
     overall and for every category the manifest records."""
     items = []
@@ -267,21 +331,54 @@ def score_mmau(sources, generations, samples):
                 "v1_correct": mmau_match(source, answer),
             }
         )
+        if qa_protocol == "bagpiper_native":
+            # Each extractor sees only the response and available choices.
+            # Ground truth enters only after these predictions are fixed.
+            choice, raw, method = parse_prediction(text, source["choices"])
+            strict = parse_native_qa_answer(text, source["choices"])
+            items[-1].update(
+                native_choice=choice,
+                native_raw_answer=raw,
+                native_choice_path=method,
+                native_choice_correct=(
+                    choice is not None and mmau_match(source, choice)
+                ),
+                native_strict=strict,
+                native_strict_correct=(
+                    strict["predicted_choice"] is not None
+                    and mmau_match(source, strict["predicted_choice"])
+                ),
+            )
     groups = {}
     for item in items:
         for name, value in item["categories"].items():
             groups.setdefault(name, {}).setdefault(str(value), []).append(item)
     summary = {
         "metric": "mmau_official_accuracy",
-        **_accuracy(items),
+        "primary_metric": (
+            "native_choice_accuracy"
+            if qa_protocol == "bagpiper_native"
+            else "west_accuracy"
+        ),
+        **_accuracy(items, qa_protocol),
         "one_answer_block": sum(item["answer_blocks"] == 1 for item in items),
         "v1_paths": dict(Counter(item["v1_path"] for item in items)),
         "truncated": sum(item["finish_reason"] == "length" for item in items),
         "by_category": {
-            name: {value: _accuracy(rows) for value, rows in sorted(values.items())}
+            name: {
+                value: _accuracy(rows, qa_protocol)
+                for value, rows in sorted(values.items())
+            }
             for name, values in sorted(groups.items())
         },
     }
+    if qa_protocol == "bagpiper_native":
+        summary["native_choice_paths"] = dict(
+            Counter(item["native_choice_path"] or "unresolved" for item in items)
+        )
+        summary["native_strict_statuses"] = dict(
+            Counter(item["native_strict"]["status"] for item in items)
+        )
     return items, summary
 
 
@@ -345,6 +442,10 @@ def run(args):
     sources = read_manifest(manifest)
     validate_manifests(read_manifest(cfg.manifest), sources)
     task = sources[0]["task"]
+    qa_protocol = getattr(args, "qa_protocol", "west")
+    if task != "qa" and qa_protocol != "west":
+        raise ValueError("--qa-protocol applies only to QA evaluation")
+    prompt_contract = validate_qa_protocol(sources, qa_protocol)
     checkpoint = Path(args.checkpoint).resolve(strict=True)
     directory = Path(args.output).resolve()
     directory.mkdir(parents=True, exist_ok=False)
@@ -377,6 +478,8 @@ def run(args):
         "config_sha256": sha256(args.config),
         "policy_step": args.policy_step,
         "task": task,
+        "qa_protocol": qa_protocol,
+        "prompt_contract_sha256": prompt_contract,
         "sampling": sampling,
         "samples_per_prompt": args.samples,
         "audio_seconds": args.audio_seconds if task == "qa" else None,
@@ -387,6 +490,7 @@ def run(args):
     try:
         if args.responses:
             result = read_json(args.responses)
+            validate_saved_qa_protocol(result, qa_protocol, prompt_contract)
             # The decoding is the saved responses', which may not record it.
             for name in ("sampling", "audio_seconds"):
                 saved = result.get(name)
@@ -452,6 +556,8 @@ def run(args):
                 "rollout_backend": "sglang",
                 "sampling": sampling,
                 "audio_seconds": protocol["audio_seconds"],
+                "qa_protocol": qa_protocol,
+                "prompt_contract_sha256": prompt_contract,
                 "generations": (
                     generations
                     if args.verify_native
@@ -469,7 +575,9 @@ def run(args):
             args.policy_step,
         )
         if task == "qa":
-            items, summary = score_mmau(sources, generations, args.samples)
+            items, summary = score_mmau(
+                sources, generations, args.samples, qa_protocol=qa_protocol
+            )
         else:
             reward = ASRWERReward(cfg, audits=None)
             items, summary = score_tts(reward, sources, generations, args.samples)
@@ -516,6 +624,12 @@ def main():
         "--output", required=True, help="New immutable evaluation directory"
     )
     parser.add_argument("--manifest", help="Override the prepared held-out manifest")
+    parser.add_argument(
+        "--qa-protocol",
+        choices=("west", "bagpiper_native"),
+        default="west",
+        help="Named prompt and answer-extraction contract; WEST remains the default",
+    )
     parser.add_argument("--policy-step", type=int, default=-1)
     parser.add_argument(
         "--temperature", type=float, default=0.0, help="0 decodes greedily"

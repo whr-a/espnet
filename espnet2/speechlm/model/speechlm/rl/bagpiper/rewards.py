@@ -15,6 +15,7 @@ from pathlib import Path
 from espnet2.rl.rewards import word_error_rate
 
 from .data import OPTION_LABEL
+from .qa_contract import match_choice, parse_native_qa_answer
 
 ANSWER = re.compile(r"<answer>(.*?)</answer>", re.S)
 # Where Bagpiper's untagged responses state their choice, as in "the correct
@@ -146,6 +147,33 @@ def qa_think_reward(source, generation):
         "acc": accuracy,
         "format": answer_format,
         "think_format": think_format,
+    }
+
+
+def qa_bagpiper_v2_reward(source, generation):
+    """Native Bagpiper QA: correct final choice 1.0 plus terminal format 0.1.
+
+    Caption and reasoning may precede a native final-option marker or answer
+    block. Parse without the reference, then compare unique choice indices.
+    This is a new protocol; the historical WEST and V1 rewards stay unchanged.
+    """
+    parsed = parse_native_qa_answer(generation["text"], source["choices"])
+    reference_index, _ = match_choice(source["reference"], source["choices"])
+    accuracy = float(
+        parsed["predicted_index"] is not None
+        and reference_index is not None
+        and parsed["predicted_index"] == reference_index
+    )
+    answer_format = float(parsed["format"])
+    return {
+        "reward": accuracy + 0.1 * answer_format,
+        "acc": accuracy,
+        "format": answer_format,
+        "parsed": float(parsed["predicted_index"] is not None),
+        **{
+            f"path_{path}": float(parsed["path"] == path)
+            for path in ("native_cue", "answer_tag", "post_think", "plain", "none")
+        },
     }
 
 

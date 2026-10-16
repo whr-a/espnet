@@ -1,5 +1,20 @@
 # Bagpiper QA RL results
 
+## Native SFT protocol correction
+
+The WEST experiment below does **not** reproduce the official Bagpiper SFT
+baseline. The official model card reports 74.5 on MMAU-Mini. A fresh CPU
+comparison found 402 unequal tensors between that release and the anonymous
+HF reconstruction used below. That experiment also omitted the native SFT
+system prompt and required answer tags from a caption-first model. Its paired
+28.9% to 31.0% result remains a record of that different protocol.
+
+Use the separate [native QA protocol](NATIVE_QA_PROTOCOL.md) for the restored
+caption/reasoning/answer prompt and correctness 1.0 + format 0.1 reward.
+Fresh native-prompt inference is required; rescoring old WEST generations
+does not reproduce the official baseline. The new training profile requires
+its own numerical and memory preflights.
+
 ## Accepted WEST default four-GPU FP32 run (2026-10-16)
 
 The frozen AVQA run completed **100 optimizer updates** and the full paired

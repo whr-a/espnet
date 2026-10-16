@@ -4,10 +4,12 @@
 
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import random
 import re
+from functools import lru_cache
 from pathlib import Path
 
 # Option letters such as "A. " or "(A) " that some MMAU/AVQA exports prepend.
@@ -20,9 +22,38 @@ QA_THINK_TEMPLATE = "{question} Please choose the answer from the following opti
 CATEGORIES = ("task", "category", "sub-category", "difficulty")
 
 
+@lru_cache(maxsize=1)
+def _native_qa_contract():
+    # Keep standalone corpus preparation independent of model-package imports.
+    spec = importlib.util.spec_from_file_location(
+        "bagpiper_qa_contract", Path(__file__).with_name("qa_contract.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def qa_prompt(question, choices, template="default"):
+    if template == "bagpiper":
+        return _native_qa_contract().native_qa_prompt(question, choices)
     selected = {"default": QA_TEMPLATE, "think": QA_THINK_TEMPLATE}[template]
     return selected.format(question=question, choices=choices)
+
+
+def qa_template_description(template):
+    """Bind both native system conditioning and user rendering in data receipts."""
+    if template == "bagpiper":
+        return (
+            qa_system_prompt(template)
+            + "\n\nquestion: {question}\n Options: {semicolon-separated choices}"
+        )
+    return {"default": QA_TEMPLATE, "think": QA_THINK_TEMPLATE}[template]
+
+
+def qa_system_prompt(template):
+    if template == "bagpiper":
+        return _native_qa_contract().BAGPIPER_QA_SYSTEM_PROMPT
+    return None
 
 
 def _kaldi(path):
@@ -189,7 +220,7 @@ def main():
     )
     parser.add_argument("--hf-revision")
     parser.add_argument(
-        "--qa-template", choices=("default", "think"), default="default"
+        "--qa-template", choices=("default", "think", "bagpiper"), default="default"
     )
     args = parser.parse_args()
     if args.max_words is not None and args.task != "tts_asr_wer":
@@ -234,6 +265,8 @@ def main():
                 record["question"], record["choices"], args.qa_template
             )
             record["qa_template"] = args.qa_template
+            if args.qa_template == "bagpiper":
+                record["system_prompt"] = qa_system_prompt(args.qa_template)
     prepared = len(records)
     records = select(records, args.max_words, args.shuffle_seed, args.limit)
     if not records:
@@ -253,12 +286,15 @@ def main():
                 "limit": args.limit,
                 "hf_revision": args.hf_revision,
                 "qa_template": args.qa_template,
+                "native_qa_contract_sha256": (
+                    hashlib.sha256(
+                        Path(__file__).with_name("qa_contract.py").read_bytes()
+                    ).hexdigest()
+                    if args.qa_template == "bagpiper"
+                    else None
+                ),
                 "template": (
-                    (
-                        QA_TEMPLATE
-                        if args.qa_template == "default"
-                        else QA_THINK_TEMPLATE
-                    )
+                    qa_template_description(args.qa_template)
                     if args.task == "qa"
                     else TTS_TEMPLATE
                 ),

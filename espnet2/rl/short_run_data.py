@@ -504,6 +504,8 @@ def prepare_avqa(args):
             "source_native_split": "train",
             "source_row_index": int(extra["index"]),
         }
+        if args.qa_template == "bagpiper":
+            row["system_prompt"] = module.qa_system_prompt(args.qa_template)
         target = (
             heldout
             if int(hashlib.sha256(identity.encode()).hexdigest(), 16) % 5 == 0
@@ -574,7 +576,9 @@ def main():
     avqa.add_argument("--output-dir", required=True)
     avqa.add_argument("--pool-count", type=int, default=128)
     avqa.add_argument("--bagpiper-preparer")
-    avqa.add_argument("--qa-template", choices=("default", "think"), default="default")
+    avqa.add_argument(
+        "--qa-template", choices=("default", "think", "bagpiper"), default="default"
+    )
     args = parser.parse_args()
     {"protect": build_protection, "select": freeze_selection, "avqa": prepare_avqa}[
         args.operation

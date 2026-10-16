@@ -125,6 +125,8 @@ def prepare(args):
         row["prompt"] = converter.qa_prompt(
             row["question"], row["choices"], args.qa_template
         )
+        if args.qa_template == "bagpiper":
+            row["system_prompt"] = converter.qa_system_prompt(args.qa_template)
         row["provenance"] = {
             "dataset": args.source_dataset,
             "revision": args.source_revision,
@@ -177,12 +179,13 @@ def prepare(args):
         "preparation_sha256": {
             "helper": sha256(__file__),
             "bagpiper_converter": sha256(path),
+            **(
+                {"native_qa_contract": sha256(path.with_name("qa_contract.py"))}
+                if args.qa_template == "bagpiper"
+                else {}
+            ),
             "qa_template": hashlib.sha256(
-                (
-                    converter.QA_TEMPLATE
-                    if args.qa_template == "default"
-                    else converter.QA_THINK_TEMPLATE
-                ).encode()
+                (converter.qa_template_description(args.qa_template)).encode()
             ).hexdigest(),
         },
         "source_parquet": {
@@ -237,7 +240,7 @@ def main():
     parser.add_argument("--heldout-count", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--qa-template", choices=("default", "think"), default="default"
+        "--qa-template", choices=("default", "think", "bagpiper"), default="default"
     )
     parser.add_argument("--exclude-manifest", action="append", default=[])
     args = parser.parse_args()

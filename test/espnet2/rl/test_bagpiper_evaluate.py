@@ -315,19 +315,33 @@ class FakeEngine:
 
 
 @pytest.mark.parametrize("temperature", [1.0, 0.7])
+@pytest.mark.parametrize("qa_protocol", ["west", "bagpiper_native"])
 def test_greedy_mmau_evaluation_through_the_rollout_engine(
-    tmp_path, monkeypatch, temperature
+    tmp_path, monkeypatch, temperature, qa_protocol
 ):
+    from espnet2.speechlm.model.speechlm.rl.bagpiper.qa_contract import (
+        BAGPIPER_QA_SYSTEM_PROMPT,
+        native_qa_prompt,
+    )
+
     clips = []
     for index, seconds in enumerate((0.5, 2.0)):
         clips.append(tmp_path / f"clip-{index}.wav")
         sf.write(clips[-1], np.linspace(-1, 1, int(16000 * seconds)), 16000)
     heldout = tmp_path / "heldout.jsonl"
+    heldout_rows = [
+        {**question, "audio": str(clip)} for question, clip in zip(QUESTIONS, clips)
+    ]
+    if qa_protocol == "bagpiper_native":
+        for question in heldout_rows:
+            question.update(
+                question="Which choice?",
+                qa_template="bagpiper",
+                system_prompt=BAGPIPER_QA_SYSTEM_PROMPT,
+                prompt=native_qa_prompt("Which choice?", question["choices"]),
+            )
     heldout.write_text(
-        "".join(
-            json.dumps({**question, "audio": str(clip)}) + "\n"
-            for question, clip in zip(QUESTIONS, clips)
-        )
+        "".join(json.dumps(question) + "\n" for question in heldout_rows)
     )
     train = tmp_path / "train.jsonl"
     train.write_text(json.dumps({"id": "train", "task": "qa"}) + "\n")
@@ -380,6 +394,7 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
                 "device": "cpu",
                 "verify_native": False,
                 "responses": None,
+                "qa_protocol": qa_protocol,
                 **changes,
             }
         )
@@ -403,6 +418,11 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
     assert (frozen["group_size"], frozen["max_tokens"]) == (1, 2048)
     assert frozen["temperature"] == temperature
     assert summary["sampling"] == greedy
+    assert summary["primary_metric"] == (
+        "native_choice_accuracy"
+        if qa_protocol == "bagpiper_native"
+        else "west_accuracy"
+    )
     # 512 more new tokens than the recipe's on its KV budget of 32 x 2048.
     assert frozen["sglang_engine_kwargs"] == {
         "context_length": 2560,
