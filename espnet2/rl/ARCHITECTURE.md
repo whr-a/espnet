@@ -5,6 +5,11 @@ adaptation stays with each model under `espnet2`; Miles stays an unchanged,
 pinned library. This diagram describes the integrated implementation, including
 paths that still need complete GPU validation for some families.
 
+![ESPnet RL architecture](../../doc/image/espnet_rl_architecture.svg)
+
+See [environment setup from a fresh checkout](ENVIRONMENT.md) for source pins,
+installation commands, model assets and single-/two-GPU launch instructions.
+
 ```mermaid
 flowchart TB
     recipes["egs2: OWSM / Bagpiper QA + TTS / OpusLM"]

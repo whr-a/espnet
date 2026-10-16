@@ -36,27 +36,14 @@ for every architecture/layout. Select one with
 [shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for the pinned
 Miles/SGLang environment and launch options.
 
-For the earlier small synchronous profile, install Miles through
-`tools/installers/install_miles_rl.sh` and use
-`tools/installers/install_sglang_rl_env.sh` for a new inference environment, with
-the hash-locked profile described in
-[`espnet2/rl/ENVIRONMENT.md`](../../../espnet2/rl/ENVIRONMENT.md). The original
-`install_sglang_rl.sh` remains available for an already reviewed compatible
-dependency profile. That earlier SGLang profile uses `https://github.com/whr-a/sglang` at
-`4c3f163fe54634f20ef846e1ec0c507b27ae2430`. See
-[`espnet2/rl/README.md`](../../../espnet2/rl/README.md) for the optional flow.
-Create the inference venv without `--system-site-packages`; its dependencies
-and ESPnet's architecture-specific optional dependencies must be installed in
-that environment. Do not prepend an old SGLang installation through
-`PYTHONPATH`: the installer checks the actual imported source and refuses
-shadowing. `rollout_python` may differ from the native ESPnet interpreter.
-
-The public installer passed on the VA2 H100 host in `va2-clean-rl-install-003`.
-Independent `owsm-clean-sglang-001` then generated four responses from two prompts,
-with 78 sampled actions and maximum native logprob error 0.0000343323. It performed
-zero optimizer updates. Bagpiper and both OpusLM architectures passed imports and
-registry identity checks in that clean environment; this did not execute their
-GPU model instances. See the environment guide for source pins and evidence.
+For new one-/two-GPU profiles, follow the
+[from-scratch environment guide](../../../espnet2/rl/ENVIRONMENT.md).
+Use its native source installer and the current reviewed SGLang pin
+`283d68c8bff309a42476c95f7c71dad895d09da6`. The older inference-only
+SGLang profile is historical and does not establish async compatibility.
+The native environment also needs the model-specific assets below. Before
+starting Ray, activate it and expose the unchanged Miles source on `PYTHONPATH`
+on every host. Keep full supervised SpeechLM extras in a separate environment.
 
 Prepare LibriSpeech `wav.scp` / `text` using its existing data recipe. The
 following command creates separate complete train-clean-100 and dev-clean

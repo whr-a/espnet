@@ -1,275 +1,406 @@
-# Native training and SGLang environment profiles
+# From a fresh checkout to ESPnet speech training and RL
 
-## Native Miles source environment for 32×8 profiles
+This guide covers two installations: ordinary supervised speech training
+(ASR, TTS or SpeechLM), and the source-pinned Miles/SGLang RL environment.
+Use separate Python environments and separate ESPnet checkout directories.
+The instructions below prepare software; GPU training is an explicit later step.
 
-Use `tools/installers/install_miles_async_env.sh` for a new 32-prompt,
-eight-candidate native Miles environment. The checked CPython 3.12 / Linux
-x86_64 / CUDA 13.0 profile requires glibc 2.39 or later and fixes these sources:
+![Environment setup flow](../../doc/image/espnet_rl_environment.svg)
 
-| Source | Exact revision |
-| --- | --- |
-| Unchanged Miles v0.1.2 | `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` |
-| SGLang ESPnet fork | `283d68c8bff309a42476c95f7c71dad895d09da6` |
-| SGLang base before the import compatibility backport | `4c3f163fe54634f20ef846e1ec0c507b27ae2430` |
-| Upstream encoder reference for that backport | `4076a68579b4a7ae3e9d2ce2f94dec9917237bab` |
+For module ownership and the update loop, see the
+[RL architecture](ARCHITECTURE.md). For corpus preparation and recipe stages,
+see the [RL recipe guide](SHORT_RUN_RECIPES.md).
 
-The 233-artifact lock and source pins are in
-`tools/installers/miles_async/cp312_linux_x86_64_cu130/profile.json`.
-Torch/Torchaudio 2.11.0+cu130, Transformers 5.12.1 and NumPy 2.3.5 retain the
-validated native/rollout ABI. Miles router 0.3.2, Polars 1.42.1, PyLaTeXEnc 2.10
-and xxhash 3.7.1 support the full eager native Miles imports. The SGLang backport
-adds the upstream encoder and import helpers while preserving the original
-serving dispatch; it does not enable complete V41 serving.
+## 1. Choose the installation
 
-```bash
-git clone https://github.com/radixark/miles.git /path/to/miles
-git -C /path/to/miles checkout --detach a22fd824191c64ba7c5d6c531f125406e4ce9cc6
-git clone https://github.com/whr-a/sglang.git /path/to/sglang
-git -C /path/to/sglang checkout --detach 283d68c8bff309a42476c95f7c71dad895d09da6
-bash tools/installers/install_miles_async_env.sh \
-  --python python3.12 --venv /path/to/new-native-miles-env \
-  --espnet-source /path/to/espnet \
-  --sglang-source /path/to/sglang --miles-source /path/to/miles
-```
-
-Supply a clean delivery checkout as `--espnet-source`; the installer records its
-actual revision. It refuses an existing venv, verifies exact clean Miles/SGLang
-sources and lock hashes, installs every artifact with hashes, and checks
-`pip check`, actual imports and four architecture registrations. Editable builds
-write package metadata into the supplied ESPnet/SGLang checkouts, so use separate
-installation copies when preserving frozen source trees.
-
-Set `miles_source: /path/to/miles`, `sglang_source: /path/to/sglang` and
-`rollout_python: /path/to/new-native-miles-env/bin/python` in the selected recipe
-YAML, and run the learner with that same Python. Miles is exposed through its
-unchanged source checkout; its distribution and unused Megatron, ring-flash,
-torchft or Kubernetes extras are not installed. This profile supports ESPnet's
-native actors and the original Miles async orchestration loop. Synchronous
-profiles retain ESPnet's own native loop and use the same mathematical APIs.
-
-Start dedicated Ray head/worker processes from ordinary shells outside torchrun,
-without inherited `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `LOCAL_WORLD_SIZE`,
-`MASTER_ADDR`, `MASTER_PORT`, group/role identity or `TORCHELASTIC_*` variables.
-Invoke the async driver with Python, outside torchrun. The public driver connects
-to the supplied Ray cluster; it does not clean or restart existing Ray daemons.
-Training actors write rank/master identity only in their own processes and are
-bound to GPUs distinct from rollout tasks. The roles may use the same Ray
-node when it exposes both GPUs, or two separate one-GPU nodes. Independent rollout children clear
-the full torchrun identity, including `TORCHELASTIC_USE_AGENT_STORE`, before
-starting their own inference rendezvous.
-
-The independent environment passed actual full runtime imports, all 233 artifact
-hashes and `pip check`. The source validation also passed real CPU native actor,
-bounded noncontiguous collective and TCPStore isolation oracles. Installation
-and CPU checks do not establish Ray/NCCL, GPU model execution, two-node transport,
-five optimizer updates, throughput or held-out quality; each new run needs those
-separate checks. Add `--with-tests` for the separately locked pytest dependencies.
-
-The following earlier synchronous profile retains its own 229-artifact lock and
-SGLang `4c3f163fe54634f20ef846e1ec0c507b27ae2430` pin. Do not substitute that
-pin into the new native Miles installer or infer async acceptance from the
-earlier synchronous results.
-
-## Earlier synchronous and inference profiles
-
-Native ESPnet and rollout can use separate Python interpreters. The existing
-2026-10-14 H100 interpreters used Python 3.12.3 with these observed profiles:
-
-| Package | Existing native interpreter | Original SGLang interpreter |
+| Goal | Installation | What it supplies |
 | --- | --- | --- |
-| Torch | 2.13.0+cu130 | 2.11.0+cu130 |
-| Torchaudio | 2.11.0+cu130 | 2.11.0+cu130 |
-| Transformers | 5.17.0 | 5.12.1 |
-| NumPy | 2.3.5 | 1.26.4 |
-| Safetensors | 0.8.0 | 0.7.0 |
-| Ray | 2.55.1 | 2.55.1 |
-| Liger kernel | 0.8.0 | 0.8.4 |
-| SGLang kernel | not used | 0.4.5 |
-| FlashInfer Python | not used by native RL | 0.6.15.post1 |
+| Supervised ASR/TTS training | Section 3, ordinary ESPnet plus `train,asr,tts` extras | Training entry points and task-specific Python dependencies |
+| Supervised SpeechLM training | Section 3, separate `train,speechlm` environment | The full supervised SpeechLM dependency stack |
+| Speech RL using existing native models | Sections 4–8, locked native RL profile | ESPnet native learner, unchanged Miles library and the reviewed SGLang fork |
 
-These are observed working profiles, not a resolver lock or a clean installation
-test. A separate clean environment is validated below; it does not replace
-the frozen GPU environments in this table. Accepted Bagpiper TTS training used
-the existing native interpreter. OWSM `owsm_stage18_002` used Torch 2.11.0+cu130
-and Transformers 5.12.1 in the original SGLang interpreter for both its native
-learner and rollout; its independent native
-greedy before/after evaluation also used that interpreter. Bagpiper QA005
-ran both its native learner and rollout with the same original SGLang profile:
-Torch 2.11.0+cu130 from `sglang_system_dependencies` and Transformers 5.12.1.
-It failed at its first full backward with zero optimizer updates; its longer
-audio-conditioned sequences have no successful-gradient acceptance from the
-TTS Torch 2.13 run. The independently frozen QA006 native learner also used
-Torch 2.11.0+cu130 and Transformers 5.12.1, completing four optimizer updates;
-its complete checkpoint audit and fresh final evaluation subsequently passed.
-The historical local MMAU 0/32 score used a flawed whole-response parser;
-it is not a model-capability result. Later reparsing of saved outputs is a
-diagnostic, not a new generation or quality-gain result. Neither validates
-the new 32×8 profiles.
-Keep each run's actual interpreter and package paths with its frozen
-configuration rather than assuming every family used one profile.
-Native Torch 2.13 and Torchaudio 2.11 came from the existing host environment;
-this records the actual pair rather than recommending a new unmatched pair.
-The rollout environment inherited a declared dependency overlay excluding old
-SGLang and editable Miles imports. New Transformers/FlashInfer packages took
-precedence over older overlay metadata. Actual module paths and source hashes
-were checked in addition to distribution versions.
+The current SpeechLM SFT extra requires Transformers **5.14.1** and
+TileLang **>=0.1.12**; the reviewed RL profile uses **5.12.1** and **0.1.11**.
+Installing `espnet[speechlm]`, running `make extra`, or upgrading packages inside
+the locked RL environment would change that profile. Transfer native model
+checkpoints and their matching assets between the environments instead.
 
-Miles is the unmodified library at
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. ESPnet directly calls its GRPO
-normalization/returns, PPO clipping and KL mathematical APIs. For these earlier
-synchronous runs, ESPnet owns the native training loop, AdamW, checkpoints and
-SGLang rollout orchestration. Their installation profile does not establish
-the new Miles async runtime. The
-SGLang fork is
-`https://github.com/whr-a/sglang` at
-`4c3f163fe54634f20ef846e1ec0c507b27ae2430`. Its three registration modules
-import OWSM, Bagpiper and both OpusLM implementations from this ESPnet checkout.
-Architecture code is not duplicated in SGLang.
+**Source availability:** this RL implementation is a feature checkout, not an
+already merged upstream release. Its implementation baseline is
+`91918fb42a7994db17d28d2c78f4c7aad80787a4`. An ordinary clone of
+`https://github.com/espnet/espnet.git` provides standard ESPnet; it does not
+by itself supply this unpublished RL feature. Obtain the reviewed feature
+checkout/branch from the contributor before section 4. No public ESPnet feature
+URL is assumed here. Once published or merged, use that exact reviewed revision.
 
-The historical shared-host interpreters used a separate native environment and
-a rollout dependency overlay. Their actual interpreter/package paths remain in
-each run's private evidence. These host-specific paths are not portable recipe
-defaults; use the clean installation instructions for another environment.
+![Overall RL architecture](../../doc/image/espnet_rl_architecture.svg)
 
-For a new rollout environment, the optional installer provides a hash-locked
-CPython 3.12 / Linux x86_64 / CUDA 13.0 profile. It includes all dependencies
-from the fixed SGLang core and current ESPnet base, plus Liger and Joblib.
-The 229 exact dependency artifacts and SHA256 hashes are in
-`tools/installers/sglang_rl/cp312_linux_x86_64_cu130/requirements.txt`.
-SGLang and ESPnet are then installed as editables with `--no-deps`, so their
-installation does not select different runtime versions.
+## 2. Prepare a Linux host
 
-The fresh local `clean-rl-install-001` environment passed on 2026-10-14 at
-22:15:24 UTC: no dependency overlay or system site packages; `pip check`
-reported no broken requirements; Python Engine import and all four model
-registrations resolved to the ESPnet implementations. NumPy 2.3.5,
-Torch/Torchaudio 2.11.0+cu130, Numba 0.65.1, SoundFile, Librosa and Torchaudio
-resampling/MelSpectrogram/Kaldi fbank passed CPU numeric checks. The source
-pins were ESPnet `296fefe8096ee347569b74f911e0f8ce68a27c9e` and SGLang
-`4c3f163fe54634f20ef846e1ec0c507b27ae2430`. This proves the clean CPU
-environment profile; no Engine/model instance, GPU kernel, new rollout
-probability or RL experiment was executed in that environment.
+The locked RL profile requires:
 
-The same public installer completed an independent clean installation on the
-VA2 H100 host in `va2-clean-rl-install-003` at 23:32:52 UTC on 2026-10-14.
-Its separate source checkouts were ESPnet
-`5212e56c65fc9ca9b5a803b33dd78819bd890b0f` and SGLang
-`4c3f163fe54634f20ef846e1ec0c507b27ae2430`. The isolated venv used no dependency
-overlay or system site packages, with Torch/Torchaudio 2.11.0+cu130,
-Transformers 5.12.1 and NumPy 2.3.5; `pip check` passed.
+| Component | Requirement |
+| --- | --- |
+| OS / architecture | Linux x86_64; Ubuntu 24.04 is a suitable starting point |
+| Python | CPython 3.12, including `venv`; this lock is not for Python 3.13 |
+| C library | glibc >=2.39, required by the Miles router wheel |
+| GPU driver | A CUDA 13.x-compatible NVIDIA driver; the driver-family floor is R580 |
+| Main GPU layouts | One H100 80 GB for collocation; two for disaggregated async |
+| Larger-model host memory | CPU reference/master weights and Adam can require substantial RAM; Bagpiper templates suggest budgeting at least 192 GB, not a measured universal minimum |
+| Storage / network | Space for multiple environments, model assets, corpus audio and checkpoints; access to GitHub, PyPI, NVIDIA/PyTorch wheel hosts and the selected model/data sources |
 
-The subsequent independent `owsm-clean-sglang-001` completed at 23:48:03 UTC.
-It generated two LibriSpeech prompts with two candidates each through the real
-SGLang Engine: four responses and 78 sampled actions. Independent native scoring
-verified every sampled action, with maximum logprob error 0.0000343323 against
-the 0.03 tolerance. No optimizer update or held-out quality comparison was
-performed. Bagpiper, Plain OpusLM and Dialogue OpusLM passed imports and model
-registry identity checks in this clean environment; their GPU model instances
-were not executed in this validation. The original installation state,
-environment audit, generation summary and native probability audit remain in
-the private experiment evidence.
+The platform facts are documented in the
+[Ubuntu 24.04 release notes](https://documentation.ubuntu.com/release-notes/24.04/)
+and [NVIDIA CUDA compatibility guide](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
+The driver floor is not a guarantee that every optional JIT-compiled kernel
+works on every device. This profile targets H100-class execution; a one-GPU
+configuration does not imply that a smaller consumer GPU has enough memory.
 
-The installer creates a new venv and refuses an existing path. It checks
-source dependency metadata against the profile before creating the environment.
-Supply non-frozen source checkouts: editable package builds write local metadata
-into them. The documented SGLang `SGLANG_BUILD_RUST_EXTS=none` mode is the
-default for this Python profile; grpc/multimodal Rust extensions were not
-built or checked. Only ANTLR 4.9.3 builds a pure Python dependency wheel:
-Hydra requires 4.9.*, whose public releases have no wheel. All other dependency
-artifacts remain binary and hash checked. From an ESPnet checkout with matching
-base dependencies:
+For example, on Ubuntu 24.04, install host tools before creating the environment:
 
 ```bash
-git clone https://github.com/whr-a/sglang.git /path/to/sglang
-git -C /path/to/sglang checkout --detach 4c3f163fe54634f20ef846e1ec0c507b27ae2430
-bash tools/installers/install_sglang_rl_env.sh \
-  --python python3.12 --venv /path/to/new-sglang-env \
-  --espnet-source /path/to/espnet --sglang-source /path/to/sglang
+sudo apt-get update
+sudo apt-get install -y git build-essential cmake pkg-config \
+  python3.12 python3.12-venv python3.12-dev \
+  libsndfile1 libsndfile1-dev sox libsox-fmt-all flac ffmpeg \
+  curl wget unzip bc gawk
+python3.12 --version
+getconf GNU_LIBC_VERSION
 ```
 
-Configure the recipe's `rollout_python` with `/path/to/new-sglang-env/bin/python`
-and `sglang_source` with `/path/to/sglang`. Keep Miles in the compatible native
-training environment:
+An administrator must provide a compatible NVIDIA driver on a training host.
+Do not install or replace a shared machine's driver as part of a recipe. The RL
+installer uses binary dependencies and builds the two small pure-Python source
+packages explicitly allowed by its lock. A full system CUDA toolkit is not a
+requirement of its CPU installation check. Optional SFT extensions or a GPU
+kernel's first compilation may additionally need a matching toolkit/compiler.
+
+Use an absolute workspace path. The paths below are examples, not cluster paths:
 
 ```bash
-PYTHON=/path/to/native-env/bin/python MILES_SOURCE=/path/to/miles \
-  bash tools/installers/install_miles_rl.sh
+export ESPNET_WORK="$HOME/espnet-work"
+mkdir -p "$ESPNET_WORK/src" "$ESPNET_WORK/envs" \
+  "$ESPNET_WORK/data" "$ESPNET_WORK/configs" "$ESPNET_WORK/runs"
 ```
 
-The clean rollout profile does not install the Miles distribution or its full
-distributed runtime. Its Ray 2.58.0 and Safetensors 0.8.0 satisfy those fixed
-Miles dependency bounds; the original native algorithm library is validated
-separately. Full `espnet[speechlm]` SFT extras still conflict on
-Transformers 5.14.1 versus SGLang 5.12.1 and Tilelang >=0.1.12 versus 0.1.11.
-Keep the SFT training profile separate.
+## 3. Optional: ordinary supervised speech training
 
-For an already reviewed compatible rollout environment, the original optional
-library installer remains available. From this ESPnet checkout:
+Skip this section if you already have a matching native model checkpoint and
+only want RL. This follows ESPnet's
+[standard installation](../../doc/installation.md) and the task extras declared
+in `pyproject.toml`; it is separate from the hash-locked RL profile.
 
 ```bash
-PYTHON=/path/to/native-env/bin/python MILES_SOURCE=/path/to/miles \
-  bash tools/installers/install_miles_rl.sh
-
-git clone https://github.com/whr-a/sglang.git /path/to/sglang
-git -C /path/to/sglang checkout --detach 4c3f163fe54634f20ef846e1ec0c507b27ae2430
-python3 -m venv /path/to/sglang-env
-# Supply the reviewed Torch 2.11+cu130 / Torchaudio environment and dependencies
-# for this SGLang checkout before freezing the inference environment.
-SGLANG_SOURCE=/path/to/sglang \
-  SGLANG_REVISION=4c3f163fe54634f20ef846e1ec0c507b27ae2430 \
-  PYTHON=/path/to/sglang-env/bin/python bash tools/installers/install_sglang_rl.sh
-/path/to/sglang-env/bin/python -m pip install liger-kernel==0.8.4
+git clone https://github.com/espnet/espnet.git "$ESPNET_WORK/src/espnet-sft"
+cd "$ESPNET_WORK/src/espnet-sft/tools"
+./setup_venv.sh "$(command -v python3.12)" "$ESPNET_WORK/envs/sft"
+. ./activate_python.sh
+python -m pip install "torch==2.11.0" "torchaudio==2.11.0" \
+  --index-url https://download.pytorch.org/whl/cu130
+cd ..
+python -m pip install -e '.[train,asr,tts]' \
+  'torch==2.11.0' 'torchaudio==2.11.0'
+python -m pip check
+git rev-parse HEAD
+python -m pip freeze > "$ESPNET_WORK/sft-python-packages.txt"
 ```
 
-Make this ESPnet checkout importable in both interpreters, through its existing
-installation or explicit `PYTHONPATH`. Configure `rollout_python` and
-`sglang_source` in the recipe with absolute paths. The rollout subprocess adds
-the current ESPnet checkout and the selected SGLang source itself. Install
-architecture preparation dependencies in the native environment: Opus audio
-preparation additionally loads SoundFile, Torchaudio, Joblib, original DAC/XEUS
-weights, and a matching tokenizer/k-means. Bagpiper's package registration
-loads the SpeechLM job module and requires Liger even in the inference environment.
+For supervised SpeechLM, use another clean environment/check-out pair and
+install `'.[train,speechlm]'` instead of `'.[train,asr,tts]'`; consult
+[SpeechLM installation](../speechlm/INSTALL.md) and the selected recipe's model
+requirements. `train` is necessary: installing only the base package supports
+inference, and installing only `speechlm` does not explicitly request all
+training dependencies. These conventional SFT installs are resolved from their
+checkout; they are not the RL profile's 233-artifact lock.
 
-Do not use `--system-site-packages` for a new SGLang venv or put an old SGLang
-package before its editable checkout. The installer rejects actual import
-shadowing. The earlier full editable installer and four-class registry checks
-passed with a fresh venv plus the existing safe dependency overlay. That
-historical GPU reproduction path did not pass a whole-environment `pip check`.
-The overlay's optional Flash-QLA package reported Tilelang/TVM-FFI conflicts;
-the checked RL imports and inference runs did not use it. The separate clean
-CPU profile above now supplies installation and `pip check` evidence without
-the overlay.
+Some recipes need additional non-Python tools. With the SFT environment active:
 
-The repository's broad `speechlm` extra currently specifies a different
-Transformers/Tilelang profile from the validated rollout above. Installing all
-training extras into rollout can change its frozen ABI. Keep native and rollout
-profiles separate and validate actual model imports and native/action
-probabilities when preparing another environment.
+```bash
+cd "$ESPNET_WORK/src/espnet-sft/tools"
+make sctk sph2pipe
+```
 
-Every YAML is a template requiring released checkpoints, original model config,
-matching tokenizer/audio assets, dataset paths and GPU assignments. A template
-with `/path/to`, `exp/sft` or `REQUIRED_PIN` values is not a downloaded model or a
-preconfigured training environment. Data preparation requires `text` references
-for WER; QA also requires question/answer metadata. `wav.scp` alone cannot supply
-these labels. Save effective absolute paths in `frozen_config.json` for later
-evaluation, since relative paths are resolved from the command's working directory.
+Alternatively, the standard `make` workflow sets up recipe tools and the
+training extra; explicitly choose its Torch/CUDA versions and provide any
+compiler/toolkit needed by the optional extensions. Keep that workflow in the
+SFT checkout. ESPnet2 does not require a complete Kaldi installation.
 
-Bagpiper QA's 1536-token FP32 templates enable
-`adapter_options.activation_cpu_offload: true`. This stores saved activation
-boundaries on CPU while keeping parameter/buffer storage on the original GPU.
-It needs host RAM in addition to the CPU Adam states; provision a large-memory
-host and measure the effective native environment before freezing training.
-The validation host had 2 TiB RAM. This is an activation storage option, not a
-change to the model, sampling budget, GRPO objective or categorical precision.
-TTS retains its independently tested default configuration.
+For a first small ASR recipe, use the [Mini-AN4 recipe](../../egs2/mini_an4/asr1/run.sh). On a host
+where running a GPU job is authorized, its usual interface is:
 
-The original QA005 Torch 2.11 FP32 run failed on its first backward before any
-optimizer update. The independent longest saved-action oracle covered all 1431
-actions plus 179 prompt tokens, preserving 32-row score GEMMs. The original
-scorer with lossless activation storage and the production scorer produced
-identical action probabilities, entropies and all 402 parameter gradients.
-An additional preflight applied the actual PPO/KL backward to every one of the
-eight saved candidates and accumulated finite gradients without stepping Adam.
-Peak allocated GPU memory was 77,508,865,536 bytes. This verifies that saved
-batch, and does not predict peak memory for every possible future response.
-The original failure and fresh independent training rounds remain separate.
+```bash
+cd "$ESPNET_WORK/src/espnet-sft/egs2/mini_an4/asr1"
+./run.sh --ngpu 1 --nj 2 --inference_nj 2
+```
+
+That command prepares the bundled demo corpus and starts real training. It is not an
+installation check. Other ASR/TTS recipes retain their own dataset, frontend,
+vocoder and model requirements.
+
+## 4. Obtain the reviewed RL sources
+
+Use a source URL or local Git checkout actually containing this change. For a
+local review checkout, the following creates an independent clean copy:
+
+```bash
+export ESPNET_RL_GIT_SOURCE=/absolute/path/to/reviewed/espnet-checkout
+export ESPNET_RL_GIT_REF=codex/rl-local-wrapup-20261016
+export ESPNET_RL_SOURCE="$ESPNET_WORK/src/espnet-rl"
+git clone --no-hardlinks --single-branch --branch "$ESPNET_RL_GIT_REF" \
+  "$ESPNET_RL_GIT_SOURCE" "$ESPNET_RL_SOURCE"
+test -f "$ESPNET_RL_SOURCE/tools/installers/install_miles_async_env.sh"
+git -C "$ESPNET_RL_SOURCE" rev-parse HEAD
+```
+
+For a published feature fork, substitute its real URL and reviewed branch/tag
+for the two variables; do not substitute upstream `master` while the feature is
+unmerged. Record the printed ESPnet revision with the environment receipt.
+
+Clone the unchanged Miles library and reviewed SGLang fork at exact pins:
+
+```bash
+export ESPNET_MILES_SOURCE="$ESPNET_WORK/src/miles"
+export ESPNET_SGLANG_SOURCE="$ESPNET_WORK/src/sglang"
+git clone https://github.com/radixark/miles.git "$ESPNET_MILES_SOURCE"
+git -C "$ESPNET_MILES_SOURCE" checkout --detach \
+  a22fd824191c64ba7c5d6c531f125406e4ce9cc6
+git clone https://github.com/whr-a/sglang.git "$ESPNET_SGLANG_SOURCE"
+git -C "$ESPNET_SGLANG_SOURCE" checkout --detach \
+  283d68c8bff309a42476c95f7c71dad895d09da6
+```
+
+| Locked component | Exact version / revision |
+| --- | --- |
+| Miles v0.1.2 | `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` |
+| SGLang fork | `283d68c8bff309a42476c95f7c71dad895d09da6` |
+| Torch / Torchaudio | `2.11.0+cu130` / `2.11.0+cu130` |
+| Transformers / NumPy | `5.12.1` / `2.3.5` |
+| TileLang | `0.1.11` |
+
+The complete authoritative lock is
+[`requirements.txt`](../../tools/installers/miles_async/cp312_linux_x86_64_cu130/requirements.txt),
+with platform, hashes and source pins in
+[`profile.json`](../../tools/installers/miles_async/cp312_linux_x86_64_cu130/profile.json).
+All three source checkouts must be clean. Keep generated configs/data/output
+outside them; use separate installation copies rather than frozen run sources.
+
+## 5. Build and activate the native RL environment
+
+The target environment must not exist. The installer deliberately refuses
+in-place environment repair and dirty/different source pins.
+
+```bash
+export ESPNET_RL_ENV="$ESPNET_WORK/envs/rl"
+cd "$ESPNET_RL_SOURCE"
+bash tools/installers/install_miles_async_env.sh \
+  --python python3.12 --venv "$ESPNET_RL_ENV" \
+  --espnet-source "$ESPNET_RL_SOURCE" \
+  --sglang-source "$ESPNET_SGLANG_SOURCE" \
+  --miles-source "$ESPNET_MILES_SOURCE" --with-tests
+```
+
+This installs 233 hash-checked dependency artifacts, then ESPnet and SGLang as
+editables with no dependency re-resolution. Miles remains a source-only library;
+its unused Megatron/backend extras are not installed. Rust SGLang extensions are
+disabled in this Python profile. The installer hides GPUs and checks `pip check`,
+actual import paths, the original Miles async entry and all four architecture
+registrations. Its receipt is **`$ESPNET_RL_ENV.acceptance.json`**.
+
+Activate the environment and make the source-only Miles library visible:
+
+```bash
+. "$ESPNET_RL_ENV/bin/activate"
+export PYTHONPATH="$ESPNET_MILES_SOURCE"
+python -m pip check
+```
+
+Use a dedicated shell; this explicit `PYTHONPATH` avoids an old dependency
+overlay shadowing the checked sources. Persist these absolute paths in your own
+activation script if needed. For legacy recipe wrappers that source
+`tools/activate_python.sh`, point that file in the **RL checkout** to this
+interpreter:
+
+```bash
+printf '. "%s/bin/activate"\n' "$ESPNET_RL_ENV" \
+  > "$ESPNET_RL_SOURCE/tools/activate_python.sh"
+```
+
+Otherwise an old SFT activation file can silently replace the active interpreter
+when a wrapper starts. Keep SFT in its own checkout and environment.
+
+## 6. Check the installation without using a GPU
+
+Inspect the installer receipt:
+
+```bash
+python - <<'PYCODE'
+import json, os
+from pathlib import Path
+receipt = Path(os.environ['ESPNET_RL_ENV'] + '.acceptance.json')
+x = json.loads(receipt.read_text())
+assert x['passed'] and x['pip_check_exit_code'] == 0
+assert x['artifact_count'] == 233 and not x['gpu_execution']
+print('Source, dependency and import checks passed.')
+PYCODE
+```
+
+With `--with-tests`, the implementation's CPU regression suite can be run from
+the RL checkout. The options avoid repository-wide coverage-plugin assumptions
+and same-named test modules in different directories:
+
+```bash
+cd "$ESPNET_RL_SOURCE"
+CUDA_VISIBLE_DEVICES='' OMP_NUM_THREADS=2 MKL_NUM_THREADS=2 \
+  python -m pytest -o addopts='' --import-mode=importlib -q \
+  test/espnet2/rl test/espnet2/s2t/rl test/espnet2/speechlm/rl \
+  test/espnet2/speechlm/test_rl_policy.py
+```
+
+The reviewed local implementation passed 273 tests, with one CUDA-specific test
+skipped. That is CPU regression evidence, not proof of GPU memory fit, kernels,
+completed training or improved quality for every architecture.
+
+## 7. Supply model assets and training data
+
+Installing software does not download pretrained models or prepare a corpus.
+Use the native checkpoint and the exact training configuration/tokenizer/assets
+that produced it. For existing model-specific download instructions, follow the
+corresponding recipe README:
+
+| Family | Required assets / task inputs | Recipe |
+| --- | --- | --- |
+| OWSM encoder-decoder | Native config/checkpoint and token list; LibriSpeech or `wav.scp` + `text` | [OWSM](../../egs2/owsm_v4/s2t1/README.md) |
+| Bagpiper QA | Native SFT config/checkpoint, HF/tokenizer/audio/codec assets; AVQA or audio + questions + choices + reference answers | [QA](../../egs2/bagpiper/speechlm1/README.md) |
+| Bagpiper TTS | Native SFT and codec assets; LibriTTS text/audio; a pinned Whisper ASR checkpoint for the reward | [TTS](../../egs2/bagpiper_tts/speechlm1/README.md) |
+| OpusLM Plain / Dialogue | Native checkpoint/config, HF/tokenizer assets, original DAC/XEUS weights and k-means model; waveform/text pairs | [OpusLM](../../egs2/libritts/speechlm1/README_RL_OPUSLM.md) |
+
+OWSM-CTC and OpusLM codec-output RL are not covered by this implementation.
+Bagpiper TTS uses Transformers Whisper; a separate `openai-whisper` installation
+is not required for that reward. Model permissions/downloads remain those of
+each original release.
+
+As a simple ASR example, prepare independent train/dev manifests from Kaldi-style
+files whose utterance IDs match:
+
+```bash
+python -m espnet2.rl.prepare \
+  --wav-scp "$ESPNET_WORK/data/train/wav.scp" \
+  --text "$ESPNET_WORK/data/train/text" \
+  --output "$ESPNET_WORK/data/rl_train.jsonl"
+python -m espnet2.rl.prepare \
+  --wav-scp "$ESPNET_WORK/data/dev/wav.scp" \
+  --text "$ESPNET_WORK/data/dev/text" \
+  --output "$ESPNET_WORK/data/rl_dev.jsonl"
+```
+
+The recipe guide also includes public LibriSpeech/LibriTTS archive preparation
+and AVQA preparation. Use at least 32 distinct training prompts for the supplied
+32×8 profiles. Public/user datasets do not require private project registries.
+Optional data admission checks role-bound manifests, counts, audio hashes and
+train/held-out independence; it does not rebuild external protection indexes.
+
+Copy a model's template to `$ESPNET_WORK/configs/` and resolve these common fields:
+
+```yaml
+miles_source: /absolute/path/to/miles
+sglang_source: /absolute/path/to/sglang
+rollout_python: /absolute/path/to/rl-env/bin/python
+train_config: /absolute/path/to/native/config.yaml
+checkpoint: /absolute/path/to/native/model.pth
+manifest: /absolute/path/to/rl_train.jsonl
+eval_manifest: /absolute/path/to/rl_dev.jsonl
+output_dir: /absolute/path/to/a/new/run
+steps: 5
+prompts_per_step: 32
+group_size: 8
+```
+
+Also resolve the selected family's `adapter_options` assets. Relative paths in
+native training configs may need resolving against the original model directory.
+Use a new output directory for each run; interrupted-run training recovery is
+not implemented.
+
+## 8. Validate configuration, then choose a GPU layout
+
+### One GPU: collocated synchronous training
+
+Copy `egs2/owsm_v4/s2t1/conf/rl_miles_wer_1gpu.yaml`, resolve the fields above and
+validate it without allocating a GPU:
+
+```bash
+python -m espnet2.bin.rl_launch \
+  --config "$ESPNET_WORK/configs/owsm_1gpu.yaml" --validate-only
+```
+
+On an authorized GPU host, remove `--validate-only` to start real training.
+The learner and persistent SGLang engine share GPU 0 in separate phases.
+`32 × 8` remains the global candidate batch even when scoring uses microbatches.
+
+### Two GPUs: disaggregated asynchronous training
+
+Use `rl_miles_wer_2gpu_async.yaml`, resolve the same common fields, and keep a
+separate output directory. In a fresh shell, activate the RL environment and
+**export the Miles path before starting Ray**:
+
+```bash
+. "$ESPNET_RL_ENV/bin/activate"
+export PYTHONPATH="$ESPNET_MILES_SOURCE"
+ray start --head --num-gpus=2 --port=6379
+ray list nodes
+```
+
+The driver and every Ray worker need these same source/interpreter settings.
+An existing Ray daemon does not inherit environment changes made later. Use a
+dedicated Ray cluster, outside torchrun and without inherited distributed-rank
+variables. `RAY_NODE_IP` below is a Ray node's actual IP or ID, not an SSH proxy:
+
+```bash
+python -m espnet2.bin.rl_launch \
+  --config "$ESPNET_WORK/configs/owsm_2gpu_async.yaml" \
+  --ray-address auto --train-node RAY_NODE_IP --rollout-node RAY_NODE_IP \
+  --validate-only
+```
+
+The same node selector places the two roles on separate GPUs of one host. For
+two one-GPU hosts, join a worker with `ray start --address=HEAD_IP:6379
+--num-gpus=1`, expose only one GPU on the head, and select each role's node.
+Both hosts need the checked environment, Miles visibility, and identical absolute
+source/model/data/output paths, normally via shared storage. Cross-host networking
+and firewall connectivity need their own validation.
+
+Validation checks inputs/configuration; it does not connect to Ray or verify live
+placement. Removing `--validate-only` starts real training and records actual
+placement. The pipeline overlaps the next rollout with the current update, with
+weight staleness at most one; it uses Miles `fully_async=False`, not unrestricted
+asynchronous updates. Supplied recipes use one or two GPUs; custom public layouts
+should stay within four total.
+
+## 9. Understand the validation boundary
+
+| Check | What success means |
+| --- | --- |
+| Installer receipt / `pip check` | Source pins, locked artifact metadata and imports agree |
+| CPU tests | Native data/loss/optimizer/orchestration contracts pass without GPU execution |
+| `--validate-only` | Configuration and manifest checks pass; no model/GPU fit claim |
+| GPU short run | Must separately show real generation, probability audit, nonzero updates, outputs and terminal success |
+| Held-out evaluation | Must use its own denominator/protocol; a higher sampled reward alone is insufficient |
+
+OWSM has existing single-/two-GPU 200-update engineering evidence, without a
+held-out WER gain. Bagpiper's new small-GPU full loop and OpusLM's two-GPU full
+loop still need acceptance. Earlier large-GPU or component measurements do not
+establish those missing results. Full MMAU improvement is not established.
+
+Common installation failures:
+
+- **Existing venv / dirty source / wrong pin:** use a new environment and clean
+  reviewed sources; do not bypass the source/hash checks.
+- **Old glibc:** use a compatible OS/container image. A Python venv does not
+  upgrade the host C library, and a container does not replace the host driver.
+- **`No module named miles` in Ray:** export its source path before starting the
+  dedicated Ray processes on every host, not just in the driver shell.
+- **Wrong interpreter in an `egs2` wrapper:** inspect the RL checkout's
+  `tools/activate_python.sh`; keep the SFT activation in another checkout.
+- **Changed Transformers/TileLang after installing SFT extras:** recreate the
+  locked RL environment; use a separate environment for full supervised SpeechLM.
+- **Model or audio assets missing:** resolve the matching native release and
+  prepared manifests. Installing the Python environment does not supply them.

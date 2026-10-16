@@ -94,9 +94,13 @@ bash rl.sh --config conf/rl_miles_wer_1gpu.yaml --manifest data/rl/train.jsonl -
 Remove `--validate-only` to train on an authorized GPU. One learner and its
 SGLang process share GPU 0; this profile needs no torchrun or resource submission.
 For async, start a dedicated Ray head exposing two available GPUs from a clean
-shell outside torchrun, then select the two-GPU configuration:
+shell outside torchrun, then select the two-GPU configuration. Follow the
+[activation instructions](ENVIRONMENT.md#5-build-and-activate-the-native-rl-environment)
+first, including Miles visibility on every Ray host:
 
 ```bash
+. /absolute/path/to/rl-env/bin/activate
+export PYTHONPATH=/absolute/path/to/miles
 ray start --head --num-gpus=2 --port=6379
 python -m espnet2.bin.rl_launch --config conf/rl_miles_wer_2gpu_async.yaml --manifest data/rl/train.jsonl --eval-manifest data/rl/dev.jsonl --checkpoint /path/to/checkpoint --train-config /path/to/config --output-dir exp/rl_2gpu --ray-address auto --train-node RAY_NODE_IP --rollout-node RAY_NODE_IP --validate-only
 ```
