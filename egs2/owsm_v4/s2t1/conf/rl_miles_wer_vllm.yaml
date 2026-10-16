@@ -8,10 +8,10 @@ reward_function: null
 dtype: float32
 train_encoder: true
 seed: 42
-steps: 100
-prompts_per_step: 2
-group_size: 4
-micro_batch_size: 1
+steps: 5
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 16
 ppo_epochs: 1
 learning_rate: 0.00001
 weight_decay: 0.0

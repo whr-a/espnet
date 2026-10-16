@@ -11,26 +11,30 @@ ESPnet owns the native model, scorer, AdamW and checkpoints. Synchronous profile
 use ESPnet's training loop. The new `disagg_async` profiles retain the original
 Miles `train_async.py:train` loop with native ESPnet component factories.
 
-The five-update 32×8 profiles are
-`conf/rl_opuslm_librispeech_collocate.yaml`,
-`conf/rl_opuslm_librispeech_disagg_async.yaml` and their
-`rl_opuslm_dialogue_librispeech_*` counterparts. Select one explicitly with
-`speechlm.sh --stage 10 --stop_stage 10 --rl_config ...`. The native source
-environment uses Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`; setup, data admission, interpreter
-paths and Ray selectors are documented in
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md).
+The public profiles focus on one and two H100 80 GB GPUs, with a maximum of
+four GPUs for custom layouts. All current profiles use 32 prompts × 8
+candidates per optimizer update, accumulated over smaller scoring batches.
 
-`conf/rl_opuslm_dialogue_librispeech_1gpu.yaml` trains Dialogue on one H100
-80GB, with the training rank and its rollout engine sharing the GPU;
-`conf/rl_opuslm_dialogue_librispeech_2gpu_async.yaml` and
-`conf/rl_opuslm_librispeech_2gpu_async.yaml` train on GPU 0 while GPU 1 rolls
-out, driven by the Miles async loop. Each runs 32×8 candidates per update and
-keeps one SGLang engine (`OpusLMEngine`) per rollout GPU for the whole run,
-loading every export in place; a batch's candidates go to the engine in one
-call. The comments in each file derive its memory settings. Plain has no
-one-GPU recipe: its FP32 policy and gradients (55.2 GiB) and the engine's own
-copy of the weights (27.6 GiB) do not fit in 80 GB together.
+| Architecture | Configuration | GPUs | Default updates |
+| --- | --- | ---: | ---: |
+| Dialogue | `conf/rl_opuslm_dialogue_librispeech_1gpu.yaml` | 1, learner and rollout share GPU 0 | 5 |
+| Dialogue | `conf/rl_opuslm_dialogue_librispeech_2gpu_async.yaml` | 2, learner on GPU 0 and rollout on GPU 1 | 5 |
+| Plain | `conf/rl_opuslm_librispeech_2gpu_async.yaml` | 2, learner on GPU 0 and rollout on GPU 1 | 5 |
+
+The shorter default YAML names and `*_disagg_async.yaml` are relative symlinks
+to these profiles; Dialogue's `*_collocate.yaml` points to its one-GPU profile.
+Plain has no one-GPU FP32 profile: policy and gradients (55.2 GiB) plus the
+engine's weights (27.6 GiB) already exceed 80 GB. Its former eight-GPU
+`*_collocate.yaml` has been removed. Historical results remain in their frozen
+experiment records.
+
+Each keeps one `OpusLMEngine` per rollout GPU for the whole run and loads each
+export in place. The comments in the YAML files derive their memory settings.
+These templates do not imply a complete GPU training acceptance or quality gain
+for every architecture/layout. Select one with
+`speechlm.sh --stage 10 --stop_stage 10 --rl_config ...`; see the
+[shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for the pinned
+Miles/SGLang environment and launch options.
 
 For the earlier small synchronous profile, install Miles through
 `tools/installers/install_miles_rl.sh` and use
@@ -73,12 +77,14 @@ done
 Set `train_config`, `checkpoint`, `adapter_options.reference_assets`,
 `sglang_source` and `rollout_python` in a copy of the appropriate template YAML.
 Set `manifest: data/rl/train_clean_100.jsonl` and choose a new `output_dir`.
-The templates use native FP32 with CPU reference/Adam and one rollout GPU;
-choose `device` and `rollout_gpus` for the available hardware. Then use the
+The templates use native FP32 and CPU AdamW. Dialogue keeps its reference on
+the training GPU; Plain scores its reference on CPU. Preserve the documented
+memory settings when selecting a profile. Then use the
 existing recipe's optional stage 10:
 
 ```bash
-./run_rl_opuslm.sh --rl_config conf/rl_opuslm_librispeech.yaml
+./run_rl_opuslm.sh --rl_config conf/rl_opuslm_librispeech_2gpu_async.yaml \
+  --rl_ray_address auto --rl_train_node RAY_NODE_IP --rl_rollout_node RAY_NODE_IP
 # Dialogue uses its released assets, --family opuslm_dialogue during preparation:
 ./run_rl_opuslm.sh --rl_config conf/rl_opuslm_dialogue_librispeech.yaml
 ```
@@ -90,9 +96,9 @@ its sampled probabilities against the native model:
 
 ```bash
 python -m espnet2.speechlm.rl.evaluate \
-  --config exp/rl_opuslm_librispeech/frozen_config.json \
-  --checkpoint exp/rl_opuslm_librispeech/step-000100.native.pth \
-  --manifest data/rl/dev_clean.jsonl --policy-step 100 \
+  --config exp/rl_opuslm_librispeech_2gpu_async/frozen_config.json \
+  --checkpoint exp/rl_opuslm_librispeech_2gpu_async/step-000005.native.pth \
+  --manifest data/rl/dev_clean.jsonl --policy-step 5 \
   --output-dir exp/rl_opuslm_librispeech_eval --device cpu --rollout-gpus 1
 ```
 
@@ -137,8 +143,8 @@ waveform-to-text WER updates; full codec-output TTS RL remains a separate
 multi-stream sampler requirement. New native pad-cleared results are distinct
 from historical vLLM pad-bias experiments.
 
-On the shared 8-H100 host, two optimizer updates and separate heldout
-evaluation succeeded for both released architectures. Plain's second update
+In the historical prototype on a shared 8-H100 host, two optimizer updates
+and separate heldout evaluation succeeded for both released architectures. Plain's second update
 had equal task rewards within each group and zero GRPO advantage; fixed KL
 produced that update. Plain updated all 356 model tensors (7,409,405,952
 parameters); Dialogue updated all 220 tensors

@@ -1,3 +1,4 @@
+# Proposed two-GPU layout; complete GPU training validation is pending.
 # Two H100 80GB on one node: GPU 0 trains while GPU 1 runs the rollout
 # engine, driven by the pinned Miles async loop. Same 32 x 8 = 256 candidates
 # per optimizer update as the one-GPU recipe, so the two can be compared
@@ -33,7 +34,7 @@ sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
 dtype: float32
 seed: 42
-steps: 100
+steps: 5
 warmup_steps: 1
 prompts_per_step: 32
 group_size: 8

@@ -28,21 +28,21 @@ def configuration(**kwargs):
     return ESPnetRLConfig(**{**defaults, **kwargs})
 
 
-def admission_files(tmp_path):
+def admission_files(tmp_path, train_count=32, heldout_count=8):
     rows = []
-    for index in range(40):
+    for index in range(train_count + heldout_count):
         audio = tmp_path / f"{index}.wav"
         audio.write_bytes(f"unique audio {index}".encode())
         rows.append(
             {"id": str(index), "audio": str(audio), "audio_sha256": sha256(audio)}
         )
     train, heldout = tmp_path / "train32.jsonl", tmp_path / "heldout.jsonl"
-    train.write_text("".join(json.dumps(row) + "\n" for row in rows[:32]))
-    heldout.write_text("".join(json.dumps(row) + "\n" for row in rows[32:]))
+    train.write_text("".join(json.dumps(row) + "\n" for row in rows[:train_count]))
+    heldout.write_text("".join(json.dumps(row) + "\n" for row in rows[train_count:]))
     receipt = {
         "training_ready": True,
         "manifest_sha256": {"train": sha256(train), "heldout": sha256(heldout)},
-        "counts": {"train": 32, "heldout": 8},
+        "counts": {"train": train_count, "heldout": heldout_count},
     }
     path = tmp_path / "admission.json"
     path.write_text(json.dumps(receipt))
@@ -69,6 +69,19 @@ def test_admission_detects_live_file_or_receipt_changes(tmp_path, changed):
             receipt["training_ready"] = False
         path.write_text(json.dumps(receipt))
     with pytest.raises(ValueError):
+        verify_data_admission(config, path)
+
+
+@pytest.mark.parametrize("training_key", ["train", "train32"])
+def test_admission_rejects_swapped_equal_sized_manifests(tmp_path, training_key):
+    config, path = admission_files(tmp_path, train_count=4, heldout_count=4)
+    receipt = json.loads(path.read_text())
+    receipt["manifest_sha256"][training_key] = receipt["manifest_sha256"].pop("train")
+    path.write_text(json.dumps(receipt))
+    assert verify_data_admission(config, path)["counts"] == {"train": 4, "heldout": 4}
+
+    config.manifest, config.eval_manifest = config.eval_manifest, config.manifest
+    with pytest.raises(ValueError, match="train manifest differs"):
         verify_data_admission(config, path)
 
 

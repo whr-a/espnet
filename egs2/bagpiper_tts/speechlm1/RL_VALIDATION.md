@@ -1,4 +1,7 @@
-# Bagpiper TTS RL validation
+# Historical Bagpiper TTS RL validation
+
+This record describes the frozen FP32 prototype below. The current one-/two-GPU
+BF16 recipe templates have not been validated by this historical run.
 
 The optional stage in the existing recipe completed an end-to-end engineering
 run: prepared LibriTTS input, real SGLang actions, decoded audio, independent

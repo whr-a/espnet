@@ -328,21 +328,38 @@ When using the foundation model, also cite the
 
 ## Optional Miles RL stage
 
-Select `conf/rl_collocate.yaml` or `conf/rl_disagg_async.yaml` explicitly for five
-updates of 32 prompts × 8 candidates. The earlier `conf/rl.yaml` keeps its
-declared budget. The checked native source environment pins Miles
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`. Async uses the original Miles loop
-with native ESPnet component factories; collocate uses four native ranks and
-four independent rollout GPUs. See
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for installation,
-data admission and exact Ray node arguments.
+The default `conf/rl.yaml` (also `conf/rl_collocate.yaml`) shares **one H100
+80 GB** between the BF16 learner and a persistent SGLang engine.
+`conf/rl_disagg_async.yaml` uses **two H100s**, one learner GPU and one rollout
+GPU, with Miles' original async loop. Both templates use five updates of
+32 prompts × 8 candidates; scoring micro-batches and gradient accumulation
+keep that batch independent of GPU count. Custom layouts should use at most
+four GPUs.
+
+Reference scoring and AdamW run on CPU; Adam retains FP32 master weights.
+Allow substantial host memory (about 192 GB for an 8B model and its CPU
+optimizer/reference) and preserve the native model's activation checkpointing.
+The one-GPU engine limits concurrent requests and shares the remaining memory
+with training. These low-resource Bagpiper templates have CPU configuration
+checks only: the exact one-/two-GPU settings still require a GPU acceptance
+run. Historical FP32 engineering results do not validate these BF16 layouts.
+
+Miles is an unmodified optional library pinned to
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See the
+[shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for environment
+installation, audited data and launch options. Historical larger layouts stay
+in their frozen experiment records and are not the public recipe defaults.
 
 The existing stages remain the default. `run.sh --stage 4` selects an optional
 post-training stage using a pinned Miles library and SGLang rollout. Architecture
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
 or vendored. Set the pretrained checkpoint, original training YAML, token assets,
 codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
+Use the checkpoint's original SFT model configuration, set
+`model.activation_checkpointing: true`, and inspect its `trainer.freeze_param`
+list. The supervised warmup `conf/train.yaml` freezes decoder layers and is
+not a suitable default for full-decoder RL. Preserve the original modality order
+and model geometry when making the checkpointing-only configuration copy.
 
 ```bash
 ./run.sh --stage 4 --data-input /path/to/libritts --rl-config conf/rl.yaml
@@ -381,8 +398,8 @@ to keep utterances whose audio fits the 1536-token budget, and with
 `--shuffle-seed 42` so that each update draws new prompts across the corpus.
 LibriTTS and `wav.scp` use one shared verbatim reading instruction and preserve
 the reference separately for WER. The native text preprocessor and rollout prefix
-are identical. The starter configuration uses two candidates per prompt and a
-1536-token limit because this TTS model emits a text plan before its audio.
+are identical. The templates use eight candidates per prompt and a 1536-token
+limit because this TTS model emits a text plan before its audio.
 Freeze the native recipe's `activation_checkpointing: true`; the RL scorer
 recomputes native decoder layers and 32-token score blocks in evaluation mode.
 
@@ -397,7 +414,7 @@ PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
   --shuffle-seed 42 --limit 200 --task tts_asr_wer --output data/rl/eval.jsonl
 PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
   --config exp/rl/frozen_config.json --manifest data/rl/eval.jsonl \
-  --checkpoint exp/rl/step-000002.native.pth --policy-step 2 \
+  --checkpoint exp/rl/step-000005.native.pth --policy-step 5 \
   --output exp/rl/heldout
 ```
 

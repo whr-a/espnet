@@ -1,8 +1,10 @@
-# 32 independent prompts x 8 candidates; one 8-GPU node per role.
+# Two H100 80 GB: learner on GPU 0, persistent rollout on GPU 1.
+# Miles async loop; 32 prompts x 8 candidates per optimizer update.
+# Low-resource template: this exact configuration still needs GPU validation.
 family: bagpiper
-train_config: conf/train.yaml
+train_config: /path/to/released/train_config.yaml
 checkpoint: exp/sft/export/model.pt
-manifest: data/rl/train32.jsonl
+manifest: data/rl/train.jsonl
 output_dir: exp/rl_disagg_async_32x8
 rollout_backend: sglang
 adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
@@ -11,13 +13,14 @@ sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngin
 reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:tts_asr_wer
 device: cuda:0
 reference_device: cpu
-train_gpus: '0,1,2,3,4,5,6,7'
-rollout_gpus: 0,1,2,3,4,5,6,7
+train_gpus: '0'
+rollout_gpus: '1'
 rollout_python: python
 sglang_source: ../../../tools/sglang
 sglang_engine_kwargs:
-  attention_backend: torch_native
-  context_length: 2048
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 32
 adapter_options:
   reference_assets: exp/sft/hf_assets
   native_attention: sdpa
@@ -29,7 +32,8 @@ adapter_options:
   tokenizer_mode: hf
   asr_model: openai/whisper-base.en
   asr_revision: 911407f4214e0e1d82085af863093ec0b66f9cd6
-dtype: float32
+  activation_cpu_offload: true
+dtype: bfloat16
 optimizer_device: cpu
 seed: 42
 steps: 5
@@ -48,5 +52,4 @@ tis_clip_low: 0.5
 tis_clip: 2.0
 eval_manifest: data/rl/heldout.jsonl
 ppo_epochs: 1
-distributed_strategy: native_allreduce
-allreduce_chunk_bytes: 67108864
+rollout_mem_fraction: 0.85

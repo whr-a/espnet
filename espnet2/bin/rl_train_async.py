@@ -1,4 +1,4 @@
-"""Run the pinned Miles async loop on two existing 8-GPU Ray nodes."""
+"""Run the pinned Miles async loop on existing Ray GPUs selected by the recipe."""
 
 import argparse
 import asyncio

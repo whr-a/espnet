@@ -1,113 +1,74 @@
 # Optional Miles post-training stage
 
-Existing `egs2` recipes opt into `python -m espnet2.bin.rl_launch --config CONFIG`.
-The new 32-prompt × 8-candidate, five-update dual-mode templates and data preparation
-are described in [SHORT_RUN_RECIPES.md](SHORT_RUN_RECIPES.md).
-ESPnet owns the native model, waveform preparation, architecture adapter,
-optimizer and checkpoints. Miles is an unmodified source library pinned to
-official v0.1.2 (`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`). Its GRPO
-reward normalization/returns, PPO clipping and KL functions are called directly.
-The training entry refuses a different pin or changed algorithm files.
+Existing `egs2` recipes add an optional RL stage through
+`python -m espnet2.bin.rl_launch --config CONFIG`. Supervised stages keep their
+existing behavior. See the [recipe guide](SHORT_RUN_RECIPES.md),
+[architecture diagram](ARCHITECTURE.md) and [optional environment](ENVIRONMENT.md).
 
-Synchronous profiles use ESPnet's native loop. `disagg_async` binds ESPnet's
-native training actors, rollout executor and checkpoint publication to the
-unchanged `train_async.py:train` loop at that same Miles pin. The binding retains
-the original function code and replaces its four orchestration factories; it
-does not use Miles' optional Megatron or other model backends.
+ESPnet owns data preparation, native speech models, rollout adapters, AdamW
+and checkpoints. It calls unchanged Miles v0.1.2 at
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` for GRPO normalization/returns,
+PPO clipping, KL and IcePop. Startup verifies the source identity.
 
-For the 32×8 profiles, use the independent hash-locked source environment in
-[`ENVIRONMENT.md`](ENVIRONMENT.md): Miles
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`. Its installer checks full runtime
-imports and all 233 dependency artifacts, with Miles loaded from its unchanged
-checkout rather than installed with every optional backend dependency.
+Synchronous training uses ESPnet's native loop. `disagg_async` also reuses that
+pin's original `train_async.py:train` function code, binding four orchestration
+factories to ESPnet Ray actors. It overlaps one rollout batch with training,
+with weight staleness at most one. It does not use Miles' Megatron backend or
+its unrestricted fully asynchronous mode.
 
-For the earlier synchronous library profile, install optional Miles support
-with `cd tools; make miles_rl.done`. The installer
-requires an existing compatible Torch environment and keeps the pinned checkout
-as an editable library, so the source and revision remain reviewable. It is not
-an ESPnet-specific Miles fork. PyPI distribution metadata intentionally does not
-contain VCS dependency URLs; optional source libraries follow `tools/installers`.
+## Resource profiles
 
-SGLang runs in a separate interpreter configured with `rollout_python` and
-`sglang_source`. The user's fork is https://github.com/whr-a/sglang. Each recipe
-declares its architecture's rollout engine (`sglang_engine: module:Class`, an
-`espnet2.rl.engine.RolloutEngine`), native scorer and exact exporter.
-`make sglang_rl.done` accepts `SGLANG_SOURCE` and `SGLANG_REVISION` for a reviewed
-checkout; use a dedicated environment matching its reviewed dependency profile
-in [ENVIRONMENT.md](ENVIRONMENT.md).
-An inference environment may be different from the native training environment.
+Public recipes focus on one H100 for collocated training and inference, or two
+H100s for disaggregated async. A two-GPU Ray node can host both roles; two
+one-GPU nodes can host them separately. Supplied profiles use at most four
+GPUs. Large models also need substantial CPU RAM for the reference policy,
+FP32 master weights and Adam moments. Plain OpusLM starts with a two-GPU
+profile. Bagpiper's new one/two-GPU full loop still needs GPU validation.
 
-`prepare_kaldi_manifest` accepts `wav.scp` and `text`, joins by utterance ID,
-materializes recipe pipe commands, converts mono/sample rate and records hashes.
-QA recipes additionally supply questions and labels through their architecture
-preparer. TTS rewards consume the actual complete generation record, including
-codec actions and waveform metadata; forced stream padding remains masked.
+`train_gpus` declares one training rank per entry; `rollout_gpus` declares one
+SGLang replica per entry. Synchronous one-GPU profiles share device 0 between
+phases. Async roles on the same host require disjoint devices; Ray records
+and checks their actual assignment. Optional data parallelism is described in
+[PARALLEL.md](PARALLEL.md).
 
-Each rollout GPU runs one inference process for the whole run, which builds
-the real SGLang engine from the first export. Each training update exports
-immutable native and inference checkpoints, loads that export into every engine
-in place, saves actual actions/behavior logprobs, validates native action
-probabilities, then performs a native AdamW update. Requests, raw responses,
-rewards, masks and optimizer state are retained; once every engine holds the
-newest export, all but the newest `keep_exports` (default 2) are deleted. Use a
-new output directory for every run. This initial implementation does not resume
-partially completed runs or silently switch to another inference backend.
+## Runtime and model boundary
 
-Multi-rank trainers create their ESPnet Gloo object group collectively before
-rank zero starts rollout. Rollout payloads, native scoring results and their
-errors, and reward preparation share that group. `distributed_timeout_minutes`
-defaults to a finite 4320 minutes (72 hours), covering the collocate runtime
-budget and the 48-hour disaggregated async budget. The default training group
-uses the same timeout. The runtime supervisor enforces each frozen run's
-own deadline and health checks. Set this field before freezing a new run when a
-different runtime budget is required.
+Use the source-pinned environment in [ENVIRONMENT.md](ENVIRONMENT.md). Miles
+is exposed from its unchanged checkout without unused model backends. SGLang
+may run in a separate interpreter selected by `rollout_python`; its registration
+bridges import model code from ESPnet. Each family supplies a native policy,
+exact exporter and `sglang_engine: module:Class` implementing `RolloutEngine`.
 
-The correctness profiles use full precision, independent TP=1 rollout replicas
-and full prompt prefill. Collocate uses four native training ranks and four
-rollout GPUs on one node; async uses eight training ranks and eight rollout GPUs
-on distinct nodes. The selected YAML fixes the layout and global batch.
-Model-specific full-prefix implementations deliberately
-trade throughput for exact native semantics. OpusLM sends a whole rollout
-batch to SGLang's own decoder layers with exact native prompt embeddings.
-Bagpiper runs on SGLang's own Qwen3 layers with paged KV and a whole
-rollout batch in flight; the model keeps each request's phase and pending
-secondary-stream embedding in GPU state, and every frame records the support
-the learner scores it under. The learner scores right-padded micro-batches with
-one vectorised head; `micro_batch_tokens` takes candidates in order of length
-and bounds every micro-batch's padded prompt+response tokens. In FP32 a batched
-pass differs from scoring each candidate alone by up to about 1e-4 (1.25e-4 on
-a real QA batch): cuBLAS rounds a GEMM by its row count, so this is expected
-and stays far below `score_tolerance`. For OpusLM and Bagpiper,
-`max_running_requests` requests of `context_length` tokens must fit the
-engine's KV pool, which the engine checks at startup: SGLang would otherwise
-retract requests and recompute them without their embeddings or secondary
-streams. A stale async batch is audited by lending the learner the weights
-that generated it, from a pinned CPU snapshot, for one scoring pass. Rollout
-processes write the numpy arrays of their records (Bagpiper's mel features,
-once per prompt) to binary `.npy` sidecars next to the JSON. The frozen source004
-production runs use the earlier one-request, full-prefix Bagpiper path.
-Neither layout alone establishes optimal throughput. Short runs establish an
-engineering loop; held-out evaluation retains its own manifest, raw responses
-and explicit denominator.
+One rollout subprocess per GPU stays alive for the run. The learner publishes
+immutable exports, which the engine loads between generation batches. After
+successful publication, all but the newest `keep_exports` (default two) are
+removed. Actual actions, behavior logprobs, masks and rewards are recorded;
+native scoring checks the generating policy before the update. A stale async
+batch is checked by temporarily loading its generating weights from a CPU
+snapshot. Bagpiper additionally records per-frame multi-stream sampling support.
 
-For an earlier reviewed inference-only environment, run the optional installer
-with that environment's Python (the Makefile otherwise uses active ESPnet Python):
+OWSM retains native encoder/decoder semantics under the SGLang scheduler and
+sampler. Bagpiper uses SGLang Qwen3 layers with paged KV; OpusLM uses Olmo2 or
+Llama layers with native multi-stream prompt embeddings and text output. Their
+KV pools must fit active requests without retraction. OWSM retains an explicit
+vLLM option. Model-specific code stays in the existing architecture directories;
+Miles is not patched.
 
-```bash
-python3 -m venv /path/to/sglang-env
-SGLANG_SOURCE=/path/to/sglang SGLANG_REVISION=EXACT_REVIEWED_COMMIT \
-  PYTHON=/path/to/sglang-env/bin/python bash tools/installers/install_sglang_rl.sh
-```
+## Inputs and outputs
 
-Create this environment without `--system-site-packages`. An existing system
-SGLang installation can shadow the editable fork even after pip reports success;
-the installer rejects that case by checking the actual import path. Install the
-checkout's dependencies in the dedicated environment before freezing a run.
+ASR/TTS preparation joins `wav.scp` and `text` by utterance ID, materializes
+recipe pipe commands, normalizes waveform format and records hashes. QA also
+requires questions, choices and reference answers. Public preparers support
+LibriSpeech, LibriTTS and AVQA. User manifests work without private registries.
+`--data-admission` optionally checks a prepared hash-bound data/protection
+receipt; frozen project runs retain their original receipts and protections.
 
-The editable installation checks the actual imported module and frozen API/model
-files. Record the SGLang source pin alongside each recipe config; model registration
-bridges import their implementations from the corresponding `espnet2` RL directory.
-`--manifest`, `--checkpoint`, `--train-config` and `--output-dir` on `rl_train`
-can select prepared inputs without rewriting the template YAML. Relative template
-paths are resolved from the recipe working directory.
+Resolve source/interpreter paths in the YAML, then select native model assets
+and prepared data with `--checkpoint`, `--train-config`, `--manifest`,
+`--eval-manifest` and a fresh `--output-dir`. Logs retain rollout records,
+loss/timing metrics, native checkpoints and standard Adam state. Held-out
+evaluation has a separate manifest and explicit denominator. Interrupted-run
+optimizer recovery is not implemented.
+
+Short-run success establishes an engineering path. It does not establish
+quality improvement, inference-backend equivalence or an optimal GPU layout.

@@ -149,39 +149,31 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
 
 ## Optional Miles RL stage
 
-A recipe declares its own geometry with two settings: `train_gpus` gives one
-training rank per device and `rollout_gpus` one SGLang rollout replica per
-device. Naming the same device in both collocates the engine with training;
-naming different devices separates them. Nothing else has to change to move
-between scales.
+The default is one H100: training and SGLang rollout share GPU 0. The
+asynchronous profile uses two H100s, one for training and one for rollout,
+with the original pinned Miles async loop overlapping successive updates.
 
-| Recipe | Devices | Per optimizer update | Updates |
+| Configuration | GPUs | Per optimizer update | Default updates |
 |---|---|---|---|
-| `conf/rl_miles_wer_1gpu.yaml` | 1 (train and rollout share GPU 0) | 32 × 8 = 256 | 100 |
-| `conf/rl_miles_wer_2gpu_async.yaml` | 2 (1 train + 1 rollout, one node) | 32 × 8 = 256 | 100 |
-| `conf/rl_miles_wer_collocate.yaml` | 8 (4 train + 4 rollout, one node) | 32 × 8 = 256 | 5 |
-| `conf/rl_miles_wer_disagg_async.yaml` | 16 (8 + 8, two nodes) | 32 × 8 = 256 | 5 |
+| `conf/rl_miles_wer.yaml` or `conf/rl_miles_wer_1gpu.yaml` | 1, collocate | 32 × 8 = 256 candidates | 100 |
+| `conf/rl_miles_wer_2gpu_async.yaml` | 2, disaggregated async | 32 × 8 = 256 candidates | 100 |
 
-The one- and two-GPU recipes use the same 32 prompts × 8 candidates per
-update as the larger profiles, in the spirit of the WEST
-[`examples/grpo`](https://github.com/wenet-e2e/west/tree/main/examples/grpo)
-GRPO recipe, so a one-GPU run and a two-GPU run optimize the same objective
-and only differ in whether the next rollout overlaps the current training
-step. OWSM v4 base is small enough that the reference policy, the Adam state
-and native scoring stay on the training GPU; `rollout_mem_fraction` sizes the
-engine, which matters when it shares that device. Temperature stays at 1
-because the engine's raw log probabilities have to match the native actor's
-distribution.
+`rl_miles_wer_collocate.yaml` and `rl_miles_wer_disagg_async.yaml` are relative
+symlinks to these same profiles. Both use the same training batch; gradient
+accumulation preserves 32 prompts × 8 candidates with smaller scoring
+micro-batches. The default budget is five updates; `--steps` overrides it. The public RL recipes focus
+on one and two GPUs; custom configurations should use at most four GPUs.
 
-The 32×8 profiles use four training/four rollout GPUs on one node or eight
-training/eight rollout GPUs on separate nodes. The native source environment
-pins unchanged
-Miles `a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`; the async entry binds native ESPnet
-actors to the original Miles loop. See
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for data
-admission, exact interpreter/source configuration and Ray node selectors.
-The earlier `conf/rl_miles_wer.yaml` keeps its own small synchronous budget.
+OWSM v4 base keeps its reference policy, Adam state and native scoring on the
+training GPU. `rollout_mem_fraction` limits the persistent SGLang engine when
+it shares that device. The templates keep temperature 1 and record the
+sampling contract for native/rollout probability checks.
+
+Miles is an unmodified optional library pinned to
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See
+[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for installation,
+audited manifests and launch options. Historical runs retain their frozen
+configurations separately; their GPU layouts are not the current defaults.
 
 Stage 18 adds WER GRPO post-training to an existing OWSM checkpoint:
 `./run.sh --stage 18 --wav-scp /path/wav.scp --text /path/text

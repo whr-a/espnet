@@ -1,8 +1,10 @@
 # Native data parallel training
 
-Launch eight training processes on the training node with one rank per GPU.
-Each rank executes native scoring and backward for 32 of the 256 candidates in
-a 32-prompt, eight-candidate rollout. GRPO advantages and the sampled-action
+The main recipes use one training rank: one GPU shared with inference for
+synchronous training, or a separate inference GPU for async training. Optional
+data parallelism launches one rank per configured training GPU; keep public
+recipe layouts within four GPUs total. The 256 candidates of a 32-prompt,
+eight-candidate rollout are divided across the configured ranks. GRPO advantages and the sampled-action
 token denominator are computed on the complete batch before sharding.
 
 `distributed_strategy: ddp` uses PyTorch DDP. Gradients accumulate under

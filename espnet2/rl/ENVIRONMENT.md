@@ -53,7 +53,8 @@ without inherited `RANK`, `LOCAL_RANK`, `WORLD_SIZE`, `LOCAL_WORLD_SIZE`,
 Invoke the async driver with Python, outside torchrun. The public driver connects
 to the supplied Ray cluster; it does not clean or restart existing Ray daemons.
 Training actors write rank/master identity only in their own processes and are
-bound to a different node from rollout tasks. Independent rollout children clear
+bound to GPUs distinct from rollout tasks. The roles may use the same Ray
+node when it exposes both GPUs, or two separate one-GPU nodes. Independent rollout children clear
 the full torchrun identity, including `TORCHELASTIC_USE_AGENT_STORE`, before
 starting their own inference rendezvous.
 
@@ -100,8 +101,10 @@ audio-conditioned sequences have no successful-gradient acceptance from the
 TTS Torch 2.13 run. The independently frozen QA006 native learner also used
 Torch 2.11.0+cu130 and Transformers 5.12.1, completing four optimizer updates;
 its complete checkpoint audit and fresh final evaluation subsequently passed.
-The official local MMAU score remained 0/32 before and after; this historical
-small-batch result does not validate the new 32×8 profiles.
+The historical local MMAU 0/32 score used a flawed whole-response parser;
+it is not a model-capability result. Later reparsing of saved outputs is a
+diagnostic, not a new generation or quality-gain result. Neither validates
+the new 32×8 profiles.
 Keep each run's actual interpreter and package paths with its frozen
 configuration rather than assuming every family used one profile.
 Native Torch 2.13 and Torchaudio 2.11 came from the existing host environment;

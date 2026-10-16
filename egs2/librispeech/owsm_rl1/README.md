@@ -1,21 +1,18 @@
 # LibriSpeech OWSM Miles post-training
 
-This recipe adds WER GRPO after an existing autoregressive OWSM checkpoint.
-The shared training stage imports a pinned Miles library; all OWSM model code,
-checkpoint adaptation and rollout hooks live in `espnet2/s2t/rl/`.
+This recipe adds a WER GRPO stage to an existing autoregressive OWSM checkpoint.
+It imports Miles as a pinned optional library; OWSM policy, export, rollout and
+evaluation adapters live in `espnet2/s2t/rl/`.
 
-The five-update 32×8 profiles are `conf/rl_miles_wer_collocate.yaml` and
-`conf/rl_miles_wer_disagg_async.yaml`; select one explicitly with `--config`.
-The original smaller synchronous YAML keeps its own declared budget. The
-checked native source environment pins Miles
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`; async uses the original Miles loop
-with native ESPnet component factories. See
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for the
-complete 32×8 data-admission and launch commands. The example below describes
-the earlier small synchronous stage.
+The default is **one H100**, with the learner and a persistent SGLang engine
+sharing GPU 0. `conf/rl_miles_wer_disagg_async.yaml` uses **two H100s**, one for
+the learner and one for rollout, driven by Miles' async loop. Both optimize
+32 prompts × 8 candidates per update. The YAML files are relative symlinks to
+the canonical profiles in the OWSM recipe. Public recipes focus on one and two
+GPUs; custom layouts should stay within four GPUs.
 
-Prepare LibriSpeech with the existing `egs2/librispeech/asr1` data stage, then:
+Prepare LibriSpeech with the existing `egs2/librispeech/asr1` data stage. From
+this directory, select explicit model and environment paths:
 
 ```bash
 ./run.sh \
@@ -27,64 +24,44 @@ Prepare LibriSpeech with the existing `egs2/librispeech/asr1` data stage, then:
   --rollout-python /path/to/optional-sglang-env/bin/python \
   --sglang-source /path/to/pinned-sglang-fork \
   --miles-source /path/to/pinned-miles-library \
-  --device cuda:0 --reference-device cuda:1 --rollout-gpus 2
+  --steps 5
 ```
 
-The same stage is available from the existing OWSM recipe:
-`bash egs2/owsm_v4/s2t1/run.sh --stage 18` with the arguments above. `wav.scp` and
-`text` must contain the same utterance IDs. Reference text is required to
-compute WER; the audio waveform itself cannot supply a supervised reference.
-Preparation creates an audited manifest and training freezes its config.
+For two-GPU async, add `--config conf/rl_miles_wer_disagg_async.yaml`,
+`--ray-address auto --train-node RAY_NODE_IP --rollout-node RAY_NODE_IP`
+with a dedicated Ray cluster exposing both GPUs. The templates default to five updates. Increase `steps` in the selected
+YAML for a deliberate longer run. Data preparation accepts user `wav.scp` and `text` files with
+matching utterance IDs. Text provides the reference for WER. Preparation
+writes an audited manifest and training freezes the effective configuration.
 
-The first SGLang implementation executes the exact native ESPnet encoder and
-recomputes the decoder prefix within the SGLang model runner. SGLang schedules
-requests, samples tokens and returns actual action log probabilities. Requests
-carry the real decoder prefix; each request ID names its audio source, which the
-model reads from the rollout's source file. One engine per rollout GPU lives for
-the whole run and loads every update's export in place. TP=1, FP32, disabled
-radix cache, full prefill and disabled CUDA graphs are required.
-This implementation has lower decoding throughput than the earlier vLLM KV
-implementation. OWSM-CTC requires a separate non-autoregressive policy.
+The same entry is available as stage 18 of the existing OWSM recipe:
+`bash egs2/owsm_v4/s2t1/run.sh --stage 18` with the same arguments. See the
+[stage documentation](../../owsm_v4/s2t1/README.md#optional-miles-rl-stage) and
+[shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for combined
+supervised/RL stages, environment pins and data admission.
 
-Checkpoint synchronization, native versus rollout probability checks,
-optimizer updates, native checkpoints and all WER outcomes are retained in
-`--work-dir`. A short engineering run establishes pipeline correctness;
-quality improvement needs a separately budgeted full training/evaluation run.
+`OWSMEngine` keeps the SGLang model loaded across updates and loads each native
+export in place. ESPnet owns the encoder-decoder policy, scoring and optimizer;
+SGLang owns scheduling and sampling. The training directory retains sampled
+actions, probability checks, rewards, native checkpoints and metrics.
+OWSM-CTC requires a separate non-autoregressive policy.
 
-Two-update engineering acceptance and heldout results are recorded in
-[RESULTS.md](RESULTS.md). For independent native greedy heldout evaluation:
+Use a disjoint manifest for independent native greedy evaluation:
 
 ```bash
-python -m espnet2.s2t.rl.evaluate --config exp/owsm_miles_wer/rl_config.yaml \
-  --checkpoint exp/owsm_miles_wer/train/step-000002.native.pth \
+python -m espnet2.s2t.rl.evaluate \
+  --config exp/owsm_miles_wer/rl_config.yaml \
+  --checkpoint exp/owsm_miles_wer/train/step-000005.native.pth \
   --manifest /path/to/disjoint-heldout.jsonl --output heldout.json
 ```
 
-An explicit optional vLLM backend is configured by
-`egs2/owsm_v4/s2t1/conf/rl_miles_wer_vllm.yaml`. It uses
-`espnet2.s2t.rl.vllm_rollout:generate`; request preparation is a separate
-function and exports the native OWSM encoder-decoder format. Set `vllm_source`
-and `rollout_python` to the previously validated ESPnet vLLM fork and its
-inference environment. The default recipe and 2026-10-14 training acceptance
-use SGLang. The optional vLLM adapter also passed real engine generation on two
-LibriSpeech prompts with two candidates each; its maximum native action-logprob
-error was 0.00015927. This was a backend check, with no vLLM optimizer update.
+The historical two-update engineering result is retained in
+[RESULTS.md](RESULTS.md). A completed optimizer loop establishes engineering
+correctness; it does not by itself establish a WER improvement.
 
-To select that backend from the existing stage, copy the vLLM template into
-`/path/to/rl_miles_wer_vllm.yaml`, set its `vllm_source` to the reviewed ESPnet
-vLLM checkout, then run from this recipe directory:
-
-```bash
-./run.sh --config /path/to/rl_miles_wer_vllm.yaml \
-  --wav-scp ../asr1/data/train_clean_100/wav.scp \
-  --text ../asr1/data/train_clean_100/text \
-  --train-config /path/to/owsm/config.yaml --checkpoint /path/to/owsm/checkpoint.pth \
-  --work-dir exp/owsm_miles_wer_vllm \
-  --rollout-python /path/to/validated-vllm-env/bin/python \
-  --miles-source /path/to/pinned-miles-library \
-  --device cuda:0 --reference-device cuda:1 --rollout-gpus 2
-```
-
-`vllm_source` is a YAML field; the stage wrapper accepts `--config` and
-`--rollout-python` but has no `--vllm-source` option. Keep the vLLM interpreter
-and source separate from the default SGLang environment.
+An explicit optional vLLM backend remains in
+`egs2/owsm_v4/s2t1/conf/rl_miles_wer_vllm.yaml`. Set that YAML's `vllm_source`
+and `rollout_python` to the reviewed ESPnet vLLM fork and its environment,
+then pass `--config /path/to/rl_miles_wer_vllm.yaml`. The wrapper has no
+`--vllm-source` option. This backend also declares 32×8 candidates per update; its GPU
+training acceptance is separate from the SGLang profiles.

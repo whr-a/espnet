@@ -67,11 +67,14 @@ def verify_data_admission(config, path):
     manifests = {"train": config.manifest, "heldout": config.eval_manifest}
     splits = {}
     for role, manifest in manifests.items():
-        if sha256(manifest) not in set(recorded.values()):
+        # Earlier 32-prompt receipts called the training manifest "train32".
+        # Keep that format readable while binding each hash to its own role.
+        expected = recorded.get(role)
+        if role == "train" and expected is None:
+            expected = recorded.get("train32")
+        if sha256(manifest) != expected:
             raise ValueError(f"The {role} manifest differs from its admission")
         splits[role] = read_manifest(manifest)
-    # Required, and per role: without it the two manifests could be swapped
-    # and the receipt would still match on hashes alone.
     if admission.get("counts") != {role: len(rows) for role, rows in splits.items()}:
         raise ValueError("Manifest record counts differ from the admission")
     media = {}

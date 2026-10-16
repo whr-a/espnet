@@ -406,22 +406,38 @@ shared output paths.
 
 ## Optional Miles RL stage
 
-Explicitly select `conf/rl_collocate.yaml` / `conf/rl_disagg_async.yaml`, or the
-corresponding `rl_think_*` files, for five updates of 32 prompts × 8 candidates.
-The earlier `conf/rl.yaml` / `conf/rl_think.yaml` keep their declared budgets.
-The checked native source environment pins Miles
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
-`283d68c8bff309a42476c95f7c71dad895d09da6`. Async uses the original Miles loop
-with native ESPnet component factories; collocate uses four native ranks and
-four independent rollout GPUs. See
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for installation,
-data admission and exact Ray node arguments.
+The default `conf/rl.yaml` (also `conf/rl_collocate.yaml`) shares **one H100
+80 GB** between the BF16 learner and a persistent SGLang engine.
+`conf/rl_disagg_async.yaml` uses **two H100s**, one learner GPU and one rollout
+GPU, with Miles' original async loop. Both templates use five updates of
+32 prompts × 8 candidates; scoring micro-batches and gradient accumulation
+keep that batch independent of GPU count. Custom layouts should use at most
+four GPUs.
+
+Reference scoring and AdamW run on CPU; Adam retains FP32 master weights.
+Allow substantial host memory (about 192 GB for an 8B model and its CPU
+optimizer/reference) and preserve the native model's activation checkpointing.
+The one-GPU engine limits concurrent requests and shares the remaining memory
+with training. These low-resource Bagpiper templates have CPU configuration
+checks only: the exact one-/two-GPU settings still require a GPU acceptance
+run. Historical FP32 engineering results do not validate these BF16 layouts.
+
+Miles is an unmodified optional library pinned to
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See the
+[shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for environment
+installation, audited data and launch options. Historical larger layouts stay
+in their frozen experiment records and are not the public recipe defaults.
 
 The existing stages remain the default. `run.sh --stage 6` selects an optional
 post-training stage using a pinned Miles library and SGLang rollout. Architecture
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
 or vendored. Set the pretrained checkpoint, original training YAML, token assets,
 codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
+Use the checkpoint's original SFT model configuration, set
+`model.activation_checkpointing: true`, and inspect its `trainer.freeze_param`
+list. The supervised warmup `conf/train.yaml` freezes decoder layers and is
+not a suitable default for full-decoder RL. Preserve the original modality order
+and model geometry when making the checkpointing-only configuration copy.
 
 ```bash
 ./run.sh --stage 6 --data-input /path/to/avqa --rl-config conf/rl.yaml
@@ -436,7 +452,7 @@ and pass `--rl-config`, with `--rl-data-input` or `--rl-wav-scp`/`--rl-text`.
 To reuse a prepared dataset, pass `--rl-manifest`; this skips preparation when no
 new RL data is supplied. Each RL run starts from the explicit native checkpoint
 in its YAML and writes a fresh output directory.
-Both QA RL templates default to `exp/sft/export/model.pt`, the existing stage 4
+The QA RL templates default to `exp/sft/export/model.pt`, the existing stage 4
 export destination. If a preceding stage uses a different `--sft-output-dir` or
 `--export-path`, set `checkpoint` in the selected RL YAML to that exact exported
 file before starting the combined run. The RL stage reads the checkpoint
@@ -492,8 +508,8 @@ python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
     --output data/rl/mmau.jsonl --task qa
 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
     --config exp/rl/frozen_config.json --manifest data/rl/mmau.jsonl \
-    --checkpoint exp/rl/step-000050.native.pth --policy-step 50 \
-    --output exp/rl/mmau-050
+    --checkpoint exp/rl/step-000005.native.pth --policy-step 5 \
+    --output exp/rl/mmau-005
 ```
 
 Each evaluation writes `items.jsonl` (response, both extracted answers and
@@ -523,8 +539,9 @@ vectorised head under each frame's recorded support; in FP32 a batch differs
 from scoring each candidate alone by up to about 1e-4, cuBLAS rounding GEMMs by
 their row count. Native layer and score-block recomputation use the same
 matrix shapes during backward; the objective and sampled actions remain
-unchanged. The FP32 prototype requires three 80 GB GPUs with optimizer state on
-CPU; its initial acceptance configuration uses one sample per scoring forward.
+unchanged. The historical FP32 prototype used three GPUs; current low-resource
+templates use BF16 with CPU reference and optimizer state. Their end-to-end
+acceptance remains pending, so no quality improvement is claimed.
 
 `conf/rl_think.yaml` is a separate WEST think profile for the native SFT's
 caption, reasoning and answer output. Its reward is exactly WEST's
@@ -538,9 +555,9 @@ and both format terms separately; format reward by itself is not QA improvement.
     --qa-template think --rl-config conf/rl_think.yaml
 ```
 
-Freeze each protocol before running it. The small think verification profile
-uses four updates, two prompts per update and four candidates, covering all
-eight prepared AVQA prompts in order once. A default-format result remains a
+Freeze each protocol before running it. The current think templates use the
+same five updates of 32 prompts × 8 candidates and one-/two-GPU layouts as the
+default QA templates. Prepare enough distinct prompts for the configured run. A default-format result remains a
 result of its original protocol; changing to think mode creates a new run and
 a new prepared manifest. Use a separately prepared think MMAU manifest for the
 matching held-out evaluation.
