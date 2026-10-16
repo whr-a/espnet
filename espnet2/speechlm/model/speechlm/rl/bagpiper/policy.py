@@ -17,7 +17,7 @@ The current SpeechLM training forward returns fused scalar CE, which is not a
 per-action RL interface. This wrapper retains its embeddings, audio encoder,
 transformer, stream offsets and output projection, and exposes differentiable
 log probabilities of the actions a Bagpiper rollout sampled, every frame under
-the support the rollout recorded.
+the support the rollout recorded and every stream at its sampling temperature.
 """
 
 from contextlib import contextmanager
@@ -28,7 +28,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
-from espnet2.rl.types import TokenScores
+from espnet2.rl.types import TokenScores, tempered
 
 from .tokens import SUPPORTS, frame_supports, support_masks
 
@@ -109,10 +109,10 @@ class NativeSpeechLMPolicy(nn.Module):
     Batch contract follows espnet2.rl.batch.RolloutBatch, with the actions and
     sampling masks of every stream (responses, response_stream_mask [B,T,Q]).
     Each source carries its rollout's per-frame ``support``, its uniform
-    ``sampling_contract`` and the recipe's prompt features
-    (``native_model_inputs``). Prompts must have exactly the same multimodal
-    token expansion as SGLang; silently re-tokenizing the audio would change
-    the policy.
+    ``sampling_contract`` (every stream's whole support at ``temperature``)
+    and the recipe's prompt features (``native_model_inputs``). Prompts must
+    have exactly the same multimodal token expansion as SGLang; silently
+    re-tokenizing the audio would change the policy.
     """
 
     def __init__(
@@ -124,6 +124,7 @@ class NativeSpeechLMPolicy(nn.Module):
         score_checkpointing=True,
         activation_cpu_offload=False,
         support_mismatch_rate=1e-3,
+        temperature=1.0,
     ):
         super().__init__()
         self.model = model
@@ -149,6 +150,8 @@ class NativeSpeechLMPolicy(nn.Module):
         # rate (espnet2.rl.scoring); the reference only counts.
         self.support_mismatch_rate = support_mismatch_rate
         self.support_mismatches = self.support_frames = 0
+        # Every stream is sampled from softmax(logits / temperature).
+        self.temperature = temperature
         # The primary ids every support allows, [len(SUPPORTS), vocab].
         weight = core.lm_head.weight
         self.register_buffer(
@@ -198,9 +201,13 @@ class NativeSpeechLMPolicy(nn.Module):
             # One contract covers every stream of every frame.
             contract = source.get("sampling_contract") or {}
             top_k = contract.get("top_k", 0)
-            if contract.get("temperature") != 1.0 or 0 < top_k < self.allowed.shape[1]:
+            if (
+                contract.get("temperature") != self.temperature
+                or 0 < top_k < self.allowed.shape[1]
+            ):
                 raise ValueError(
-                    "Bagpiper native RL requires untruncated unit-temperature sampling"
+                    "Bagpiper rollouts must sample every stream's whole support at "
+                    f"the policy's temperature {self.temperature}"
                 )
             support = source.get("support")
             if support is None or len(support) != length:
@@ -429,7 +436,10 @@ class NativeSpeechLMPolicy(nn.Module):
         cfg, core = self.bagpiper_config, self.core
         weight, bias = core.lm_head.weight, core.lm_head.bias
         raw = F.linear(hidden, weight, bias)
-        logits = raw.float().masked_fill(~self.allowed[support], -torch.inf)
+        logits = tempered(
+            raw.float().masked_fill(~self.allowed[support], -torch.inf),
+            self.temperature,
+        )
         finite = torch.isfinite(logits)
         dist = logits.log_softmax(-1)
         sampled = active[:, 0]
@@ -447,7 +457,7 @@ class NativeSpeechLMPolicy(nn.Module):
                     weight[lo : lo + size],
                     None if bias is None else bias[lo : lo + size],
                 )
-                scores = scores.float().log_softmax(-1)
+                scores = tempered(scores.float(), self.temperature).log_softmax(-1)
                 target = labels[codec_rows, stream : stream + 1] - lo
                 column = column.index_copy(
                     0, codec_rows, scores.gather(-1, target)[:, 0]
@@ -733,6 +743,7 @@ def factory(config, device):
             "activation_cpu_offload", False
         ),
         support_mismatch_rate=config.adapter_options.get("support_mismatch_rate", 1e-3),
+        temperature=config.temperature,
     )
 
 

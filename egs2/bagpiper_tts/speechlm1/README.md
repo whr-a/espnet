@@ -406,7 +406,8 @@ recomputes native decoder layers and 32-token score blocks in evaluation mode.
 Prepare a separate held-out LibriTTS split and evaluate a native checkpoint
 with it; the evaluator exports the checkpoint and decodes every prompt with the
 recipe's rollout engine (greedy and 2,048 new tokens by default;
-`--temperature 1 --samples 8` samples the RL policy instead):
+`--temperature 1 --samples 8`, the recipe's temperature, samples the RL policy
+instead):
 
 ```bash
 PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \

@@ -45,8 +45,10 @@ class BagpiperEngine(SGLangRolloutEngine):
     )
 
     def __init__(self, config, model_path, *, directory, replica=0):
-        # Read when SGLang's scheduler imports its sampler: the primary log
-        # probability of the support distribution itself, before temperature.
+        # Read when SGLang's scheduler imports its sampler. The model divides
+        # the logits by the temperature itself and SGLang samples them at 1,
+        # so this is the primary's log_softmax of exactly those logits, as the
+        # learner computes it, rather than the log of their softmax.
         os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
         if config.dtype == "float32":
             # Triton's TF32 default puts float32 attention at the drift gate.
@@ -96,19 +98,23 @@ class BagpiperEngine(SGLangRolloutEngine):
     def generate(self, sources, rollout_id, sampling=None):
         """Return ``group_size`` generations per source, in source order.
 
-        RL samples every stream at unit temperature from its full support.
-        ``sampling`` overrides that for evaluation only: ``temperature`` (0 is
-        greedy in every stream), ``max_new_tokens`` and ``samples`` per source.
+        RL samples every stream from its full support at the recipe's
+        temperature. ``sampling`` overrides that for evaluation only:
+        ``temperature`` (0 is greedy in every stream, at most 1),
+        ``max_new_tokens`` and ``samples`` per source.
         """
         sampling = {
-            "temperature": 1.0,
+            "temperature": self.config.temperature,
             "max_new_tokens": self.config.max_tokens,
             "samples": self.config.group_size,
             **(sampling or {}),
         }
-        if set(sampling) != {"temperature", "max_new_tokens", "samples"}:
+        if set(sampling) != {"temperature", "max_new_tokens", "samples"} or not (
+            0 <= sampling["temperature"] <= 1
+        ):
             raise ValueError(
-                "Bagpiper sampling overrides temperature, max_new_tokens, samples"
+                "Bagpiper sampling overrides temperature (0 to 1), max_new_tokens, "
+                "samples"
             )
         _, prefixes = request_factory(self.config, self.model_path, sources)
         group = sampling["samples"]
@@ -158,7 +164,8 @@ class BagpiperEngine(SGLangRolloutEngine):
             ],
             sampling_params=[
                 dict(
-                    temperature=sampling["temperature"],
+                    # The model already divided the logits by the temperature.
+                    temperature=1.0 if sampling["temperature"] else 0.0,
                     top_p=1.0,
                     top_k=-1,
                     min_p=0.0,

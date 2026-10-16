@@ -426,12 +426,11 @@ def request_factory(config, hf_dir, sources):
         source["mode"] = (
             "text_audio" if source.get("task") == "tts_asr_wer" else "text_only"
         )
+        # The temperature is the rollout's sampling_contract.
         source["sampling_extra_args"] = {
             "mode": source["mode"],
             "phase": "text",
             "cfg": 1.0,
-            "text_temperature": 1.0,
-            "audio_temperature": 1.0,
             "audio_topk": 0,
         }
         requests.append({"prompt_token_ids": [frame[0] for frame in prefix]})

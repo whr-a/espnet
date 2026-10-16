@@ -518,10 +518,10 @@ per-category results and the checkpoint, manifest and config hashes), and its
 own completion status and failure traceback. The evaluator rejects
 training/held-out ID overlap and requires the export to match every native
 tensor except the nonpolicy `vocab_weight`. `--temperature 1 --samples 4
---verify-native` instead samples the RL policy and verifies every sampled
-action's probability against the native checkpoint. `--responses` scores
-existing outputs again without generation under the sampling and audio cut
-they were decoded with; give the saved `policy_step`.
+--verify-native` (the recipe's `temperature`) instead samples the RL policy and
+verifies every sampled action's probability against the native checkpoint.
+`--responses` scores existing outputs again without generation under the
+sampling and audio cut they were decoded with; give the saved `policy_step`.
 Relative config paths resolve from the command's current directory, so run
 from the original recipe or freeze absolute paths.
 

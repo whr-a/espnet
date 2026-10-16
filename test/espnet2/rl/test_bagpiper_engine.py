@@ -13,7 +13,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.layers import sampler as sglang_sampler
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput
+from sglang.srt.layers.logprob_processor import OutputLogprobProcessor
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
+from sglang.srt.sampling.sampling_params import TOP_K_ALL, SamplingParams
+from sglang.srt.utils.common import get_bool_env_var
 from torch import nn
 from transformers import Qwen3Config
 
@@ -512,10 +517,36 @@ def native(tmp_path):
     return core, export
 
 
+def sglang_sample(logits, params):
+    """SGLang's own sampler on one batch: the sampled ids and the log
+    probabilities it returns for them."""
+    requests = [SamplingParams(**p) for p in params]
+    sampler = sglang_sampler.Sampler.__new__(sglang_sampler.Sampler)
+    nn.Module.__init__(sampler)
+    sampler.rl_on_policy_target = None
+    sampler.enable_deterministic = sampler.use_log_softmax_logprob = False
+    sampler.use_ascend_backend = False
+    sampler.output_logprob_processor = OutputLogprobProcessor()
+    info = SimpleNamespace(
+        temperatures=torch.tensor([[r.temperature] for r in requests]),
+        is_all_greedy=all(r.top_k <= 1 for r in requests),
+        need_top_p_sampling=any(r.top_p != 1 for r in requests),
+        need_top_k_sampling=any(r.top_k != TOP_K_ALL for r in requests),
+        need_min_p_sampling=any(r.min_p > 0 for r in requests),
+        has_custom_logit_processor=False,
+        return_sampling_masks=None,
+        sampling_seed=None,
+        grammars=None,
+    )
+    output = LogitsProcessorOutput(next_token_logits=logits)
+    ids = sampler(output, info, True, [0] * len(params), [None] * len(params), None)
+    return ids.tolist(), output.next_token_logprobs.tolist()
+
+
 class FakeEngine:
     """sglang.Engine for CPU tests: schedules the Bagpiper model like SGLang
     (new requests prefilled together, then decoded together; a finished
-    request's slot is reused) and samples the primary from its logits."""
+    request's slot is reused) and samples the primary with SGLang's sampler."""
 
     core = None
     running = 3
@@ -524,6 +555,10 @@ class FakeEngine:
 
     def __init__(self, **settings):
         self.settings = settings
+        # The scheduler reads this once, when it imports its sampler.
+        sglang_sampler.SGLANG_RETURN_ORIGINAL_LOGPROB = get_bool_env_var(
+            "SGLANG_RETURN_ORIGINAL_LOGPROB"
+        )
         overrides = json.loads(settings["json_model_override_args"])
         directory = Path(overrides["espnet_rollout_sources"]).parent
         self.model = engine_model(
@@ -546,6 +581,7 @@ class FakeEngine:
         }
 
     def generate(self, input_ids, sampling_params, rid, **kwargs):
+        self.params = sampling_params
         waiting = list(zip(rid, input_ids, sampling_params))
         free, running, results = [1, 2, 3], {}, {}
         while waiting or running:
@@ -570,18 +606,14 @@ class FakeEngine:
                     ForwardMode.DECODE, names, [running[n]["slot"] for n in names]
                 )
             output = self.model(inputs, None, forward_batch)
-            logits = output.next_token_logits
+            tokens, logprobs = sglang_sample(
+                output.next_token_logits, [running[n]["params"] for n in names]
+            )
             for row, name in enumerate(names):
-                params = running[name]["params"]
-                if params["temperature"] == 0:
-                    token = int(logits[row].argmax())
-                else:
-                    token = int(torch.multinomial(logits[row].softmax(-1), 1))
+                params, token = running[name]["params"], tokens[row]
                 result = results[name]
                 result["output_ids"].append(token)
-                result["logprobs"].append(
-                    (float(logits[row].log_softmax(-1)[token]), token, None)
-                )
+                result["logprobs"].append((logprobs[row], token, None))
                 result["trace"].append(output.customized_info["espnet_bagpiper"][row])
                 stop = token in params["stop_token_ids"]
                 if stop or len(result["output_ids"]) == params["max_new_tokens"]:
@@ -635,6 +667,7 @@ def fake_sglang(native, monkeypatch):
     for name in ("SGLANG_RETURN_ORIGINAL_LOGPROB", "TRITON_F32_DEFAULT"):
         monkeypatch.delenv(name, raising=False)  # restored after the test
     monkeypatch.delenv("NVIDIA_TF32_OVERRIDE", raising=False)
+    monkeypatch.setattr(sglang_sampler, "SGLANG_RETURN_ORIGINAL_LOGPROB", False)
     monkeypatch.setattr(sglang, "Engine", FakeEngine)
     monkeypatch.setattr(
         transformers.AutoTokenizer,
@@ -661,21 +694,31 @@ def build_engine(native, tmp_path, monkeypatch, **overrides):
     return rollout_module.BagpiperEngine(config, native[1], directory=directory)
 
 
+@pytest.mark.parametrize("temperature", [1.0, 0.7])
 def test_records_are_scored_by_the_learner_under_their_supports(
-    native, tmp_path, monkeypatch
+    native, tmp_path, monkeypatch, temperature
 ):
     core, _ = native
-    engine = build_engine(native, tmp_path, monkeypatch)
+    engine = build_engine(native, tmp_path, monkeypatch, temperature=temperature)
     settings = engine.engine.settings
     assert settings["dtype"] == "float32" and settings["attention_backend"] == "triton"
     assert settings["chunked_prefill_size"] == -1 and settings["skip_tokenizer_init"]
     assert settings["disable_radix_cache"] and settings["disable_overlap_schedule"]
     sources = rollout_sources()
-    torch.manual_seed(0)
+    torch.manual_seed(2)  # candidates that pass every support at both temperatures
     generations = engine.generate(sources, 7)
     assert [g["source_id"] for g in generations] == ["qa"] * 4 + ["tts"] * 4
-    assert (tmp_path / "replica-0" / "sources.pt").is_file()
+    # The model divides every stream's logits by T; SGLang samples them at its
+    # own temperature 1 and returns their log_softmax.
+    prepared = torch.load(tmp_path / "replica-0" / "sources.pt", weights_only=True)
+    assert prepared["temperature"] == temperature
+    assert {params["temperature"] for params in engine.engine.params} == {1.0}
+    assert sglang_sampler.SGLANG_RETURN_ORIGINAL_LOGPROB
     for generation in generations:
+        assert generation["sampling_contract"] == {
+            "temperature": temperature,
+            "top_k": 0,
+        }
         frames = len(generation["token_ids"])
         assert len(generation["support"]) == frames == len(generation["log_probs"])
         assert generation["finish_reason"] in ("stop", "length")
@@ -691,7 +734,11 @@ def test_records_are_scored_by_the_learner_under_their_supports(
     assert {TEXT, CODEC, ASSISTANT, EOS} <= supports
     batch_ = collate_rollouts(sources, generations, 4)
     policy = NativeSpeechLMPolicy(
-        core, token_chunk_size=4, bagpiper_config=GEOMETRY, score_checkpointing=False
+        core,
+        token_chunk_size=4,
+        bagpiper_config=GEOMETRY,
+        score_checkpointing=False,
+        temperature=temperature,
     )
     with torch.no_grad():
         scores = policy(batch_)
@@ -705,6 +752,17 @@ def test_records_are_scored_by_the_learner_under_their_supports(
         values = torch.tensor(generation["stream_log_probs"])
         recorded[row, : len(values)] = values
     torch.testing.assert_close(scores.stream_log_probs, recorded, atol=1e-4, rtol=0)
+    # At unit temperature every stream's actions have other probabilities.
+    unit = {"temperature": 1.0, "top_k": 0}
+    untempered = collate_rollouts(
+        sources, [{**g, "sampling_contract": unit} for g in generations], 4
+    )
+    with torch.no_grad():
+        other = NativeSpeechLMPolicy(core, GEOMETRY, score_checkpointing=False)(
+            untempered
+        )
+    gaps = (other.stream_log_probs - recorded).abs().flatten(0, 1).max(0).values
+    assert ((gaps < 1e-4) if temperature == 1 else (gaps > 1e-2)).all()
     # The update pass scores under the same recorded supports with gradients.
     policy.score_checkpointing = True
     policy(batch_).log_probs.sum().backward()

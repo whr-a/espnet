@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bagpiper's native multi-stream policy on SGLang's own Qwen3 layers.
 
-RadixAttention over the paged KV pool, many requests in flight. SGLang samples
-the primary stream from logits masked to each frame's support; this model
-samples the seven secondary codec streams, with the categorical rules the
-learner scores. Request IDs are ``batch:source:sample``; the batch's prepared
-sources (native prompt frames, mode, mel features, secondary temperature) are
+RadixAttention over the paged KV pool, many requests in flight. Every stream's
+logits are divided by the batch's temperature here; SGLang samples the primary
+stream from them, masked to each frame's support, at its own temperature 1,
+and this model samples the seven secondary codec streams, with the categorical
+rules the learner scores. Request IDs are ``batch:source:sample``; the batch's
+prepared sources (native prompt frames, mode, mel features, temperature) are
 read from the ``torch.save`` file named by ``espnet_rollout_sources``, which
 BagpiperEngine rewrites before every batch. Per-request decoding state lives in
 GPU tables indexed by the SGLang request-pool slot. Every frame returns its
@@ -34,6 +35,8 @@ from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
 from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
     Qwen3OmniMoeAudioEncoder,
 )
+
+from espnet2.rl.types import tempered
 
 from .tokens import frame_supports, next_phase, support_masks
 
@@ -255,8 +258,8 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
             if self.temperature == 0:
                 choice = logits.argmax(-1)
             else:
-                probabilities = (logits / self.temperature).softmax(-1)
-                choice = torch.multinomial(probabilities, 1)[:, 0]
+                logits = tempered(logits, self.temperature)
+                choice = torch.multinomial(logits.softmax(-1), 1)[:, 0]
             ids.append(choice + lo)
             log_probs.append(logits.log_softmax(-1).gather(-1, choice[:, None])[:, 0])
         return torch.stack(ids, -1), torch.stack(log_probs, -1)
@@ -271,6 +274,8 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
         active = (allowed & torch.isfinite(raw)).sum(-1) > 1
         # A fresh tensor: SGLang's sampler softmaxes it in place.
         logits = raw.float().masked_fill(~allowed, -torch.inf)
+        if self.temperature:  # 0 decodes greedily
+            logits = tempered(logits, self.temperature)
         flags = torch.stack((support, active.long(), codec.long()), -1).tolist()
         rows = [row[:2] for row in flags]
         if self.codec:

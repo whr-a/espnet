@@ -7,8 +7,9 @@ The evaluated checkpoint is exported and loaded into the recipe's
 decode_mmau.py: greedy decoding of up to 2,048 new tokens, every clip cut to
 its first 30 s, and the official MMAU matcher applied to WEST's extraction and
 to the v1 reward's. TTS prompts are scored with the training reward's ASR WER.
-A sampled evaluation (temperature 1) can also verify every action's probability
-against the native checkpoint; a greedy decode is not a sampled policy.
+An evaluation sampled at the recipe's temperature can also verify every action's
+probability against the native checkpoint; a greedy decode is not a sampled
+policy.
 """
 
 import argparse
@@ -326,8 +327,11 @@ def run(args):
     manifest = args.manifest or cfg.eval_manifest
     if not manifest:
         raise ValueError("Set a separate held-out eval_manifest or --manifest")
-    if args.verify_native and args.temperature != 1.0:
-        raise ValueError("Only sampled actions have native probabilities to verify")
+    if args.verify_native and args.temperature != cfg.temperature:
+        raise ValueError(
+            "Only sampled actions have native probabilities to verify, at the "
+            f"recipe's temperature {cfg.temperature}"
+        )
     sources = read_manifest(manifest)
     validate_manifests(read_manifest(cfg.manifest), sources)
     task = sources[0]["task"]

@@ -115,8 +115,9 @@ def test_repeated_or_empty_device_lists_are_rejected(name):
 
 
 def test_actions_are_sampled_from_their_whole_support_at_most_at_unit_temperature():
-    for temperature in (0.7, 1, 1.0):
-        configuration(family="owsm", temperature=temperature).validate()
+    for family in ("owsm", "bagpiper"):
+        for temperature in (0.7, 1, 1.0):
+            configuration(family=family, temperature=temperature).validate()
     for changes in (
         {"temperature": 0.0},
         {"temperature": -0.7},

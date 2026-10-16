@@ -183,11 +183,17 @@ def test_inactive_codec_stream_preserves_zero_gradient_and_adam_state():
 
 
 @pytest.mark.parametrize(
-    "contract",
-    [None, {"temperature": 0.5, "top_k": 0}, {"temperature": 1.0, "top_k": 3}],
+    "temperature, contract",
+    [
+        (1.0, None),
+        (1.0, {"temperature": 0.5, "top_k": 0}),
+        (1.0, {"temperature": 1.0, "top_k": 3}),
+        (0.7, {"temperature": 1.0, "top_k": 0}),
+    ],
 )
-def test_scoring_rejects_a_changed_sampling_contract(contract):
+def test_scoring_rejects_a_changed_sampling_contract(temperature, contract):
     policy = text_only_policy()[0]
+    policy.temperature = temperature
     generation = dict(
         source_id="u",
         prompt_token_ids=[[1, 0, 0, 0]],
@@ -198,7 +204,7 @@ def test_scoring_rejects_a_changed_sampling_contract(contract):
         **({} if contract is None else {"sampling_contract": contract}),
     )
     batch = collate_rollouts([{"id": "u"}], [generation] * 2, 2)
-    with pytest.raises(ValueError, match="untruncated unit-temperature"):
+    with pytest.raises(ValueError, match="whole support at the policy's temperature"):
         policy(batch)
 
 

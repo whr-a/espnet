@@ -89,13 +89,19 @@ validation keeps every other family, and the vLLM backend, whose frozen
   `SGLANG_RETURN_ORIGINAL_LOGPROB=1`, which returns log softmax(z), the one
   before it. The scheduler reads the variable when it imports its sampler, so
   every engine sets it before starting SGLang instead of inheriting it. OWSM
-  sets it to 0 and lets SGLang sample at T.
+  sets it to 0 and lets SGLang sample at T. Bagpiper's model divides every
+  stream's logits by T itself; SGLang samples the primary from them at its own
+  temperature 1 and, with the variable at 1, returns log_softmax of exactly
+  those logits; the model samples and scores the secondary streams the same
+  way. Every Bagpiper generation records
+  `sampling_contract = {"temperature": T, "top_k": 0}`.
 - **Learner.** Every pass computes log_softmax(z / T)[a] of the recorded
   actions: the current (old) scores, the async behavior snapshot's, the
   reference's and the update's forward. The FP32 logits are divided as
   `espnet2.rl.types.tempered` divides them: not at all at T = 1, otherwise by
   a tensor, which matches SGLang's division bit for bit. Gradients flow
-  through z / T.
+  through z / T. Bagpiper scores under the recorded supports and rejects a
+  record whose contract names another temperature.
 - **KL.** `kl_type` is estimated on the sampled actions from log π_T −
   log π_ref,T, the reference being the frozen initial policy at the same
   temperature: the KL between the two tempered policies.
@@ -110,7 +116,9 @@ validation keeps every other family, and the vLLM backend, whose frozen
 - At T = 1 nothing is divided and every engine returns the log probabilities
   it returned before, so existing recipes' numerics are unchanged.
 
-A greedy decode (temperature 0) samples no π_T. WEST's GRPO samples at 0.7
-(`examples/grpo/run.sh`) but scores the untempered log_softmax(z)
-(`west/trainer/grpo_trainer.py`), so its gradient and KL are the T = 1
-policy's at actions drawn at 0.7; here every term is the sampling policy's.
+A greedy decode (temperature 0) samples no π_T: the Bagpiper evaluator verifies
+native probabilities only for candidates sampled at the recipe's temperature.
+WEST's GRPO samples at 0.7 (`examples/grpo/run.sh`) but scores the untempered
+log_softmax(z) (`west/trainer/grpo_trainer.py`), so its gradient and KL are the
+T = 1 policy's at actions drawn at 0.7; here every term is the sampling
+policy's.
