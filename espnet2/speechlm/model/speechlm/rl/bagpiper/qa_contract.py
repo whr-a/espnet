@@ -61,6 +61,7 @@ def normalize_choice(text):
 
 
 def _catalog(choices):
+    """Keep literal choices and map identical normalized bodies to their first index."""
     if isinstance(choices, (str, bytes)):
         return None
     try:
@@ -90,19 +91,23 @@ def _catalog(choices):
         label, body = parts[index] if explicit_labels else (None, choice)
         normalized = normalize_choice(body)
         label = label or string.ascii_uppercase[index]
-        if not normalized or normalized in texts or label in labels:
+        if not normalized or label in labels:
             return None
+        canonical = texts.index(normalized) if normalized in texts else index
         texts.append(normalized)
-        labels[label] = index
+        labels[label] = canonical
     return choices, texts, labels, [normalize_choice(choice) for choice in choices]
 
 
 def match_choice(answer, choices):
-    """Return ``(index, method)`` for a unique exact option or option label.
+    """Return ``(canonical_index, method)`` for an exact option or option label.
 
     An explicit label and its option text must agree. Bare one-letter answers
-    refer to the supplied order unless choices themselves carry labels. There
-    is no substring, fuzzy, reference-dependent or whole-completion search.
+    refer to the supplied order unless choices themselves carry labels.
+    Identical normalized option bodies share their first index, so duplicated
+    distractors never invalidate an otherwise well-formed question. Repeated
+    explicit labels remain invalid. There is no substring, fuzzy,
+    reference-dependent or whole-completion search.
     """
     catalog = _catalog(choices)
     if catalog is None:
@@ -110,7 +115,7 @@ def match_choice(answer, choices):
     _, texts, labels, literals = catalog
     literal = normalize_choice(answer)
     if literal in literals:
-        return literals.index(literal), "exact"
+        return texts.index(texts[literals.index(literal)]), "exact"
     label, body = _labelled(answer)
     normalized = normalize_choice(body)
     exact = texts.index(normalized) if normalized in texts else None

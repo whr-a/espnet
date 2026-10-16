@@ -234,11 +234,77 @@ def test_unmapped_choice_does_not_get_fuzzy_credit():
     assert parsed["status"] == "unmapped_answer"
 
 
-def test_duplicate_normalized_choices_are_ambiguous():
+def test_duplicate_normalized_choices_are_canonical_aliases():
     parsed = parse_native_qa_answer("The correct option is: Dog", ["Dog", "dog."])
-    assert parsed["status"] == "invalid_choices"
+    assert parsed["status"] == "ok"
+    assert parsed["predicted_index"] == 0
+    assert parsed["format"] is True
+    assert match_choice("B", ["Dog", "dog."]) == (0, "label")
+
+
+def test_duplicate_distractor_preserves_a_unique_correct_answer():
+    source = {"choices": ["four", "nine", "fourteen", "fourteen"], "reference": "nine"}
+    parsed = parse_native_qa_answer("The correct option is: nine", source["choices"])
+    assert parsed["predicted_index"] == 1
+    reward = qa_bagpiper_v2_reward(source, {"text": "The correct option is: nine"})
+    assert reward["acc"] == 1.0
+    assert reward["reward"] == pytest.approx(1.1)
+
+
+@pytest.mark.parametrize("answer", ["C", "D", "fourteen", "(D) fourteen"])
+@pytest.mark.parametrize("reference", ["fourteen", "C", "D"])
+def test_duplicate_correct_options_and_labels_share_one_canonical_answer(
+    answer, reference
+):
+    source = {
+        "choices": ["four", "nine", "fourteen", "fourteen"],
+        "reference": reference,
+    }
+    parsed = parse_native_qa_answer(
+        "The correct option is: " + answer, source["choices"]
+    )
+    assert parsed["predicted_index"] == 2
+    assert parsed["predicted_choice"] == "fourteen"
+    reward = qa_bagpiper_v2_reward(source, {"text": "The correct option is: " + answer})
+    assert reward["acc"] == 1.0
+    assert reward["reward"] == pytest.approx(1.1)
+
+
+@pytest.mark.parametrize("answer", ["C", "D", "fourteen", "(D) fourteen"])
+def test_explicit_labels_with_identical_bodies_are_canonical_aliases(answer):
+    choices = ["(A) four", "(B) nine", "(C) fourteen", "(D) fourteen"]
+    assert match_choice(answer, choices)[0] == 2
+    source = {"choices": choices, "reference": "(D) fourteen"}
+    reward = qa_bagpiper_v2_reward(source, {"text": "The correct option is: " + answer})
+    assert reward["reward"] == pytest.approx(1.1)
+
+
+def test_explicit_literal_duplicate_returns_the_first_body_index():
+    choices = ["A. four", "B. nine", "C. fourteen", "D. fourteen"]
+    assert match_choice("D. fourteen", choices) == (2, "exact")
+
+
+def test_duplicate_bodies_do_not_rescue_a_contradictory_label():
+    choices = ["(A) four", "(B) nine", "(C) fourteen", "(D) fourteen"]
+    text = "The correct option is: (A) fourteen"
+    parsed = parse_native_qa_answer(text, choices)
     assert parsed["predicted_index"] is None
     assert parsed["format"] is False
+    assert (
+        qa_bagpiper_v2_reward(
+            {"choices": choices, "reference": "fourteen"}, {"text": text}
+        )["reward"]
+        == 0.0
+    )
+
+
+@pytest.mark.parametrize(
+    "choices", [[], [""], ["Dog", ""], ["Dog", None], ["(A) Dog", "(A) Dog"]]
+)
+def test_malformed_choices_and_repeated_explicit_labels_still_fail(choices):
+    parsed = parse_native_qa_answer("The correct option is: Dog", choices)
+    assert parsed["status"] == "invalid_choices"
+    assert parsed["predicted_index"] is None
 
 
 @pytest.mark.parametrize(

@@ -154,7 +154,8 @@ def qa_bagpiper_v2_reward(source, generation):
     """Native Bagpiper QA: correct final choice 1.0 plus terminal format 0.1.
 
     Caption and reasoning may precede a native final-option marker or answer
-    block. Parse without the reference, then compare unique choice indices.
+    block. Parse without the reference, then compare canonical choice indices;
+    identical normalized option texts share their first index.
     This is a new protocol; the historical WEST and V1 rewards stay unchanged.
     """
     parsed = parse_native_qa_answer(generation["text"], source["choices"])
