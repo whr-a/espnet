@@ -117,13 +117,22 @@ class NativeGRPOTrainer:
             self.actor = policy
         # Replica synchronization must precede reference cloning: all ranks reference
         # the same initial actor, including when loading consumed local RNG.
+        self.reference_scoring_device = config.reference_device or self.device
+        if (
+            config.reference_cpu_offload
+            and torch.device(self.reference_scoring_device).type == "cpu"
+        ):
+            raise ValueError("Reference CPU offload requires a GPU scoring device")
+        reference_storage = (
+            "cpu" if config.reference_cpu_offload else config.reference_device
+        )
         self.reference = (
             reference
             if reference is not None
-            else clone_reference(policy, config.reference_device)
+            else clone_reference(policy, reference_storage)
         ).eval()
-        if config.reference_device is not None:
-            self.reference = self.reference.to(config.reference_device)
+        if reference_storage is not None:
+            self.reference = self.reference.to(reference_storage)
         self.reference.requires_grad_(False)
         optimizer_class = (
             CPUOffloadedAdamW if config.optimizer_device == "cpu" else torch.optim.AdamW
@@ -196,6 +205,19 @@ class NativeGRPOTrainer:
             # A weight snapshot lends its values to a module for this pass.
             with policy as module:
                 return self._score_chunks(module, batch)
+        if policy is self.reference and getattr(
+            self.config, "reference_cpu_offload", False
+        ):
+            try:
+                policy.to(self.reference_scoring_device)
+                return self._score_chunks_on_device(policy, batch)
+            finally:
+                # Detached scores already live on CPU. Offload even if transfer
+                # or scoring failed; the next pass alone brings weights back.
+                policy.to("cpu")
+        return self._score_chunks_on_device(policy, batch)
+
+    def _score_chunks_on_device(self, policy, batch):
         before = support_counts(policy)
         results = torch.zeros(batch.batch["response_mask"].shape)
         scoring_device = next(policy.parameters()).device

@@ -46,6 +46,9 @@ class ESPnetRLConfig:
     model_version: str | None = "v4"
     device: str = field(default_factory=get_device_name)
     reference_device: str | None = None
+    # Score the frozen reference on its GPU, then keep its weights on CPU
+    # between passes so actor backward can reuse that GPU memory.
+    reference_cpu_offload: bool = False
     optimizer_device: str | None = None
     distributed_strategy: str = "ddp"
     # Cover the full collocate runtime budget, including rank-zero rollout waits.
@@ -152,6 +155,8 @@ class ESPnetRLConfig:
     def validate(self):
         if self.execution_mode not in ("sync", "disagg_async"):
             raise ValueError("execution_mode must be sync or disagg_async")
+        if type(self.reference_cpu_offload) is not bool:
+            raise ValueError("reference_cpu_offload must be a boolean")
         if (
             type(self.warmup_steps) is not int
             or not 0 <= self.warmup_steps < self.steps
