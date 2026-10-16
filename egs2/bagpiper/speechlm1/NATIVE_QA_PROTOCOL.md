@@ -25,7 +25,7 @@ the official checkpoint's behavior before claiming a gain over its SFT score.
 ## Native prompts and final answers
 
 Prepare a **new** manifest with `--qa-template bagpiper`. Each record carries
-the verbatim native SFT system instruction and user text:
+the historical local native QA system instruction and user text:
 
 ```text
 question: {question}
@@ -33,7 +33,9 @@ question: {question}
 ```
 
 The system instruction asks for a detailed caption, reasoning and then the
-chosen option. Its implementation is
+chosen option. This exact template comes from the preexisting local native
+evaluator; the paper's exact 74.5 benchmark prompt is not independently
+established by the inspected public release. Its implementation is
 [qa_contract.py](../../../espnet2/speechlm/model/speechlm/rl/bagpiper/qa_contract.py),
 with system-prompt SHA256
 `c32b7ed5afe9418833a402d8c42abae1240e999d0ab16f079d6ea9061b51cca8`.
@@ -65,8 +67,11 @@ block qualify for the structural bonus. A correct exact plain option can earn
 1.0 without the bonus. The format component is independent of correctness.
 
 The parser receives only the response and available choices. It resolves a
-unique normalized exact option or an unambiguous option label; the reference
-is compared afterwards. Harmless Unicode, case, spacing and decoration are
+normalized exact option or an unambiguous option label; the reference
+is compared afterwards. Identical normalized choice texts are canonical
+aliases, so a duplicated distractor does not invalidate an otherwise valid
+answer; labels with contradictory text or repeated explicit labels still fail.
+Harmless Unicode, case, spacing and decoration are
 normalized. Musical answers such as `a minor` and `b flat` retain their first
 word. There is no substring/Jaccard scoring, whole-caption choice search or
 ground-truth-directed fallback. Malformed answer tags and contradictory
@@ -95,7 +100,7 @@ python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
     --audio-seconds 60 --temperature 0 --samples 1
 ```
 
-The native evaluator reports historical SFT choice-mapping compatibility as
+The native evaluator reports historical native QA choice-mapping compatibility as
 `native_choice_accuracy`, strict reward-compatible extraction as
 `native_strict_accuracy`, and its structural rate separately. The historical
 mapper's substring/Jaccard/full-response fallbacks are **evaluation

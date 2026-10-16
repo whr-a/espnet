@@ -492,11 +492,14 @@ successful environment installation does not establish memory fit.
 
 For the official SFT checkpoint's caption, reasoning and final-option behavior,
 use [the native QA protocol](../../egs2/bagpiper/speechlm1/NATIVE_QA_PROTOCOL.md).
-It restores the SFT system/user messages and separates historical native-choice
+It restores the historical local native QA system/user messages and separates
+historical native-choice
 evaluation from the strict **correctness 1.0 + format 0.1** training reward.
 The previous WEST-prompt experiment used different weights and conditioning;
 its scores do not reproduce the official SFT baseline. The new native QA
 training profile still requires its own probability and memory preflights.
+The exact prompt used for the paper's reported 74.5 is not established by the
+inspected public release; label a local run's checkpoint and prompt separately.
 
 ## 9. Understand the validation boundary
 
