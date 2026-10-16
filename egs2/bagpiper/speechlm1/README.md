@@ -468,6 +468,26 @@ post-training stage using a pinned Miles library and SGLang rollout. Architectur
 adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
 or vendored. Set the pretrained checkpoint, original training YAML, token assets,
 codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
+For the public `espnet/bagpiper-sft` native release, first build the missing
+shifted tokenizer and model metadata with
+`python -m espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets`.
+The [public asset bootstrap instructions](../../../espnet2/rl/ENVIRONMENT.md#bagpiper-build-the-rl-metadata-from-public-sources)
+give the pinned download and construction commands. This CPU helper downloads
+only upstream configs/tokenizers, preserves native vocabulary offsets, and
+prints the exact `train_config` and `adapter_options` paths for the RL YAML.
+It does not download or load model weights. Keep native preprocessing for
+prompts; the shifted export tokenizer is used to decode generated text.
+
+The recorded four-GPU engineering run starts from prepared native checkpoint
+SHA256 `790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`,
+reconstructed from public `anonymous-release/vLLM_alm` revision
+`83e02343f5647599c444b8ec91084b54576507f6` and the native loss-weight buffer.
+This is not verified as tensor-equivalent to the official public SFT `model.pt`
+(SHA256 `50980756fad38bbefeb326ac0012e39f431ec5af8c0caaac8bd254f179f33746`).
+The official checkpoint therefore needs its own complete-load and numerical
+preflight; CPU metadata tests do not establish GPU training compatibility or
+quality for that checkpoint.
+
 Use the checkpoint's original SFT model configuration, set
 `model.activation_checkpointing: true`, and inspect its `trainer.freeze_param`
 list. The supervised warmup `conf/train.yaml` freezes decoder layers and is

@@ -290,6 +290,63 @@ Bagpiper TTS uses Transformers Whisper; a separate `openai-whisper` installation
 is not required for that reward. Model permissions/downloads remain those of
 each original release.
 
+### Bagpiper: build the RL metadata from public sources
+
+The [public SFT release](https://huggingface.co/espnet/bagpiper-sft/tree/5646600302bf2670214c601721e44f6d36145c26)
+contains native weights and their YAML, but does not contain the shifted
+`reference_assets` tokenizer required by the RL exporter. Download the native
+release separately, then build the metadata in the RL environment:
+
+```bash
+hf download espnet/bagpiper-sft \
+  --revision 5646600302bf2670214c601721e44f6d36145c26 \
+  --local-dir "$ESPNET_WORK/models/bagpiper-sft"
+CUDA_VISIBLE_DEVICES='' python -m \
+  espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets \
+  --train-config "$ESPNET_WORK/models/bagpiper-sft/train_stage3_qwen3_base.yaml" \
+  --output-dir "$ESPNET_WORK/models/bagpiper-rl-metadata"
+```
+
+Verify the release with its `SHA256SUMS` from inside the downloaded directory.
+The published `model.pt` SHA256 is
+`50980756fad38bbefeb326ac0012e39f431ec5af8c0caaac8bd254f179f33746`.
+The helper's output directory must be new. It downloads **configuration and
+tokenizer files only**, using these fixed upstream revisions:
+
+| Metadata | Repository | Revision |
+| --- | --- | --- |
+| Text config/tokenizer | `Qwen/Qwen3-8B-Base` | `b86f722ec0768e8849ddeb2d8ce3a518bf4fd504` |
+| Audio config/frontend | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | `26291f793822fb6be9555850f06dfe95f2d7e695` |
+| Codec config | `hf-audio/xcodec-hubert-general` | `240735a1ade315cb9b22604fe898e7df03d67378` |
+
+No Qwen 8B/30B or codec weights are downloaded by this helper. Use its printed
+`train_config` and `adapter_options` in the selected RL YAML, with `checkpoint`
+pointing to the downloaded native `model.pt`. Keep the existing adapter options
+for scoring, precision and memory. The new `native.yaml` resolves the text
+backbone/tokenizer paths while preserving the released modality order. The
+`asset_manifest.json` records sources, local paths and output-file hashes.
+
+For an offline metadata build, supply all three `--text-assets`, `--audio-assets`
+and `--codec-assets` directories containing the listed metadata files. Local
+overrides are recorded as caller-supplied inputs; their public revision identity
+is not independently verified. The helper refuses an unexpected vocabulary,
+backbone, frontend or modality layout instead of deriving an offset from the
+shorter tokenizer length. It retains 256 native special slots, 151,936 text
+slots and eight codec streams of 1,025 IDs. It also merges the Qwen tokens that
+are defined only in `tokenizer_config.json`.
+
+The shifted tokenizer is for decoding the exported policy's output. Audio and
+text prompts still go through the native SpeechLM preprocessor and original
+text tokenizer from `native.yaml`; an HF chat template is not a replacement
+for that multimodal frontend. CPU asset/tokenizer checks do not verify the
+official checkpoint's complete tensor loading or native/SGLang probability
+agreement. Run the selected recipe's numerical preflight with that checkpoint
+before training. The recorded four-GPU experiment used a prepared native
+checkpoint reconstructed from public `anonymous-release/vLLM_alm` revision
+`83e02343f5647599c444b8ec91084b54576507f6`, rather than a verified tensor-equivalent
+copy of this official SFT release. Its numerical evidence does not transfer
+automatically to the public checkpoint.
+
 As a simple ASR example, prepare independent train/dev manifests from Kaldi-style
 files whose utterance IDs match:
 
