@@ -26,7 +26,7 @@ the locked RL environment would change that profile. Transfer native model
 checkpoints and their matching assets between the environments instead.
 
 **Source availability:** this RL implementation is a local, unpublished feature
-branch, `codex/bagpiper-west-h100-fp32-20261016`, not an already merged upstream
+branch, `codex/bagpiper-native-qa-20261016`, not an already merged upstream
 release. An ordinary clone of
 `https://github.com/espnet/espnet.git` provides standard ESPnet; it does not
 by itself supply this RL feature or its four-GPU FP32 profile. Obtain the
@@ -141,14 +141,14 @@ vocoder and model requirements.
 ## 4. Obtain the reviewed RL sources
 
 For this unpublished draft, obtain the contributor's source bundle named
-**`espnet-bagpiper-west-h100-fp32-20261016.bundle`**, together with its SHA256 and
+**`espnet-bagpiper-native-qa-20261016.bundle`**, together with its SHA256 and
 Git revision receipt. The name identifies a delivery artifact; this guide does
 not claim that the bundle or feature branch is already publicly hosted. Clone
 the supplied bundle into an independent clean checkout:
 
 ```bash
-export ESPNET_RL_BUNDLE=/absolute/path/to/espnet-bagpiper-west-h100-fp32-20261016.bundle
-export ESPNET_RL_GIT_REF=codex/bagpiper-west-h100-fp32-20261016
+export ESPNET_RL_BUNDLE=/absolute/path/to/espnet-bagpiper-native-qa-20261016.bundle
+export ESPNET_RL_GIT_REF=codex/bagpiper-native-qa-20261016
 export ESPNET_RL_SOURCE="$ESPNET_WORK/src/espnet-rl"
 sha256sum "$ESPNET_RL_BUNDLE"  # Compare with the supplied delivery receipt.
 git clone --single-branch --branch "$ESPNET_RL_GIT_REF" \
@@ -157,6 +157,7 @@ git -C "$ESPNET_RL_SOURCE" checkout "$ESPNET_RL_GIT_REF"
 git -C "$ESPNET_RL_SOURCE" bundle verify "$ESPNET_RL_BUNDLE"
 test -f "$ESPNET_RL_SOURCE/tools/installers/install_miles_async_env.sh"
 test -f "$ESPNET_RL_SOURCE/egs2/bagpiper/speechlm1/conf/rl_west_4gpu_async.yaml"
+test -f "$ESPNET_RL_SOURCE/egs2/bagpiper/speechlm1/conf/rl_native_qa_4gpu_async.yaml"
 git -C "$ESPNET_RL_SOURCE" rev-parse HEAD
 ```
 
@@ -469,7 +470,7 @@ Both model paths use FP32. The native learner uses SDPA, and SGLang uses Triton
 attention with IEEE float32 and 24 concurrent requests. BF16 attempts failed
 the strict native/inference probability gate. The frozen FP32 run completed
 100 optimizer updates and the paired 1,000-question MMAU-Mini evaluation with
-`Succeeded` / exit 0: official accuracy **28.9% → 31.0% (+2.1 pp)**. All 100
+`Succeeded` / exit 0: WEST-prompt MMAU accuracy **28.9% → 31.0% (+2.1 pp)**. All 100
 updates had nonzero gradients and maximum behavior log-probability error
 **0.001337171**, below the unchanged **0.03** gate. Training took **12.735 h**;
 final evaluation took **646.497 s**. Both rollout replicas acknowledged all
@@ -486,6 +487,16 @@ reference still coexist during reference scoring: their FP32 state tensors
 alone total about 67.76 GiB, excluding activations, CUDA workspaces and other
 allocations. Provide substantial host RAM and measure both CPU and GPU peaks;
 successful environment installation does not establish memory fit.
+
+### Native Bagpiper QA correction
+
+For the official SFT checkpoint's caption, reasoning and final-option behavior,
+use [the native QA protocol](../../egs2/bagpiper/speechlm1/NATIVE_QA_PROTOCOL.md).
+It restores the SFT system/user messages and separates historical native-choice
+evaluation from the strict **correctness 1.0 + format 0.1** training reward.
+The previous WEST-prompt experiment used different weights and conditioning;
+its scores do not reproduce the official SFT baseline. The new native QA
+training profile still requires its own probability and memory preflights.
 
 ## 9. Understand the validation boundary
 

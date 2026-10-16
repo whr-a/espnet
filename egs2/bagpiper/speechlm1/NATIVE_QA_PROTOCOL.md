@@ -104,8 +104,9 @@ extraction results also remain separate fields. Preserve complete responses,
 truncation counts, prompt/checkpoint identities and per-item extraction paths;
 do not silently substitute one metric for another.
 
-The 4096-token, greedy setting comes from the historical local native
-evaluation. It is not a uniquely established official-paper launcher: the
+The 4096-token, greedy setting follows a historical local recommendation;
+the archived 731/1000 run did not retain its actual token cap or a verifiable
+checkpoint identity. It is not a uniquely established official-paper launcher: the
 [released inference YAML](https://huggingface.co/espnet/bagpiper-sft/blob/5646600302bf2670214c601721e44f6d36145c26/inference_text.yaml)
 uses 2048 text steps, temperature 0.6 and top-k 20, whereas the paper prose
 describes greedy decoding. Label these protocol differences explicitly.
