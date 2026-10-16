@@ -138,6 +138,90 @@ def test_explicit_choice_labels_are_not_assumed_to_be_positional():
     )
 
 
+@pytest.mark.parametrize(
+    "answer,index",
+    [
+        ("B", 1),
+        ("D", 3),
+        ("F", None),
+        ("J", None),
+        ("F. Scott Fitzgerald", 1),
+        ("J. D. Salinger", 3),
+        ("(D) J. D. Salinger", 3),
+    ],
+)
+def test_author_initials_do_not_replace_positional_option_labels(answer, index):
+    choices = [
+        "Mark Twain",
+        "F. Scott Fitzgerald",
+        "Ernest Hemingway",
+        "J. D. Salinger",
+    ]
+    parsed = parse_native_qa_answer("The correct option is: " + answer, choices)
+    assert parsed["predicted_index"] == index
+
+
+@pytest.mark.parametrize("name", ["J.D. Salinger", "J. D. Salinger"])
+def test_repeated_author_initials_are_distinct_literal_options(name):
+    choices = [name, "J. K. Rowling"]
+    assert match_choice(name, choices) == (0, "exact")
+    assert match_choice("J. K. Rowling", choices) == (1, "exact")
+    assert match_choice("B", choices) == (1, "label")
+    assert match_choice("J", choices) == (None, "unknown_label")
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        ["A. Car", "B. Dog", "C. Bird", "D. Train"],
+        ["(A) Car", "(B) Dog", "(C) Bird", "(D) Train"],
+    ],
+)
+def test_coherent_explicit_catalog_labels_and_contradictions(choices):
+    assert match_choice("B", choices) == (1, "label")
+    assert match_choice("Dog", choices) == (1, "exact")
+    assert match_choice(choices[1], choices) == (1, "exact")
+    assert match_choice("(A) Dog", choices) == (None, "contradictory_label")
+    assert match_choice("E", choices) == (None, "unknown_label")
+
+
+def test_coherent_e_to_h_catalog_keeps_its_explicit_labels():
+    choices = ["E. Car", "F. Dog", "G. Bird", "H. Train"]
+    assert match_choice("F", choices) == (1, "label")
+    assert match_choice("B", choices) == (None, "unknown_label")
+    assert match_choice("(E) Dog", choices) == (None, "contradictory_label")
+
+
+def test_repeated_parenthesized_labels_are_invalid():
+    assert match_choice("Dog", ["(A) Dog", "(A) Car"]) == (
+        None,
+        "invalid_choices",
+    )
+
+
+def test_literal_musical_note_precedes_positional_letter_interpretation():
+    choices = ["C", "G", "A", "F"]
+    assert match_choice("C", choices) == (0, "exact")
+    assert match_choice("A", choices) == (2, "exact")
+
+
+@pytest.mark.parametrize("answer,accuracy", [("B", 1.0), ("F", 0.0)])
+def test_author_reference_cannot_turn_an_initial_into_a_valid_label(answer, accuracy):
+    source = {
+        "choices": [
+            "Mark Twain",
+            "F. Scott Fitzgerald",
+            "Ernest Hemingway",
+            "J.D. Salinger",
+        ],
+        "reference": "F. Scott Fitzgerald",
+    }
+    reward = qa_bagpiper_v2_reward(source, {"text": "The correct option is: " + answer})
+    assert reward["acc"] == accuracy
+    assert reward["format"] == 1.0
+    assert reward["reward"] == pytest.approx(accuracy + 0.1)
+
+
 def test_caption_does_not_supply_an_answer_without_a_terminal_declaration():
     parsed = parse_native_qa_answer("Caption: a dog barks in the distance.", CHOICES)
     assert parsed["predicted_index"] is None

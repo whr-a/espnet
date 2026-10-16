@@ -69,18 +69,32 @@ def _catalog(choices):
         return None
     if not choices or len(choices) > len(string.ascii_uppercase):
         return None
+    if any(not isinstance(choice, str) for choice in choices):
+        return None
+    parts = [_labelled(choice) for choice in choices]
+    explicit_labels = False
+    if all(label and body for label, body in parts):
+        supplied = [label for label, _ in parts]
+        positions = sorted(ord(label) for label in supplied)
+        coherent = len(set(supplied)) == len(choices) and positions == list(
+            range(positions[0], positions[0] + len(choices))
+        )
+        # A whole catalogue must establish labels. An isolated name initial
+        # such as F. Scott Fitzgerald must retain its literal option text.
+        # Parentheses explicitly identify labels, including invalid repeats;
+        # bare labels must form a coherent A-D, E-H, or other contiguous set.
+        parenthesized = all(_clean(choice).startswith("(") for choice in choices)
+        explicit_labels = parenthesized or coherent
     texts, labels = [], {}
     for index, choice in enumerate(choices):
-        if not isinstance(choice, str):
-            return None
-        label, body = _labelled(choice)
+        label, body = parts[index] if explicit_labels else (None, choice)
         normalized = normalize_choice(body)
         label = label or string.ascii_uppercase[index]
         if not normalized or normalized in texts or label in labels:
             return None
         texts.append(normalized)
         labels[label] = index
-    return choices, texts, labels
+    return choices, texts, labels, [normalize_choice(choice) for choice in choices]
 
 
 def match_choice(answer, choices):
@@ -93,7 +107,10 @@ def match_choice(answer, choices):
     catalog = _catalog(choices)
     if catalog is None:
         return None, "invalid_choices"
-    _, texts, labels = catalog
+    _, texts, labels, literals = catalog
+    literal = normalize_choice(answer)
+    if literal in literals:
+        return literals.index(literal), "exact"
     label, body = _labelled(answer)
     normalized = normalize_choice(body)
     exact = texts.index(normalized) if normalized in texts else None
