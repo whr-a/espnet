@@ -1,0 +1,60 @@
+# Literal WEST default reward/prompt protocol, adapted to native Bagpiper.
+# Four GPUs: two data-parallel learners, two independent TP=1 rollout replicas.
+# This configuration requires a fresh GPU acceptance run before a quality claim.
+family: bagpiper
+train_config: /path/to/released/train_config.checkpointing.yaml
+checkpoint: /path/to/released/model.pt
+manifest: /path/to/avqa/default/train.jsonl
+eval_manifest: /path/to/avqa/default/heldout32.jsonl
+output_dir: /path/to/fresh/rl-west-4gpu-32x8
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_west_default_reward
+device: cuda:0
+reference_device: cuda:0
+train_gpus: '0,1'
+rollout_gpus: '2,3'
+distributed_strategy: native_allreduce
+rollout_python: /path/to/rl-env/bin/python
+miles_source: /path/to/pinned/miles
+sglang_source: /path/to/pinned/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 32
+adapter_options:
+  reference_assets: /path/to/released/hf_assets
+  native_attention: sdpa
+  codec_config_path: /path/to/released/codec_config
+  audio_config_path: /path/to/released/audio_config
+  audio_processor_path: /path/to/released/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: false
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 200
+warmup_steps: 1
+save_interval: 100
+keep_exports: 2
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 32
+micro_batch_tokens: 8192
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 1024
+temperature: 0.7
+top_p: 1.0
+top_k: -1
+score_tolerance: 0.03
+execution_mode: disagg_async
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+ppo_epochs: 1
+rollout_mem_fraction: 0.85
