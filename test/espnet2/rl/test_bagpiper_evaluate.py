@@ -120,6 +120,82 @@ def test_export_verifies_complete_tensor_values_and_shard_paths(tmp_path):
         verify_export(native, root)
 
 
+@pytest.fixture
+def sharded_export(tmp_path):
+    native, root = tmp_path / "native.pt", tmp_path / "hf"
+    state = {
+        "decoder.weight": torch.tensor([[1.0, 2.0]], dtype=torch.bfloat16),
+        "decoder.bias": torch.tensor([3.0], dtype=torch.bfloat16),
+        "codec.weight": torch.tensor([4, 5], dtype=torch.int64),
+        "vocab_weight": torch.ones(2),
+    }
+    torch.save({"module": state}, native)
+    root.mkdir()
+    save_file(
+        {key: state[key] for key in ("decoder.weight", "decoder.bias")},
+        root / "decoder.safetensors",
+    )
+    save_file({"codec.weight": state["codec.weight"]}, root / "codec.safetensors")
+    mapping = {
+        "decoder.weight": "decoder.safetensors",
+        "codec.weight": "codec.safetensors",
+        "decoder.bias": "decoder.safetensors",
+    }
+    (root / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": mapping})
+    )
+    return native, root
+
+
+def test_export_reads_each_shard_once_and_checks_frozen_tensors(
+    sharded_export, monkeypatch
+):
+    native, root = sharded_export
+    reads, read_bytes = [], Path.read_bytes
+
+    def record_read(path):
+        if path.suffix == ".safetensors":
+            reads.append(path.name)
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", record_read)
+    receipt = verify_export(native, root)
+    assert receipt["exact_native_export_tensors"] == 3
+    assert receipt["excluded_nonpolicy"] == ["vocab_weight"]
+    assert set(receipt["hf_files"]) == {
+        "decoder.safetensors",
+        "codec.safetensors",
+        "model.safetensors.index.json",
+    }
+    # Multiple indexed tensors in a shard share one buffered deserialization.
+    assert sorted(reads) == ["codec.safetensors", "decoder.safetensors"]
+    save_file({"codec.weight": torch.tensor([4, 6])}, root / "codec.safetensors")
+    with pytest.raises(ValueError, match="tensor differs.*codec.weight"):
+        verify_export(native, root)
+
+
+@pytest.mark.parametrize("damage", ["missing_shard", "corrupt_shard", "missing_key"])
+def test_export_rejects_missing_or_corrupt_sharded_weights(sharded_export, damage):
+    from safetensors import SafetensorError
+
+    native, root = sharded_export
+    shard = root / "decoder.safetensors"
+    if damage == "missing_shard":
+        shard.unlink()
+        error, message = ValueError, "outside the audited"
+    elif damage == "corrupt_shard":
+        shard.write_bytes(b"not a safetensors archive")
+        error, message = SafetensorError, None
+    else:
+        save_file(
+            {"decoder.weight": torch.tensor([[1.0, 2.0]], dtype=torch.bfloat16)},
+            shard,
+        )
+        error, message = KeyError, "decoder.bias"
+    with pytest.raises(error, match=message):
+        verify_export(native, root)
+
+
 QUESTIONS = [
     {
         "id": "q-sound",

@@ -108,8 +108,13 @@ def verify_native_log_probs(policy, batch, config):
 
 
 def verify_export(checkpoint, directory):
-    """Verify all export files and exact native tensors, including frozen codec."""
-    from safetensors import safe_open
+    """Verify all export files and exact native tensors, including frozen codec.
+
+    Eager CPU reads avoid page-at-a-time mmap I/O on network filesystems. Keep
+    the native state and one decoded HF shard; its input bytes are temporary
+    during deserialization, and no shard survives into the next shard's load.
+    """
+    from safetensors.torch import load
 
     directory = Path(directory).resolve()
     files = {
@@ -118,7 +123,7 @@ def verify_export(checkpoint, directory):
         if path.is_file()
     }
     validate_export_files(directory, files)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True, mmap=True)
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True, mmap=False)
     state = state.get("module", state)
     expected = {key for key in state if key != "vocab_weight"}
     mapping = json.loads((directory / "model.safetensors.index.json").read_text())[
@@ -128,16 +133,21 @@ def verify_export(checkpoint, directory):
         raise ValueError(
             "Inference export tensor keys differ from the complete native state"
         )
+    shards = {}
     for key, shard in mapping.items():
         if shard not in files:
             raise ValueError(
                 f"Inference tensor shard is outside the audited file set: {shard}"
             )
-        with safe_open(directory / shard, framework="pt", device="cpu") as handle:
-            if not torch.equal(state[key], handle.get_tensor(key)):
+        shards.setdefault(shard, []).append(key)
+    for shard, keys in shards.items():
+        tensors = load((directory / shard).read_bytes())
+        for key in keys:
+            if not torch.equal(state[key], tensors[key]):
                 raise ValueError(
                     f"Inference export tensor differs from native checkpoint: {key}"
                 )
+        del tensors
     return {
         "native_sha256": sha256(checkpoint),
         "hf_files": files,
