@@ -43,8 +43,9 @@ All sixteen rewards, advantages and gradients were zero. Complete audits
 confirmed that neither update changed any native model tensor. The 402 Adam
 states advanced to steps one and two while every first moment remained zero.
 
-The run used the prior strictly inverse-mapped general SFT native checkpoint,
-not a newly downloaded official checkpoint. Its original checkpoint SHA256 was
+The run used a prepared native checkpoint reconstructed from public
+`anonymous-release/vLLM_alm` revision `83e02343f5647599c444b8ec91084b54576507f6`,
+not a verified official SFT checkpoint. Its original checkpoint SHA256 was
 `790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`.
 The actual entrypoint was the existing `run.sh --stage 6`, with four AVQA
 utterances, two prompts per update and four candidates. All eight originally

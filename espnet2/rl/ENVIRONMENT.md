@@ -347,6 +347,19 @@ checkpoint reconstructed from public `anonymous-release/vLLM_alm` revision
 copy of this official SFT release. Its numerical evidence does not transfer
 automatically to the public checkpoint.
 
+For the experimental initialization, follow the separate
+[recorded public HF reconstruction recipe](../../egs2/bagpiper/speechlm1/README.md#reconstruct-the-recorded-public-hf-initialization-optional).
+It accepts explicitly downloaded local shards, verifies all four published
+SHA256 values, preserves 1,381 source tensors and restores only the native
+FP32 vocabulary-weight buffer. It also documents the historical metadata
+normalizations, including corrected added-token IDs and native BOS/EOS/PAD;
+the raw HF metadata must not silently replace the recorded reference bundle.
+The source native YAML is public at SHA256
+`d5a9e11f3af72bd14a02a02a8cd162f52a71bf4c701b93032de3b526c4d33b13`;
+its recorded local copy changes only the backbone and text-tokenizer paths.
+New serialization has its own hash. This optional reconstruction is neither
+a verified official-SFT conversion nor a guarantee of exact experimental replay.
+
 As a simple ASR example, prepare independent train/dev manifests from Kaldi-style
 files whose utterance IDs match:
 

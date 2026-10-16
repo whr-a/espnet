@@ -487,8 +487,10 @@ This is not verified as tensor-equivalent to the official public SFT `model.pt`
 The official checkpoint therefore needs its own complete-load and numerical
 preflight; CPU metadata tests do not establish GPU training compatibility or
 quality for that checkpoint.
+An [optional reconstruction recipe](#reconstruct-the-recorded-public-hf-initialization-optional)
+below describes the recorded source tensors and historical tokenizer assets.
 
-Use the checkpoint's original SFT model configuration, set
+Use the checkpoint-compatible native model configuration, set
 `model.activation_checkpointing: true`, and inspect its `trainer.freeze_param`
 list. The supervised warmup `conf/train.yaml` freezes decoder layers and is
 not a suitable default for full-decoder RL. Preserve the original modality order
@@ -512,6 +514,176 @@ export destination. If a preceding stage uses a different `--sft-output-dir` or
 `--export-path`, set `checkpoint` in the selected RL YAML to that exact exported
 file before starting the combined run. The RL stage reads the checkpoint
 configured in its YAML; it does not infer a custom export path.
+
+### Reconstruct the recorded public HF initialization (optional)
+
+This entry reconstructs the initialization used by the recorded engineering
+experiment. It is separate from the official native SFT download above. The
+source is public
+[`anonymous-release/vLLM_alm`](https://huggingface.co/anonymous-release/vLLM_alm/tree/83e02343f5647599c444b8ec91084b54576507f6/bagpiper)
+at revision `83e02343f5647599c444b8ec91084b54576507f6`. Its originating training
+stage and tensor equivalence to official SFT `509807...` are not established.
+
+Choose the weight download explicitly; conversion never downloads weights:
+
+```bash
+hf download anonymous-release/vLLM_alm \
+  --revision 83e02343f5647599c444b8ec91084b54576507f6 \
+  --include 'bagpiper/*' \
+  --local-dir "$ESPNET_WORK/models/bagpiper-recorded-hf"
+export BAGPIPER_HF_SOURCE="$ESPNET_WORK/models/bagpiper-recorded-hf/bagpiper"
+export BAGPIPER_NATIVE_OUTPUT="$ESPNET_WORK/models/bagpiper-recorded-native"
+```
+
+The following CPU conversion requires a new output directory. It preserves
+every source tensor name, value and dtype, then restores only the deterministic
+native loss-weight buffer. It reads all four shards; it does not construct a
+model or optimizer.
+
+```bash
+CUDA_VISIBLE_DEVICES='' python - <<'PYCODE'
+import hashlib, json, os
+from pathlib import Path
+import torch
+from safetensors.torch import load_file
+
+source = Path(os.environ['BAGPIPER_HF_SOURCE']).resolve(strict=True)
+output = Path(os.environ['BAGPIPER_NATIVE_OUTPUT']).resolve()
+if output.exists():
+    raise FileExistsError(output)
+expected = {
+    'model-00001-of-00004.safetensors': '04a70f1c7e9d7a8853984d297b38c3351b61c89962ab8dfb6c30fba17d47b269',
+    'model-00002-of-00004.safetensors': '362b48b15d9e840019730788fb4de9733687dc5ec5c6bedf7f2c71fbab121546',
+    'model-00003-of-00004.safetensors': '51962c68cf6202da19a03156bbc607ed9098eb9a585297653396fd287e62b960',
+    'model-00004-of-00004.safetensors': 'fa1574cb7bca01b62a52bb922b3c7db6bbe88a0b5949c8be3b26ea1a2c935f10',
+}
+def digest(path):
+    value = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            value.update(block)
+    return value.hexdigest()
+assert {p.name for p in source.glob('*.safetensors')} == set(expected)
+state = {}
+for filename, sha in expected.items():
+    assert digest(source / filename) == sha, filename
+    shard = load_file(str(source / filename), device='cpu')
+    assert not (state.keys() & shard.keys()), 'Duplicate tensor name'
+    state.update(shard)
+assert len(state) == 1381 and 'vocab_weight' not in state
+state['vocab_weight'] = torch.cat([
+    torch.ones(256 + 151936, dtype=torch.float32, device='cpu'),
+    torch.full((8 * 1025,), 0.125, dtype=torch.float32, device='cpu'),
+])
+output.mkdir(parents=True, exist_ok=False)
+checkpoint = output / 'bagpiper.native.pth'
+torch.save(state, checkpoint)
+(output / 'native_provenance.json').write_text(json.dumps({
+    'source_repo': 'anonymous-release/vLLM_alm',
+    'source_revision': '83e02343f5647599c444b8ec91084b54576507f6',
+    'source_shard_sha256': expected, 'tensor_count': len(state),
+    'restored_buffer': 'vocab_weight: 152192 FP32 ones then 8200 FP32 values of 0.125',
+    'native_sha256': digest(checkpoint), 'torch_version': torch.__version__,
+}, indent=2) + '\n')
+PYCODE
+```
+
+This matches the recorded reconstruction's tensor operations. A fresh
+`torch.save` can serialize differently across filenames or library versions;
+the newly written receipt records its own hash. **It does not promise to
+recreate the original `790bb1...` file bytes.**
+
+Use the same source's historical tokenizer rather than the newly constructed
+export tokenizer for this entry. The recorded reference bundle applies the
+following normalizations to public metadata: SpeechLM-to-Bagpiper model labels,
+the native BOS/EOS/PAD map, and a +256 correction in `added_tokens.json`.
+The BPE vocabulary, merges and frontend remain unchanged. Run this only after
+the conversion above, creating a new `reference_assets` directory:
+
+```bash
+python - <<'PYCODE'
+import hashlib, json, os, shutil
+from pathlib import Path
+
+source = Path(os.environ['BAGPIPER_HF_SOURCE']).resolve(strict=True)
+output = Path(os.environ['BAGPIPER_NATIVE_OUTPUT']) / 'reference_assets'
+output.mkdir(exist_ok=False)
+files = ('config.json', 'generation_config.json', 'chat_template.jinja',
+         'tokenizer.json', 'tokenizer_config.json', 'vocab.json', 'merges.txt',
+         'added_tokens.json', 'special_tokens_map.json')
+for name in files:
+    shutil.copyfile(source / name, output / name)
+def read(name):
+    return json.loads((output / name).read_text())
+def write(name, value):
+    (output / name).write_text(json.dumps(value, indent=2) + '\n')
+config = read('config.json')
+assert config['architectures'] == ['SpeechLMForConditionalGeneration']
+assert config['model_type'] == 'speechlm'
+assert config['text_config']['model_type'] == 'speechlm_text'
+assert config['audio_config']['model_type'] == 'speechlm_audio_encoder'
+assert (config['text_token_offset'], config['text_token_end'],
+        config['codec_base_offset'], config['codec_layer_size']) == (256, 152192, 152192, 1025)
+assert config['num_stream'] == 8
+assert config['vocab_size'] == config['text_config']['vocab_size'] == 160392
+assert [config[name + '_token_id'] for name in ('pad', 'bos', 'eos', 'eot')] == [0, 1, 2, 3]
+config.update(architectures=['BagpiperForConditionalGeneration'], model_type='bagpiper')
+config['text_config']['model_type'] = 'bagpiper_text'
+config['audio_config']['model_type'] = 'bagpiper_audio_encoder'
+write('config.json', config)
+added = read('added_tokens.json')
+assert len(added) == 26 and set(added.values()) == set(range(151643, 151669))
+write('added_tokens.json', {token: index + 256 for token, index in added.items()})
+tokens = read('tokenizer_config.json')
+assert tokens['model_type'] == 'speechlm'
+tokens['model_type'] = 'bagpiper'
+write('tokenizer_config.json', tokens)
+special = read('special_tokens_map.json')
+assert set(special) == {'additional_special_tokens', 'eos_token', 'pad_token'}
+assert special['eos_token']['content'] == special['pad_token']['content'] == '<|endoftext|>'
+write('special_tokens_map.json', {
+    name + '_token': dict(content='<|' + name + '|>', lstrip=False,
+                         normalized=False, rstrip=False, single_word=False, special=True)
+    for name in ('bos', 'eos', 'pad')
+})
+(output.parent / 'reference_assets.sha256.json').write_text(json.dumps({
+    name: hashlib.sha256((output / name).read_bytes()).hexdigest() for name in files
+}, indent=2) + '\n')
+PYCODE
+```
+
+The native configuration also has a public source. Its published
+`train_stage3_qwen3_base.yaml` SHA256 is
+`d5a9e11f3af72bd14a02a02a8cd162f52a71bf4c701b93032de3b526c4d33b13`.
+The recorded native YAML changes **only** `model.model_hf_tag` and
+`multimodal_io.text.tokenizer_name` to local Qwen metadata paths; modality order,
+activation checkpointing, audio/codec geometry, freeze prefixes and
+preprocessor settings are unchanged. Fetch just that YAML and prepare local
+backbone/audio/codec metadata without downloading official SFT weights:
+
+```bash
+hf download espnet/bagpiper-sft train_stage3_qwen3_base.yaml \
+  --revision 5646600302bf2670214c601721e44f6d36145c26 \
+  --local-dir "$ESPNET_WORK/models/bagpiper-recorded-config"
+CUDA_VISIBLE_DEVICES='' python -m \
+  espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets \
+  --train-config "$ESPNET_WORK/models/bagpiper-recorded-config/train_stage3_qwen3_base.yaml" \
+  --output-dir "$ESPNET_WORK/models/bagpiper-recorded-rl-metadata"
+```
+
+Set the RL YAML's `checkpoint` to the newly reconstructed native file and
+`train_config` to `bagpiper-recorded-rl-metadata/native.yaml`. Use the helper's
+audio/codec adapter paths, but override `adapter_options.reference_assets` with
+`$BAGPIPER_NATIVE_OUTPUT/reference_assets`. This retains the historical export
+tokenizer while the native prompt tokenizer and audio frontend use their
+separate configuration paths. The exporter resolves effective native text and
+audio geometry; the historical HF defaults alone are not the native frontend.
+For example, its audio windows are 100/400 while the pinned native Qwen audio
+config supplies 50/800. Always run complete-load and numerical preflight for
+the resulting checkpoint/assets on the intended hardware. These instructions
+reconstruct the recorded initialization's tensor and metadata semantics;
+they do not establish byte-identical files or an exact replay of the entire
+training/evaluation experiment.
 
 The RL wrapper performs data preparation, configuration validation and training.
 Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also
