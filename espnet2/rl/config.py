@@ -22,6 +22,10 @@ import yaml
 
 from .utils import get_device_name
 
+# Families whose rollout engine samples, and whose learner scores, every action
+# at the recipe's temperature (README, "Sampling temperature").
+TEMPERATURE_FAMILIES = ()
+
 
 @dataclass
 class ESPnetRLConfig:
@@ -78,6 +82,8 @@ class ESPnetRLConfig:
     normalize_advantage: bool = True
     loss_agg_mode: str = "token-mean"
     max_tokens: int = 256
+    # Actions are sampled from softmax(logits / temperature) over their whole
+    # support; every log probability is that distribution's.
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = -1
@@ -190,14 +196,27 @@ class ESPnetRLConfig:
                 raise ValueError(f"{name} must be positive")
         if self.micro_batch_tokens is not None and self.micro_batch_tokens < 1:
             raise ValueError("micro_batch_tokens must be positive")
-        if self.temperature != 1.0 or self.top_p != 1.0 or self.top_k != -1:
+        if (
+            type(self.temperature) not in (int, float)
+            or not 0 < self.temperature <= 1
+            or self.top_p != 1.0
+            or self.top_k != -1
+        ):
             raise ValueError(
-                "The first native backend requires temperature=1, top_p=1, top_k=-1 so engine raw "
-                "logprobs match the native actor distribution. Truncated sampling requires a separate "
+                "RL samples every action from its whole support at a temperature in "
+                "(0, 1]: top_p=1, top_k=-1. Truncated sampling requires a separate "
                 "explicit behavior-policy implementation."
             )
         if self.rollout_backend not in ("sglang", "vllm"):
             raise ValueError("rollout_backend must be sglang or vllm")
+        if self.temperature != 1 and (
+            self.family not in TEMPERATURE_FAMILIES or self.rollout_backend != "sglang"
+        ):
+            # vLLM's frozen raw_logprobs are taken before its temperature.
+            raise ValueError(
+                f"{self.family} on {self.rollout_backend} samples at temperature 1 "
+                "only: its engine or learner does not apply another"
+            )
         if not self.adapter_factory or not self.exporter:
             raise ValueError(
                 "Recipe must supply its ESPnet adapter_factory and exporter"

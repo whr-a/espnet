@@ -32,6 +32,19 @@ def validate_token_scores(scores, expected_mask):
             raise ValueError(f"Native {name} must be finite and match the action shape")
 
 
+def tempered(logits, temperature):
+    """The logits actions are sampled from at ``temperature``: logits / T.
+
+    At unit temperature ``logits`` itself, so its numerics stay exact.
+    Otherwise divided by a tensor, as SGLang's sampler divides: CUDA divides
+    by a Python number as a product with its rounded reciprocal, which
+    differs in the last bit for about one value in ten.
+    """
+    if temperature == 1:
+        return logits
+    return logits / logits.new_tensor(temperature)
+
+
 class NativeESPnetPolicy(nn.Module):
     def forward(self, batch) -> TokenScores:
         raise NotImplementedError

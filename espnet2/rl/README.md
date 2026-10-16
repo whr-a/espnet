@@ -72,3 +72,44 @@ optimizer recovery is not implemented.
 
 Short-run success establishes an engineering path. It does not establish
 quality improvement, inference-backend equivalence or an optimal GPU layout.
+
+## Sampling temperature
+
+`temperature` T, 0 < T ≤ 1 (default 1), sets the distribution every action is
+sampled from, always over its whole support (`top_p: 1`, `top_k: -1`): the
+tempered policy π_T(a) = softmax(z / T)[a], with z the raw logits over the
+action's support. RL optimizes π_T; T = 1 is the native policy. The families
+in `TEMPERATURE_FAMILIES` (`config.py`) implement the contract below;
+validation keeps every other family, and the vLLM backend, whose frozen
+`raw_logprobs` precede its temperature, at T = 1.
+
+- **Engine.** Samples every action from π_T and returns log π_T(a) of each
+  sampled action (a multi-stream frame: the sum over its sampled streams).
+  SGLang returns the log probability after its temperature unless
+  `SGLANG_RETURN_ORIGINAL_LOGPROB=1`, which returns log softmax(z), the one
+  before it. The scheduler reads the variable when it imports its sampler, so
+  every engine sets it before starting SGLang instead of inheriting it.
+- **Learner.** Every pass computes log_softmax(z / T)[a] of the recorded
+  actions: the current (old) scores, the async behavior snapshot's, the
+  reference's and the update's forward. The FP32 logits are divided as
+  `espnet2.rl.types.tempered` divides them: not at all at T = 1, otherwise by
+  a tensor, which matches SGLang's division bit for bit. Gradients flow
+  through z / T.
+- **KL.** `kl_type` is estimated on the sampled actions from log π_T −
+  log π_ref,T, the reference being the frozen initial policy at the same
+  temperature: the KL between the two tempered policies.
+- **Entropy.** `actor/entropy` and `entropy_coef` use the entropy of π_T over
+  the support (a multi-stream frame: summed over its sampled streams).
+- **Drift gate.** Compares the learner's and the engine's log π_T of the same
+  actions. A logit error ε becomes about ε / T in log π_T; the tolerances are
+  unchanged.
+- **IcePop.** The importance ratio exp(log π_T(old) − log π_T(rollout)) has
+  tempered log probabilities on both sides, so it corrects exactly what
+  separates the tempered engine from the tempered learner, and the async lag.
+- At T = 1 nothing is divided and every engine returns the log probabilities
+  it returned before, so existing recipes' numerics are unchanged.
+
+A greedy decode (temperature 0) samples no π_T. WEST's GRPO samples at 0.7
+(`examples/grpo/run.sh`) but scores the untempered log_softmax(z)
+(`west/trainer/grpo_trainer.py`), so its gradient and KL are the T = 1
+policy's at actions drawn at 0.7; here every term is the sampling policy's.

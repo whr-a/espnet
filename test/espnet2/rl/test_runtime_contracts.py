@@ -5,12 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from espnet2.bin.rl_train_async import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import verify_data_admission
 from espnet2.rl.engine import engine_kwargs, fit_context
 from espnet2.rl.rollout import sha256
+from espnet2.rl.types import tempered
 
 
 def configuration(**kwargs):
@@ -110,6 +112,37 @@ def test_repeated_or_empty_device_lists_are_rejected(name):
         config = configuration(**{name: value})
         with pytest.raises(ValueError, match="distinct physical GPU ids"):
             config.validate()
+
+
+def test_actions_are_sampled_from_their_whole_support_at_most_at_unit_temperature():
+    for temperature in (1, 1.0):
+        configuration(temperature=temperature).validate()
+    for changes in (
+        {"temperature": 0.0},
+        {"temperature": -0.7},
+        {"temperature": 1.3},
+        {"temperature": float("nan")},
+        {"temperature": "0.7"},
+        {"top_p": 0.9},
+        {"top_k": 50},
+    ):
+        with pytest.raises(ValueError, match="whole support"):
+            configuration(**changes).validate()
+    # Engines and learners that do not apply a temperature sample at 1.
+    vllm = dict(rollout_backend="vllm", rollout_gpus="4", vllm_generate_factory="a:b")
+    for changes in ({"family": "opuslm"}, {"family": "opuslm_dialogue"}, vllm):
+        configuration(**changes).validate()
+        with pytest.raises(ValueError, match="temperature 1 only"):
+            configuration(temperature=0.7, **changes).validate()
+
+
+def test_tempered_logits_are_the_ones_sglang_samples_from():
+    logits = torch.randn(4, 9).masked_fill(torch.rand(4, 9) < 0.3, -torch.inf)
+    # Unit temperature is the logits themselves: nothing is recomputed.
+    assert tempered(logits, 1.0) is logits
+    # SGLang's sampler divides by a [B, 1] float32 temperature tensor in place.
+    expected = logits.clone().div_(torch.full((4, 1), 0.7))
+    assert torch.equal(tempered(logits, 0.7), expected)
 
 
 def test_a_config_with_the_replaced_engine_key_names_its_successor(tmp_path):
