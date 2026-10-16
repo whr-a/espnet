@@ -406,12 +406,26 @@ shared output paths.
 
 ## Optional Miles RL stage
 
+The matched native-prompt MMAU-Mini baseline is **739/1000 (73.9%)**. The
+actual step-100 policy scored **725/1000 (72.5%)**, **-1.4 percentage points**;
+this run did not improve native QA. Both fresh evaluations used the historical
+native prompt/choice mapper, frozen source `2cf2ca0f`, SGLang BF16/FlashAttention
+3, greedy decoding, 4096 new tokens and a 60-second audio limit with no clipping.
+The policy was trained with the unchanged WEST default reward. The separate
+native correctness 1.0 + format 0.1 reward is **untrained**. See
+[the results and provenance](RESULTS_QA.md) for the matched comparison and the
+distinct official-release result. This pair uses the recorded `790bb1...`
+public-HF initialization, not official SFT `509807...`.
+
 For caption-first QA, start with the [native QA protocol](NATIVE_QA_PROTOCOL.md):
 `--qa-template bagpiper`, native SFT system conditioning, and correctness 1.0
-plus format 0.1. The historical WEST profile below uses a different checkpoint
-and prompt; its 28.9% baseline is not the official SFT MMAU-Mini result of 74.5.
-The new native training profile still needs independent probability and memory
-preflights before use.
+plus format 0.1. The earlier WEST profile used the same public-HF initialization
+with different prompting and extraction; its 28.9% baseline does not reproduce
+the official SFT MMAU-Mini result of 74.5.
+The affected 249 CPU tests, 7,432-record real-manifest validation and independent
+CPU review passed. The new native training profile still needs independent
+probability and memory preflights before use; these CPU checks do not validate
+GPU training or the one-/two-GPU Bagpiper layouts.
 
 The RL changes below are a local, unpublished feature branch,
 `codex/bagpiper-west-h100-fp32-20261016`. A standard upstream ESPnet checkout

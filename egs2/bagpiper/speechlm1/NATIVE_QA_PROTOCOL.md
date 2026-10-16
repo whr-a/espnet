@@ -1,10 +1,20 @@
 # Bagpiper native QA post-training protocol
 
+The matched native-prompt MMAU-Mini baseline is **739/1000 (73.9%)**; the
+actual step-100 policy scored **725/1000 (72.5%)**, **-1.4 percentage points**.
+There is no native-prompt gain. These fresh, matched evaluations used the
+historical local native prompt and choice mapper, frozen source `2cf2ca0f`,
+SGLang BF16/FlashAttention 3, greedy decoding, 4096 new tokens and a 60-second
+audio limit, with no audio clipped. The trained policy still used the original
+WEST default reward; the native reward below is **untrained**. See
+[results and provenance](RESULTS_QA.md) for category scores and separate parsing
+diagnostics.
+
 **New profile: unvalidated for training.**
 [conf/rl_native_qa_4gpu_async.yaml](conf/rl_native_qa_4gpu_async.yaml) is a
 separate candidate for four H100 GPUs: two native learners and two independent
-SGLang inference replicas. This change prepares native-prompt evaluation and a
-future reward contract; it does not establish a new training result.
+SGLang inference replicas. Completed inference does not establish training
+acceptance for this candidate.
 
 ## Restore the SFT task before comparing RL results
 
@@ -19,8 +29,12 @@ CPU comparison now establishes that its public-HF reconstruction
 `790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`
 differs in **402 tensors** from the pinned official SFT checkpoint
 `50980756fad38bbefeb326ac0012e39f431ec5af8c0caaac8bd254f179f33746`.
-The shape and dtype matches do not make these weights equivalent. Reproduce
-the official checkpoint's behavior before claiming a gain over its SFT score.
+The shape and dtype matches do not make these weights equivalent. The matched
+739/1000 baseline uses the reconstruction, whose originating training stage
+and absence of earlier RL remain unknown. The official checkpoint scored
+213/1000 with the historical native mapper; an exploratory header diagnostic
+scored 439/1000. Neither reproduces the paper's 74.5 protocol, whose exact
+prompt and scorer remain unverified.
 
 ## Native prompts and final answers
 
@@ -145,7 +159,9 @@ observed 121275-token FP32 KV pool; it is only a sizing bound. The new context,
 response lengths and official weights still require fresh probability,
 generation-completion and learner-memory preflights before training.
 
-Configuration validation alone does not perform those GPU checks. No long
-training run has been accepted for this new profile. Use the shared
+The affected 249 CPU tests, validation of 7,432 real manifest records and
+independent CPU review passed. They do not perform those GPU checks. No
+training run has been accepted for this new profile, and the Bagpiper one-/two-GPU
+layouts remain unvalidated. Use the shared
 [environment instructions](../../../espnet2/rl/ENVIRONMENT.md), and retain all
 original configs and frozen-run evidence when creating the next experiment.

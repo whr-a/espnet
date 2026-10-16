@@ -491,16 +491,21 @@ successful environment installation does not establish memory fit.
 
 ### Native Bagpiper QA correction
 
-For the official SFT checkpoint's caption, reasoning and final-option behavior,
-use [the native QA protocol](../../egs2/bagpiper/speechlm1/NATIVE_QA_PROTOCOL.md).
-It restores the historical local native QA system/user messages and separates
-historical native-choice
-evaluation from the strict **correctness 1.0 + format 0.1** training reward.
-The previous WEST-prompt experiment used different weights and conditioning;
-its scores do not reproduce the official SFT baseline. The new native QA
-training profile still requires its own probability and memory preflights.
-The exact prompt used for the paper's reported 74.5 is not established by the
-inspected public release; label a local run's checkpoint and prompt separately.
+The matched native-prompt MMAU-Mini baseline is **739/1000 (73.9%)**; the actual
+step-100 policy scored **725/1000 (72.5%)**, **-1.4 percentage points**. This is
+not an improvement. Both fresh evaluations used historical native prompting
+and choice mapping, frozen source `2cf2ca0f`, SGLang BF16/FlashAttention 3,
+greedy decoding, 4096 new tokens and a 60-second audio limit with no clipping.
+The policy was trained with the unchanged WEST default reward, separately
+from the **untrained correctness 1.0 + format 0.1** native QA candidate.
+
+Use [the native QA protocol](../../egs2/bagpiper/speechlm1/NATIVE_QA_PROTOCOL.md)
+and [results/provenance](../../egs2/bagpiper/speechlm1/RESULTS_QA.md) for the
+restored system/user messages and separate strict parsing diagnostics. The
+official SFT checkpoint scored 213/1000 with this historical mapper; its
+402-tensor difference from the 739/1000 initialization remains material.
+The paper's exact 74.5 prompt and scorer are unverified. The new training
+profile still requires its own probability and memory preflights.
 
 ## 9. Understand the validation boundary
 
@@ -513,10 +518,13 @@ inspected public release; label a local run's checkpoint and prompt separately.
 | Held-out evaluation | Must use its own denominator/protocol; a higher sampled reward alone is insufficient |
 
 OWSM has existing single-/two-GPU 200-update engineering evidence, without a
-held-out WER gain. Bagpiper has an accepted four-GPU FP32 100-update run and
-one paired full MMAU-Mini comparison (+2.1 pp); its one-/two-GPU layouts and
-OpusLM's two-GPU full loop still need acceptance. The Bagpiper result is not
-an SFT-clean blind test or a statistical significance claim. The separate
+held-out WER gain. Bagpiper has an accepted four-GPU FP32 WEST-default 100-update
+run: its WEST-prompt comparison is +2.1 pp, while fresh native prompting gives
+73.9% to 72.5% (-1.4 pp). The native reward remains untrained. The affected
+249 CPU tests, validation of 7,432 real manifest records and independent CPU
+review passed; these are CPU-only evidence. Bagpiper's one-/two-GPU layouts and
+OpusLM's two-GPU full loop still need acceptance. The Bagpiper comparisons are
+not SFT-clean blind tests or statistical significance claims. The separate
 historical local MMAU-Mini archive scored 731/1000 (73.1%); its exact checkpoint
 and token cap are unverified. That archive is distinct from the official model
 card's 73.1% on full MMAU. Earlier component measurements do not establish the

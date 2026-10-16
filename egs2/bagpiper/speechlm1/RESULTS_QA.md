@@ -1,19 +1,69 @@
 # Bagpiper QA RL results
 
-## Native SFT protocol correction
+## Final native-prompt comparison (2026-10-16)
 
-The WEST experiment below does **not** reproduce the official Bagpiper SFT
-baseline. The official model card reports 74.5 on MMAU-Mini. A fresh CPU
-comparison found 402 unequal tensors between that release and the anonymous
-HF reconstruction used below. That experiment also omitted the native SFT
-system prompt and required answer tags from a caption-first model. Its paired
-28.9% to 31.0% result remains a record of that different protocol.
+The matched native-prompt baseline is **739/1000 (73.9%)**. The actual
+step-100 policy scored **725/1000 (72.5%)**, a **-1.4 percentage-point** change:
+**47 corrected and 61 regressed** questions. This experiment did **not** improve
+native-prompt MMAU-Mini performance. The step-100 weights came from the existing
+WEST-default training run, whose accuracy 1.0 + format 1.0 objective was
+unchanged. The new native correctness 1.0 + format 0.1 reward has **not been
+trained**.
 
-Use the separate [native QA protocol](NATIVE_QA_PROTOCOL.md) for the restored
-caption/reasoning/answer prompt and correctness 1.0 + format 0.1 reward.
-Fresh native-prompt inference is required; rescoring old WEST generations
-does not reproduce the official baseline. The new training profile requires
-its own numerical and memory preflights.
+Both fresh inference phases used frozen ESPnet
+`2cf2ca0f7765a5b5dd206fe3baea5f43ad61b6bb`, the historical local native QA
+system/user prompt and historical native choice mapper, SGLang BF16 with
+FlashAttention 3, greedy decoding, a 4096-new-token cap and a 60-second audio
+limit. All 1,000 ordered questions and prepared inputs matched; no audio was
+clipped. The initial weights were the recorded `790bb1...` public-HF
+reconstruction, not the distinct official `509807...` release described below.
+
+| Native choice accuracy | Before | Step 100 | Change in correct answers |
+| --- | ---: | ---: | ---: |
+| All questions | 739/1000 (73.9%) | 725/1000 (72.5%) | -14 |
+| Music | 237/334 | 234/334 | -3 |
+| Sound | 261/333 | 261/333 | 0 |
+| Speech | 241/333 | 230/333 | -11 |
+
+Truncated responses increased from **28 to 31**. Post-hoc strict canonical
+reward parsing is a separate diagnostic; it does not replace the historical
+mapper used for the primary comparison:
+
+| Strict reward diagnostic | Before | Step 100 |
+| --- | ---: | ---: |
+| Canonical final-choice correctness | 724/1000 | 716/1000 |
+| Valid terminal structure | 972/1000 | 967/1000 |
+| Mean correctness + 0.1 format | 0.8212 | 0.8127 |
+
+### Official release and scoring limits
+
+The official model card reports **74.5% MMAU-Mini**. A full CPU comparison
+confirms **402 unequal tensors** between its pinned native checkpoint
+`50980756fad38bbefeb326ac0012e39f431ec5af8c0caaac8bd254f179f33746`
+and the experiment's initialization
+`790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`.
+The latter's originating training stage and absence of earlier RL remain
+unknown.
+
+The official checkpoint scored **213/1000 (21.3%)** with the same frozen native
+prompt/evaluator. An exploratory header-aware extraction of those responses
+yielded **439/1000 (43.9%)**; this is a separate parsing diagnostic. Neither
+number reproduces the paper's 74.5 protocol: its exact benchmark prompt and
+scorer are unverified. The official release result must not be conflated with
+the 739/1000 initialization or used to claim an RL gain.
+
+All three full inference runs reached **Succeeded / exit 0**; a CPU integrity
+audit passed all **3,000 rows**. The release's affected **249 CPU tests**, real
+manifest validation over **7,432 records**, and independent CPU review passed.
+These checks do not validate training under the new native reward. All four
+assigned GPUs were verified at zero compute processes and **0 MiB** allocated
+at **17:04:35 UTC** after the jobs ended.
+
+Use the separate [native QA protocol](NATIVE_QA_PROTOCOL.md) for the
+caption/reasoning/answer prompt and untrained correctness 1.0 + format 0.1
+candidate. It still needs numerical and learner-memory preflights. The earlier
+WEST-prompt **28.9% to 31.0%** comparison below remains a separate result with
+different conditioning and extraction; it is not the native-prompt baseline.
 
 ## Accepted WEST default four-GPU FP32 run (2026-10-16)
 
