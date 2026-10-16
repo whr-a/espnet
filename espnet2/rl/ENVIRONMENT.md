@@ -467,10 +467,16 @@ It retains 32 prompts × 8 candidates over 100 updates.
 
 Both model paths use FP32. The native learner uses SDPA, and SGLang uses Triton
 attention with IEEE float32 and 24 concurrent requests. BF16 attempts failed
-the strict native/inference probability gate; FP32 numerical preflight passed
-on 32 candidates with maximum log-probability error 0.000117779. The 0.03 gate
-is unchanged. This preflight performed zero optimizer updates; full training
-and MMAU quality acceptance remain pending.
+the strict native/inference probability gate. The frozen FP32 run completed
+100 optimizer updates and the paired 1,000-question MMAU-Mini evaluation with
+`Succeeded` / exit 0: official accuracy **28.9% → 31.0% (+2.1 pp)**. All 100
+updates had nonzero gradients and maximum behavior log-probability error
+**0.001337171**, below the unchanged **0.03** gate. Training took **12.735 h**;
+final evaluation took **646.497 s**. Both rollout replicas acknowledged all
+versions 0–100. This validates that frozen four-GPU path, with the recorded
+public-HF reconstruction; it does not validate the official native SFT
+checkpoint, the failed BF16 probes or every later release-draft change.
+See [QA results and limits](../../egs2/bagpiper/speechlm1/RESULTS_QA.md).
 
 Keep CPU AdamW, native layer/head checkpointing, a 2048-token micro-batch budget,
 and activation CPU offload. `reference_cpu_offload: true` stores the reference
@@ -492,9 +498,12 @@ successful environment installation does not establish memory fit.
 | Held-out evaluation | Must use its own denominator/protocol; a higher sampled reward alone is insufficient |
 
 OWSM has existing single-/two-GPU 200-update engineering evidence, without a
-held-out WER gain. Bagpiper's new small-GPU full loop and OpusLM's two-GPU full
-loop still need acceptance. Earlier large-GPU or component measurements do not
-establish those missing results. Full MMAU improvement is not established.
+held-out WER gain. Bagpiper has an accepted four-GPU FP32 100-update run and
+one paired full MMAU-Mini comparison (+2.1 pp); its one-/two-GPU layouts and
+OpusLM's two-GPU full loop still need acceptance. The Bagpiper result is not
+an SFT-clean blind test or a statistical significance claim, and historical
+73.1% used a different protocol. Earlier component measurements do not
+establish the remaining layout-specific results.
 
 Common installation failures:
 

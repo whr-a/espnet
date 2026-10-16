@@ -1,38 +1,121 @@
-# Bagpiper QA engineering evidence
+# Bagpiper QA RL results
 
-## WEST default four-GPU FP32 profile (2026-10-16)
+## Accepted WEST default four-GPU FP32 run (2026-10-16)
 
-The current public draft `conf/rl_west_4gpu_async.yaml` matches a separately
-frozen 100-update AVQA run: two native learner replicas and two SGLang TP=1
-rollout replicas on four H100 80 GB GPUs, 32 prompts × 8 candidates, FP32,
-temperature 0.7, a 1024-token cap, learning rate 1e-6 and KL coefficient 0.04.
-The reward is the literal WEST default `accuracy + format`. CPU reference
-storage between GPU scoring passes, CPU optimizer state, activation offload
-and a 2048-token scoring micro-batch budget reduce GPU memory pressure.
+The frozen AVQA run completed **100 optimizer updates** and the full paired
+**1,000-question MMAU-Mini evaluation**, with pipeline `Succeeded` / exit 0.
+Official MMAU accuracy increased from **289/1000 (28.9%)** to
+**310/1000 (31.0%)**, a **+2.1 percentage-point** descriptive change. This is
+one matched greedy evaluation, without a statistical significance claim.
 
-Before training, a fresh four-prompt/eight-candidate probability probe passed
-with **32 candidates, zero optimizer updates**, maximum native/SGLang action
-log-probability error **0.000117779**, and mean error **0.00000473816**. The
-maximum-error tolerance remained 0.03 and the support-mismatch threshold
-remained 0.001. Two learner ranks were independently recorded on separate
-physical GPUs 2 and 3.
+### Training and numerical checks
 
-This is partial engineering evidence. Complete 100-update training, the full
-two-plus-two runtime census, final checkpoint integrity and full 1000-item
-before/after MMAU evaluation are **pending**. No end-to-end acceptance or MMAU
-improvement is claimed. Earlier BF16 probability probes failed the original
-numerical gate, including an HF-rounding/FP32-head alignment attempt; that
-attempt is not an accepted training profile.
+The public profile is `conf/rl_west_4gpu_async.yaml`: four H100 80 GB GPUs on
+one node, with two data-parallel native learner replicas and two independent
+SGLang TP=1 rollout replicas. Every update uses **32 prompts × 8 candidates**:
+3,200 training prompt instances and 25,600 sampled candidates in total.
+Native SDPA and SGLang Triton use FP32; training uses temperature 0.7, a
+1024-token cap, learning rate 1e-6 and KL coefficient 0.04. The objective is the
+literal WEST default **exact-string accuracy + strict whole-response format**.
+CPU AdamW, reference CPU offload between GPU scoring passes, activation CPU
+offload and a 2048-token scoring micro-batch budget limit GPU memory pressure.
+
+All 100 updates have finite metrics and nonzero gradients (pre-clipping norms
+0.162415–0.307451). Maximum native/SGLang behavior action-log-probability error
+is **0.001337171**, below the unchanged **0.03** gate. All emitted support
+mismatch rates are zero. Weight staleness is 0–1, and **both rollout replicas
+acknowledged every published version 0–100**. Placement receipts identify two
+learner GPUs and two disjoint rollout GPUs on the same Ray node.
+
+Training exact-answer rewards are nonzero for 13,519/25,600 candidates
+(52.8086%). **Strict format reward is zero for all 25,600 candidates.** A
+single answer block inside a caption/reasoning response does not satisfy the
+whole-response format regex. Training-window rewards are diagnostics over
+different questions and samples, separate from the paired held-out result.
+
+Full training-phase wall time was **45,846.964 s (12.735 h)**, including
+initialization, initial rollout and final publication/shutdown. Excluding the
+first timing-warmup update, measured steps averaged 452.051 s: 261.633 s inside
+the learner window and 190.419 s outside it. Outside-window time includes
+save/export, publication, rollout and scheduling; it is not pure inference
+wait. Final 1,000-question evaluation took **646.497 s**.
+
+### Matched MMAU-Mini evaluation
+
+Both phases used the same ordered 1,000 questions (904 distinct audio
+identities), WEST prompting and answer extraction, official MMAU matching,
+SGLang greedy decoding, 2048 new tokens and a 30-second audio limit. The
+benchmark checked matching prompt/prepared-audio identities and non-weight
+export assets; each export matched 1,381 native tensors. The final checkpoint
+was the actual step-100 policy. The saved baseline was reused after paired
+input/export checks; the after phase generated from that final policy. There
+were **87 corrected and 66 regressed** questions.
+
+| Official MMAU accuracy | Before | After | Change |
+| --- | ---: | ---: | ---: |
+| All questions | 289/1000 (28.90%) | 310/1000 (31.00%) | +2.10 pp |
+| Music | 97/334 (29.04%) | 93/334 (27.84%) | -1.20 pp |
+| Sound | 90/333 (27.03%) | 113/333 (33.93%) | +6.91 pp |
+| Speech | 102/333 (30.63%) | 104/333 (31.23%) | +0.60 pp |
+
+The following are separate diagnostics on those same greedy evaluation
+outputs, not additional primary metrics or the sampled AVQA training rewards:
+
+| Diagnostic | Before | After |
+| --- | ---: | ---: |
+| V1 answer extraction + official matcher | 340/1000 | 372/1000 |
+| WEST exact-string training-answer check | 52/1000 | 97/1000 |
+| Strict whole-response format | 0/1000 | 0/1000 |
+| Single answer block anywhere | 143/1000 | 216/1000 |
+| Truncated responses | 25/1000 | 27/1000 |
+
+### Provenance and limits
+
+Initialization was a **prepared native checkpoint reconstructed from public
+`anonymous-release/vLLM_alm` revision
+`83e02343f5647599c444b8ec91084b54576507f6`**, plus the deterministic native
+`vocab_weight` buffer. Its recorded initial SHA256 is
+`790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`.
+It is not verified as tensor-equivalent to the official `espnet/bagpiper-sft`
+native release, and its originating training stage and absence of earlier RL
+are not established. The README's
+[optional reconstruction instructions](README.md#reconstruct-the-recorded-public-hf-initialization-optional)
+document the public source and metadata normalization; they do not prove
+exact replay or official-SFT equivalence.
+
+Training used frozen ESPnet
+`bd432d61b41a319e5ce1e001cd4b93df86b5ad79`; evaluation used frozen ESPnet
+`a93eb740112572d8808fd39cd1e233cf76d028e6`. Both used unchanged Miles
+`a22fd824191c64ba7c5d6c531f125406e4ce9cc6` and SGLang
+`283d68c8bff309a42476c95f7c71dad895d09da6`. The public release draft contains
+later CPU-reviewed integration and portability changes; this frozen run is
+not a GPU acceptance of every change in that draft. Retained experiment
+receipts include `run_006/pipeline_state.json`, `result/TRAINING_100.json` and
+`result/paired_quality.json`, with timing, source, checkpoint, input and
+publication bindings.
+
+This accepts the **four-GPU FP32** path. Earlier BF16 probes failed the
+unchanged numerical gate, including an HF-rounding/FP32-head alignment
+attempt; those failures remain failures. One-GPU collocation and two-GPU
+Bagpiper disaggregation remain unvalidated. Historical SFT may include MMAU
+Mini-derived material, so this is not an SFT-clean blind test. Historical
+73.1% used native SFT prompting, vLLM and 4096 tokens, so it is not the baseline
+for this WEST-prompt, SGLang, 2048-token comparison.
 
 ## Historical evidence (2026-10-14 snapshot)
+
+The following preserves the earlier snapshot. Its unfinished audits were
+recorded as running on that date; these are historical observations, not
+current process states or the status of the accepted four-GPU run above.
 
 The independently frozen `bagpiper-qa-stage6-006` completed four optimizer
 updates and all 32 training candidates at 20:03:27 UTC, with `Succeeded` / exit
 zero. Its saved AVQA reward-component audit records exact-answer accuracy
 **1/32**, answer format **6/32**, and think format **27/32**. The complete
 initial-reference audit and strict reuse audit of all 32 before responses have
-succeeded. The full native/Adam/export/previous-actor checkpoint audit and fresh
-MMAU after evaluation remain `Running`; final engineering acceptance is pending.
+succeeded. At that snapshot, the full native/Adam/export/previous-actor
+checkpoint audit and fresh MMAU after evaluation were recorded as `Running`;
+that historical run had not yet passed final engineering acceptance.
 Training reward components are separate from official held-out MMAU accuracy
 and do not establish QA quality improvement. Earlier trajectories below remain
 preserved as historical results.
@@ -145,12 +228,13 @@ reloaded initial-reference logprob error was zero and reference tensors remained
 unchanged. `bagpiper-qa-before-saved-audit-006` also succeeded on all 32 original
 QA005 before responses, with 1381 native/export tensors exactly equal and maximum
 native action logprob error 0.000156641; `new_before_generation` is false.
-The before official MMAU result remains 0/32. The fresh after evaluation is
-still `Running` and targets all 32 candidates from the actual step-four
-checkpoint with the same effective engine seed 41. The complete four-update
-checkpoint audit is also `Running`; parameter/Adam/export/previous-actor integrity
-and the final engineering gate have not yet passed acceptance. Training exit
-zero and nonzero gradient norms do not replace these independent checks.
+The before official MMAU result at this snapshot was 0/32. The fresh after
+evaluation was recorded as `Running`, targeting all 32 candidates from the
+actual step-four checkpoint with the same effective engine seed 41. The
+complete four-update checkpoint audit was also recorded as `Running`:
+parameter/Adam/export/previous-actor integrity and the final engineering gate
+had not yet passed acceptance at that observation. Training exit zero and
+nonzero gradient norms do not replace these independent checks.
 
 Additional evidence under the same task directory:
 
@@ -164,8 +248,8 @@ Additional evidence under the same task directory:
 - `evidence/qa006_saved_train_reward_components_001.json`
 - `runs/bagpiper-qa-reference-audit-006/`
 - `runs/bagpiper-qa-before-saved-audit-006/`
-- `runs/bagpiper-qa-checkpoint-audit-006/` (audit still running)
-- `runs/bagpiper-qa-mmau-after-006/` (fresh evaluation still running)
+- `runs/bagpiper-qa-checkpoint-audit-006/` (audit running at the snapshot)
+- `runs/bagpiper-qa-mmau-after-006/` (evaluation running at the snapshot)
 - `evidence/qa006_launcher_postrun_independent_review.json`
 - `evidence/qa006_registered_protection_audit.json`
 

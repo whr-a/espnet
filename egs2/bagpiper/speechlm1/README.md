@@ -449,13 +449,19 @@ account for approximately 67.76 GiB before activations and workspaces; actual
 memory use must be measured on the target machine. FP32 was selected after
 BF16 attempts failed the unchanged 0.03 numerical gate.
 
-On 2026-10-16, a fresh four-prompt/eight-candidate numerical preflight passed
-with maximum native/SGLang log-probability error **0.000117779** and zero
-optimizer updates. The subsequent run verified two learner ranks on separate
-physical GPUs 2 and 3. These are probability and placement checks: complete
-100-update training, the full two-plus-two runtime census, checkpoint integrity,
-and before/after 1000-item MMAU evaluation remain pending. No MMAU improvement
-is claimed. See [QA engineering evidence](RESULTS_QA.md).
+On 2026-10-16, the frozen four-GPU FP32 run completed **100 optimizer updates**
+and the full paired **1,000-question MMAU-Mini evaluation**, with pipeline
+`Succeeded` / exit 0. Official accuracy was **28.9% before and 31.0% after
+(+2.1 percentage points)**. All updates had nonzero gradients; maximum
+native/SGLang behavior log-probability error was **0.001337171 < 0.03**, and
+both rollout replicas acknowledged policy versions 0–100. Training took
+**12.735 h**; final evaluation took **646.497 s**. Strict whole-response format
+reward remained zero throughout training and evaluation; answer-tag presence
+is a separate diagnostic. This is one matched comparison from the recorded
+public-HF reconstruction below, without official-SFT equivalence, statistical
+significance or an SFT-clean blind-test claim. See
+[QA results and provenance](RESULTS_QA.md) for category scores, frozen source
+commits and the distinction from the later CPU-reviewed release draft.
 
 Miles is an unmodified optional library pinned to
 `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See the
