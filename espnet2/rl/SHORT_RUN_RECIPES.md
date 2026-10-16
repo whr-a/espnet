@@ -49,15 +49,89 @@ An extracted LibriTTS split can instead use `--dataset libritts --task
  tts_asr_wer --input /path/to/split --output data/rl/tts_train.jsonl`. Prepare
 the held-out manifest separately from dev data.
 
-AVQA preparation from cached train parquet follows the WEST templates:
+For public AVQA, start with a **local raw train parquet** from a fixed revision
+of `gijs/avqa-processed`, including its embedded `audio` and
+`instruction`/`question`, `answer` and choices. Record the revision used to
+obtain the file; this preparer does not download it or infer its split from its
+filename. Run in the optional RL environment; preparation is CPU-only and
+requires pandas, PyArrow, NumPy and SoundFile.
 
 ```bash
-python -m espnet2.rl.short_run_data avqa --input /path/to/train.parquet --qa-template default --output-dir data/rl/avqa
+AVQA_TRAIN_PARQUET=/path/to/downloaded/train.parquet
+AVQA_REVISION=THE_EXACT_DOWNLOADED_DATASET_COMMIT
+python -m espnet2.rl.qa_data \
+  --input "$AVQA_TRAIN_PARQUET" \
+  --source-dataset gijs/avqa-processed --source-revision "$AVQA_REVISION" \
+  --source-split train --qa-template default \
+  --train-count 3200 --heldout-count 32 --seed 42 \
+  --output-dir data/rl/avqa_default
 ```
 
-Use a distinct output and `--qa-template think` for think. Source/template
-hashes are recorded, and deterministic source-ID hashing defines a local
-held-out partition of train. Report it as local holdout, not official validation.
+This emits `train.jsonl`, `dev.jsonl`, materialized audio under `prepared/`,
+and `admission.json`. The 3,200 training prompts cover **100 updates × 32
+independent prompts** without wrapping the manifest; eight candidates per
+prompt are generated during RL. For 200 updates select at least 6,400 training
+prompts. Use the chosen horizon in the recipe YAML before launching.
+
+Selection orders source IDs by SHA256 of the seed and ID, reserves 32 eligible
+records for local dev, and takes the next 3,200 for training. Question IDs,
+prepared audio file hashes and decoded PCM identities are unique across both
+roles. The output directory must be new. Keep its materialized audio with the
+manifests. A different output path produces new path/hash bindings even when
+the selected source IDs remain deterministic.
+
+Both roles retain their actual native `train` split in per-record provenance
+and `admission.source_split`. **`dev.jsonl` is a local partition of train,
+not official validation/test.** The split and source revision are user
+attestations bound to the parquet SHA256; available split metadata is checked
+for contradictions. Use a separate fresh output and `--qa-template think` for
+WEST's optional think prompt.
+
+Optional benchmark exclusion uses an explicitly supplied local manifest. For
+example, prepare the complete official MMAU-Mini parquet separately, then add
+it to a fresh AVQA preparation:
+
+```bash
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
+  --dataset mmau --task qa --input /path/to/official/mmau-mini.parquet \
+  --qa-template default --output data/rl/mmau/mmau_mini.jsonl
+python -m espnet2.rl.qa_data \
+  --input "$AVQA_TRAIN_PARQUET" \
+  --source-dataset gijs/avqa-processed --source-revision "$AVQA_REVISION" \
+  --source-split train --qa-template default \
+  --train-count 3200 --heldout-count 32 --seed 42 \
+  --exclude-manifest data/rl/mmau/mmau_mini.jsonl \
+  --output-dir data/rl/avqa_excluding_mmau
+```
+
+`--exclude-manifest` can be repeated. It excludes matching question IDs,
+prepared audio file hashes and decoded PCM, including across different audio
+containers with identical decoded samples. It does not establish resampling,
+perceptual, semantic, document/group/component or historical SFT independence.
+MMAU may contain several questions on the same clip: keep the full benchmark
+separate from the unique-audio local admission holdout.
+
+The public receipt has schema `espnet-public-qa-data-v1`. Its
+`training_ready: true` means the stated local media/role checks passed;
+`full_component_admission` remains `NOT_ASSERTED`. It is not a signed clearance
+or a replacement for project-specific protection registries and required
+contamination audits. Internal protected-set results cannot automatically
+transfer to a new public dataset/checkpoint. The existing runtime
+`verify_data_admission` rechecks role-bound manifest hashes, record counts and
+audio bytes. Pass all three artifacts together to `espnet2.bin.rl_launch`:
+`--manifest data/rl/avqa_default/train.jsonl`,
+`--eval-manifest data/rl/avqa_default/dev.jsonl`, and
+`--data-admission data/rl/avqa_default/admission.json` (or the corresponding
+paths from `avqa_excluding_mmau`). Resolve the model assets as described below
+before launcher validation.
+
+The older `espnet2.rl.short_run_data avqa` command instead consumes a
+WEST-prepared cache with `extra_info`/`reward_model` and emits **candidate
+pools**, not launchable train/dev manifests or admission. Its default
+`--pool-count 128` is insufficient for 100 × 32 training. Its separate
+`select`/`protect` workflow requires the caller's actual registered protection
+inputs; do not fabricate them for public preparation.
+
 QA on user audio accepts:
 
 ```bash
