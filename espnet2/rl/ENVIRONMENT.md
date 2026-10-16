@@ -344,9 +344,10 @@ official checkpoint's complete tensor loading or native/SGLang probability
 agreement. Run the selected recipe's numerical preflight with that checkpoint
 before training. The recorded four-GPU experiment used a prepared native
 checkpoint reconstructed from public `anonymous-release/vLLM_alm` revision
-`83e02343f5647599c444b8ec91084b54576507f6`, rather than a verified tensor-equivalent
-copy of this official SFT release. Its numerical evidence does not transfer
-automatically to the public checkpoint.
+`83e02343f5647599c444b8ec91084b54576507f6`. A full CPU comparison confirms
+**402 unequal tensors** versus this official SFT release; the reconstruction's
+originating training stage and absence of earlier RL are not established.
+Its numerical evidence does not transfer automatically to the public checkpoint.
 
 For the experimental initialization, follow the separate
 [recorded public HF reconstruction recipe](../../egs2/bagpiper/speechlm1/README.md#reconstruct-the-recorded-public-hf-initialization-optional).
@@ -515,9 +516,11 @@ OWSM has existing single-/two-GPU 200-update engineering evidence, without a
 held-out WER gain. Bagpiper has an accepted four-GPU FP32 100-update run and
 one paired full MMAU-Mini comparison (+2.1 pp); its one-/two-GPU layouts and
 OpusLM's two-GPU full loop still need acceptance. The Bagpiper result is not
-an SFT-clean blind test or a statistical significance claim, and historical
-73.1% used a different protocol. Earlier component measurements do not
-establish the remaining layout-specific results.
+an SFT-clean blind test or a statistical significance claim. The separate
+historical local MMAU-Mini archive scored 731/1000 (73.1%); its exact checkpoint
+and token cap are unverified. That archive is distinct from the official model
+card's 73.1% on full MMAU. Earlier component measurements do not establish the
+remaining layout-specific results.
 
 Common installation failures:
 

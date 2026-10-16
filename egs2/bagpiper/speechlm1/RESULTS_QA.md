@@ -19,7 +19,8 @@ its own numerical and memory preflights.
 
 The frozen AVQA run completed **100 optimizer updates** and the full paired
 **1,000-question MMAU-Mini evaluation**, with pipeline `Succeeded` / exit 0.
-Official MMAU accuracy increased from **289/1000 (28.9%)** to
+With WEST prompting and answer extraction, accuracy from the official MMAU
+matcher increased from **289/1000 (28.9%)** to
 **310/1000 (31.0%)**, a **+2.1 percentage-point** descriptive change. This is
 one matched greedy evaluation, without a statistical significance claim.
 
@@ -66,7 +67,7 @@ was the actual step-100 policy. The saved baseline was reused after paired
 input/export checks; the after phase generated from that final policy. There
 were **87 corrected and 66 regressed** questions.
 
-| Official MMAU accuracy | Before | After | Change |
+| MMAU matcher (WEST extraction) | Before | After | Change |
 | --- | ---: | ---: | ---: |
 | All questions | 289/1000 (28.90%) | 310/1000 (31.00%) | +2.10 pp |
 | Music | 97/334 (29.04%) | 93/334 (27.84%) | -1.20 pp |
@@ -91,9 +92,9 @@ Initialization was a **prepared native checkpoint reconstructed from public
 `83e02343f5647599c444b8ec91084b54576507f6`**, plus the deterministic native
 `vocab_weight` buffer. Its recorded initial SHA256 is
 `790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`.
-It is not verified as tensor-equivalent to the official `espnet/bagpiper-sft`
-native release, and its originating training stage and absence of earlier RL
-are not established. The README's
+A full CPU comparison confirms **402 unequal tensors** versus the pinned
+official `espnet/bagpiper-sft` native release. Its originating training stage
+and absence of earlier RL are not established. The README's
 [optional reconstruction instructions](README.md#reconstruct-the-recorded-public-hf-initialization-optional)
 document the public source and metadata normalization; they do not prove
 exact replay or official-SFT equivalence.
@@ -113,9 +114,11 @@ This accepts the **four-GPU FP32** path. Earlier BF16 probes failed the
 unchanged numerical gate, including an HF-rounding/FP32-head alignment
 attempt; those failures remain failures. One-GPU collocation and two-GPU
 Bagpiper disaggregation remain unvalidated. Historical SFT may include MMAU
-Mini-derived material, so this is not an SFT-clean blind test. Historical
-73.1% used native SFT prompting, vLLM and 4096 tokens, so it is not the baseline
-for this WEST-prompt, SGLang, 2048-token comparison.
+Mini-derived material, so this is not an SFT-clean blind test. The historical
+local native-QA/vLLM archive scored **731/1000 (73.1%) on MMAU-Mini**, but its
+exact checkpoint and token cap are unverified. It is not the baseline for
+this WEST-prompt, SGLang, 2048-token comparison, and is separate from the model
+card's **73.1% on full MMAU**.
 
 ## Historical evidence (2026-10-14 snapshot)
 

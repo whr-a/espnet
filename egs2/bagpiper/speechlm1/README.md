@@ -458,7 +458,8 @@ BF16 attempts failed the unchanged 0.03 numerical gate.
 
 On 2026-10-16, the frozen four-GPU FP32 run completed **100 optimizer updates**
 and the full paired **1,000-question MMAU-Mini evaluation**, with pipeline
-`Succeeded` / exit 0. Official accuracy was **28.9% before and 31.0% after
+`Succeeded` / exit 0. With WEST prompting and answer extraction, accuracy from
+the official MMAU matcher was **28.9% before and 31.0% after
 (+2.1 percentage points)**. All updates had nonzero gradients; maximum
 native/SGLang behavior log-probability error was **0.001337171 < 0.03**, and
 both rollout replicas acknowledged policy versions 0–100. Training took
@@ -495,7 +496,8 @@ The recorded four-GPU engineering run starts from prepared native checkpoint
 SHA256 `790bb1d4fdaafd3cce3d44eb40b9e77a989d322c6e4dc17b0172c62b3d2610fa`,
 reconstructed from public `anonymous-release/vLLM_alm` revision
 `83e02343f5647599c444b8ec91084b54576507f6` and the native loss-weight buffer.
-This is not verified as tensor-equivalent to the official public SFT `model.pt`
+A full CPU comparison confirms **402 unequal tensors** versus the official
+SFT `model.pt`
 (SHA256 `50980756fad38bbefeb326ac0012e39f431ec5af8c0caaac8bd254f179f33746`).
 The official checkpoint therefore needs its own complete-load and numerical
 preflight; CPU metadata tests do not establish GPU training compatibility or
@@ -535,7 +537,8 @@ experiment. It is separate from the official native SFT download above. The
 source is public
 [`anonymous-release/vLLM_alm`](https://huggingface.co/anonymous-release/vLLM_alm/tree/83e02343f5647599c444b8ec91084b54576507f6/bagpiper)
 at revision `83e02343f5647599c444b8ec91084b54576507f6`. Its originating training
-stage and tensor equivalence to official SFT `509807...` are not established.
+stage and absence of earlier RL are not established. The reconstructed native
+checkpoint differs in **402 tensors** from official SFT `509807...`.
 
 Choose the weight download explicitly; conversion never downloads weights:
 
