@@ -166,8 +166,9 @@ on one and two GPUs; custom configurations should use at most four GPUs.
 
 OWSM v4 base keeps its reference policy, Adam state and native scoring on the
 training GPU. `rollout_mem_fraction` limits the persistent SGLang engine when
-it shares that device. The templates keep temperature 1 and record the
-sampling contract for native/rollout probability checks.
+it shares that device. The templates keep temperature 1; a temperature in
+(0, 1] samples from softmax(logits / T), and the engine and learner both score
+that distribution. See the [sampling contract](../../../espnet2/rl/README.md#sampling-temperature).
 
 Miles is an unmodified optional library pinned to
 `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See

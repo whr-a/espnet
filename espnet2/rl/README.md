@@ -88,7 +88,8 @@ validation keeps every other family, and the vLLM backend, whose frozen
   SGLang returns the log probability after its temperature unless
   `SGLANG_RETURN_ORIGINAL_LOGPROB=1`, which returns log softmax(z), the one
   before it. The scheduler reads the variable when it imports its sampler, so
-  every engine sets it before starting SGLang instead of inheriting it.
+  every engine sets it before starting SGLang instead of inheriting it. OWSM
+  sets it to 0 and lets SGLang sample at T.
 - **Learner.** Every pass computes log_softmax(z / T)[a] of the recorded
   actions: the current (old) scores, the async behavior snapshot's, the
   reference's and the update's forward. The FP32 logits are divided as

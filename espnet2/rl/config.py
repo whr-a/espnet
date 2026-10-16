@@ -24,7 +24,7 @@ from .utils import get_device_name
 
 # Families whose rollout engine samples, and whose learner scores, every action
 # at the recipe's temperature (README, "Sampling temperature").
-TEMPERATURE_FAMILIES = ()
+TEMPERATURE_FAMILIES = ("owsm",)
 
 
 @dataclass

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 
 from espnet2.rl.engine import SGLangRolloutEngine
@@ -78,6 +79,10 @@ class OWSMEngine(SGLangRolloutEngine):
     )
 
     def __init__(self, config, model_path, *, directory, replica=0):
+        # Read when SGLang's scheduler imports its sampler: each sampled
+        # token's log probability at the sampling temperature,
+        # log(softmax(logits / T)), not the one before it.
+        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "0"
         super().__init__(config, model_path, directory=directory, replica=replica)
         # The vocabulary and prompt symbols are the architecture's; every
         # later export of this run shares them.
@@ -109,7 +114,7 @@ class OWSMEngine(SGLangRolloutEngine):
                 rids.append(f"{rollout_id}:{source_index}:{sample}")
                 sampling.append(
                     dict(
-                        temperature=1.0,
+                        temperature=self.config.temperature,
                         top_p=1.0,
                         top_k=-1,
                         max_new_tokens=self.config.max_tokens,

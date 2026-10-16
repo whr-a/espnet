@@ -32,7 +32,7 @@ def resolve_callable(name: str):
     return getattr(importlib.import_module(module), symbol)
 
 
-from espnet2.rl.types import NativeESPnetPolicy, TokenScores
+from espnet2.rl.types import NativeESPnetPolicy, TokenScores, tempered
 
 
 def object_array(values):
@@ -84,10 +84,18 @@ def owsm_symbol_id(token_list, value, *, language=False):
 
 
 class OWSMPolicy(NativeESPnetPolicy):
-    def __init__(self, model: nn.Module, args=None, train_encoder: bool = True):
+    def __init__(
+        self,
+        model: nn.Module,
+        args=None,
+        train_encoder: bool = True,
+        temperature: float = 1.0,
+    ):
         super().__init__()
         self.model = model
         self.args = args
+        # Actions are sampled from softmax(logits / temperature).
+        self.temperature = temperature
         if getattr(model, "decoder", None) is None:
             raise ValueError(
                 "OWSM-CTC is a distinct policy; this backend requires an autoregressive decoder"
@@ -145,7 +153,7 @@ class OWSMPolicy(NativeESPnetPolicy):
             component = getattr(model, name, None)
             if component is not None:
                 component.to(dtype=getattr(torch, config.dtype))
-        return cls(model, args, config.train_encoder)
+        return cls(model, args, config.train_encoder, config.temperature)
 
     @staticmethod
     def _cast_features(features, component):
@@ -249,7 +257,9 @@ class OWSMPolicy(NativeESPnetPolicy):
         )
         positions = (positions + offsets).clamp_max(logits.size(1) - 1)
         logits = logits.gather(1, positions[..., None].expand(-1, -1, logits.size(-1)))
-        distribution = torch.log_softmax(logits.float(), dim=-1)
+        distribution = torch.log_softmax(
+            tempered(logits.float(), self.temperature), dim=-1
+        )
         log_probs = distribution.gather(-1, responses.unsqueeze(-1)).squeeze(-1)
         entropy = -(distribution.exp() * distribution).sum(-1)
         return TokenScores(log_probs * mask, entropy * mask, mask)
