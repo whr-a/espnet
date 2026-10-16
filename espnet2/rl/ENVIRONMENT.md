@@ -45,7 +45,7 @@ The locked RL profile requires:
 | Python | CPython 3.12, including `venv`; this lock is not for Python 3.13 |
 | C library | glibc >=2.39, required by the Miles router wheel |
 | GPU driver | A CUDA 13.x-compatible NVIDIA driver; the driver-family floor is R580 |
-| Main GPU layouts | One H100 80 GB for collocation; two for disaggregated async |
+| Main GPU layouts | One H100 80 GB for collocation; two for disaggregated async; four for the Bagpiper WEST FP32 profile |
 | Larger-model host memory | CPU reference/master weights and Adam can require substantial RAM; Bagpiper templates suggest budgeting at least 192 GB, not a measured universal minimum |
 | Storage / network | Space for multiple environments, model assets, corpus audio and checkpoints; access to GitHub, PyPI, NVIDIA/PyTorch wheel hosts and the selected model/data sources |
 
@@ -372,8 +372,33 @@ Validation checks inputs/configuration; it does not connect to Ray or verify liv
 placement. Removing `--validate-only` starts real training and records actual
 placement. The pipeline overlaps the next rollout with the current update, with
 weight staleness at most one; it uses Miles `fully_async=False`, not unrestricted
-asynchronous updates. Supplied recipes use one or two GPUs; custom public layouts
-should stay within four total.
+asynchronous updates. Supplied recipes use one, two or four GPUs; custom public
+layouts should stay within four total.
+
+### Four GPUs: Bagpiper WEST default with FP32
+
+Use [rl_west_4gpu_async.yaml](../../egs2/bagpiper/speechlm1/conf/rl_west_4gpu_async.yaml)
+after resolving the same source, model, data and output paths. Start a dedicated
+Ray cluster exposing four H100 80 GB GPUs, and select its actual node ID for
+both roles. The profile requests two learner GPUs and two independent TP=1
+inference GPUs; the launch receipt and worker census record actual placement.
+It retains 32 prompts × 8 candidates over 100 updates.
+
+Both model paths use FP32. The native learner uses SDPA, and SGLang uses Triton
+attention with IEEE float32 and 24 concurrent requests. BF16 attempts failed
+the strict native/inference probability gate; FP32 numerical preflight passed
+on 32 candidates with maximum log-probability error 0.000117779. The 0.03 gate
+is unchanged. This preflight performed zero optimizer updates; full training
+and MMAU quality acceptance remain pending.
+
+Keep CPU AdamW, native layer/head checkpointing, a 2048-token micro-batch budget,
+and activation CPU offload. `reference_cpu_offload: true` stores the reference
+on CPU between passes and scores it on each rank's GPU selected by
+`reference_device: null`. It returns to CPU before actor backward. Actor and
+reference still coexist during reference scoring: their FP32 state tensors
+alone total about 67.76 GiB, excluding activations, CUDA workspaces and other
+allocations. Provide substantial host RAM and measure both CPU and GPU peaks;
+successful environment installation does not establish memory fit.
 
 ## 9. Understand the validation boundary
 

@@ -1,6 +1,6 @@
 # Literal WEST default reward/prompt protocol, adapted to native Bagpiper.
 # Four GPUs: two data-parallel learners, two independent TP=1 rollout replicas.
-# This configuration requires a fresh GPU acceptance run before a quality claim.
+# FP32 probability preflight passed; full training and quality remain pending.
 family: bagpiper
 train_config: /path/to/released/train_config.checkpointing.yaml
 checkpoint: /path/to/released/model.pt
@@ -13,7 +13,8 @@ exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
 sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
 reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_west_default_reward
 device: cuda:0
-reference_device: cuda:0
+reference_device: null
+reference_cpu_offload: true
 train_gpus: '0,1'
 rollout_gpus: '2,3'
 distributed_strategy: native_allreduce
@@ -23,9 +24,9 @@ sglang_source: /path/to/pinned/sglang
 sglang_engine_kwargs:
   # Buffered safetensors loading on shared filesystems; the same exact tensors.
   weight_loader_disable_mmap: true
-  attention_backend: fa3
+  attention_backend: triton
   context_length: 4096
-  max_running_requests: 32
+  max_running_requests: 24
 adapter_options:
   reference_assets: /path/to/released/hf_assets
   native_attention: sdpa
@@ -34,18 +35,18 @@ adapter_options:
   audio_processor_path: /path/to/released/audio_processor
   tokenizer_mode: hf
   score_chunk_size: 32
-  activation_cpu_offload: false
-dtype: bfloat16
+  activation_cpu_offload: true
+dtype: float32
 optimizer_device: cpu
 seed: 42
-steps: 200
+steps: 100
 warmup_steps: 1
 save_interval: 100
 keep_exports: 2
 prompts_per_step: 32
 group_size: 8
 micro_batch_size: 32
-micro_batch_tokens: 8192
+micro_batch_tokens: 2048
 learning_rate: 1.0e-06
 kl_coef: 0.04
 max_tokens: 1024

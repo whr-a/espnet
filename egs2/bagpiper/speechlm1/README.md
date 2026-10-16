@@ -422,6 +422,34 @@ with training. These low-resource Bagpiper templates have CPU configuration
 checks only: the exact one-/two-GPU settings still require a GPU acceptance
 run. Historical FP32 engineering results do not validate these BF16 layouts.
 
+For literal WEST default AVQA training, use
+[`conf/rl_west_4gpu_async.yaml`](conf/rl_west_4gpu_async.yaml): **four H100
+80 GB GPUs**, with two data-parallel learners and two independent TP=1 SGLang
+rollout replicas. It uses 100 updates of 32 prompts × 8 candidates, FP32 native
+and inference weights, native SDPA and SGLang Triton attention with IEEE FP32,
+temperature 0.7, 1024 generated tokens, learning rate 1e-6 and KL coefficient
+0.04. Prepare AVQA with `--qa-template default`; the rule-based reward is
+`qa_west_default_reward`, exactly upstream `accuracy + format`.
+
+This profile keeps the frozen reference on CPU between scoring passes, brings
+it onto each learner's own GPU for no-gradient scoring, and offloads it before
+actor backward. AdamW state stays on CPU, saved activations use CPU storage,
+and the learner accumulates gradients over micro-batches of at most 2048
+padded tokens (a longer individual candidate is scored alone). Preserve native
+decoder and head-score checkpointing. These settings reduce GPU memory without
+changing the global batch or loss. Two full FP32 native state dictionaries
+account for approximately 67.76 GiB before activations and workspaces; actual
+memory use must be measured on the target machine. FP32 was selected after
+BF16 attempts failed the unchanged 0.03 numerical gate.
+
+On 2026-10-16, a fresh four-prompt/eight-candidate numerical preflight passed
+with maximum native/SGLang log-probability error **0.000117779** and zero
+optimizer updates. The subsequent run verified two learner ranks on separate
+physical GPUs 2 and 3. These are probability and placement checks: complete
+100-update training, the full two-plus-two runtime census, checkpoint integrity,
+and before/after 1000-item MMAU evaluation remain pending. No MMAU improvement
+is claimed. See [QA engineering evidence](RESULTS_QA.md).
+
 Miles is an unmodified optional library pinned to
 `a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See the
 [shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for environment
@@ -542,7 +570,7 @@ vectorised head under each frame's recorded support; in FP32 a batch differs
 from scoring each candidate alone by up to about 1e-4, cuBLAS rounding GEMMs by
 their row count. Native layer and score-block recomputation use the same
 matrix shapes during backward; the objective and sampled actions remain
-unchanged. The historical FP32 prototype used three GPUs; current low-resource
+unchanged. The historical FP32 prototype used three GPUs; the one-/two-GPU
 templates use BF16 with CPU reference and optimizer state. Their end-to-end
 acceptance remains pending, so no quality improvement is claimed.
 

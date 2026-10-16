@@ -300,6 +300,7 @@ class NativeComponents:
             debug_deterministic_collective=False,
             object_store_backend="ray",
             worker_comm_backend="ray",
+            env_report="",
             env_report_interval_seconds=0,
             save_debug_event_data=None,
         )

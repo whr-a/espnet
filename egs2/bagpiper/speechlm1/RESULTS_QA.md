@@ -1,4 +1,30 @@
-# Bagpiper QA engineering evidence (2026-10-14)
+# Bagpiper QA engineering evidence
+
+## WEST default four-GPU FP32 profile (2026-10-16)
+
+The current public draft `conf/rl_west_4gpu_async.yaml` matches a separately
+frozen 100-update AVQA run: two native learner replicas and two SGLang TP=1
+rollout replicas on four H100 80 GB GPUs, 32 prompts × 8 candidates, FP32,
+temperature 0.7, a 1024-token cap, learning rate 1e-6 and KL coefficient 0.04.
+The reward is the literal WEST default `accuracy + format`. CPU reference
+storage between GPU scoring passes, CPU optimizer state, activation offload
+and a 2048-token scoring micro-batch budget reduce GPU memory pressure.
+
+Before training, a fresh four-prompt/eight-candidate probability probe passed
+with **32 candidates, zero optimizer updates**, maximum native/SGLang action
+log-probability error **0.000117779**, and mean error **0.00000473816**. The
+maximum-error tolerance remained 0.03 and the support-mismatch threshold
+remained 0.001. Two learner ranks were independently recorded on separate
+physical GPUs 2 and 3.
+
+This is partial engineering evidence. Complete 100-update training, the full
+two-plus-two runtime census, final checkpoint integrity and full 1000-item
+before/after MMAU evaluation are **pending**. No end-to-end acceptance or MMAU
+improvement is claimed. Earlier BF16 probability probes failed the original
+numerical gate, including an HF-rounding/FP32-head alignment attempt; that
+attempt is not an accepted training profile.
+
+## Historical evidence (2026-10-14 snapshot)
 
 The independently frozen `bagpiper-qa-stage6-006` completed four optimizer
 updates and all 32 training candidates at 20:03:27 UTC, with `Succeeded` / exit
