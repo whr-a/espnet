@@ -250,17 +250,35 @@ class BagpiperEngine(SGLangRolloutEngine):
             or not len(tokens) == len(logprobs) == len(trace or ())
         ):
             raise RuntimeError("SGLang returned an incomplete Bagpiper action trace")
-        finish = (info.get("finish_reason") or {}).get("type")
+        backend_finish = info.get("finish_reason") or {}
+        finish = backend_finish.get("type")
         eos = self.geometry["eos_token_id"]
         if (
             finish not in ("stop", "length")
-            or (finish == "stop") != (tokens[-1] == eos)
+            or (finish == "stop" and tokens[-1] != eos)
             or eos in tokens[:-1]
+            or len(tokens) > sampling["max_new_tokens"]
             or (finish == "length" and len(tokens) != sampling["max_new_tokens"])
         ):
             raise RuntimeError(
-                f"SGLang ended a Bagpiper request ({finish}) after {len(tokens)} frames"
+                "SGLang ended an invalid Bagpiper request: "
+                + json.dumps(
+                    {
+                        "id": info.get("id"),
+                        "finish_reason": backend_finish,
+                        "frames": len(tokens),
+                        "max_new_tokens": sampling["max_new_tokens"],
+                        "eos_positions": [
+                            i for i, token in enumerate(tokens) if token == eos
+                        ],
+                        "tail_tokens": tokens[-8:],
+                    }
+                )
             )
+        # SGLang checks its length cap before EOS. EOS sampled as the last
+        # allowed action is complete, and remains in the recorded loss mask.
+        if finish == "length" and tokens[-1] == eos:
+            finish = "stop"
         secondary = self.geometry["num_stream"] - 1
         frames, scores, stream_scores, masks, supports = [], [], [], [], []
         for token, (logprob, sampled, _), (support, active, *codec) in zip(
@@ -320,4 +338,6 @@ class BagpiperEngine(SGLangRolloutEngine):
         }
         if sampling_seed is not None:
             result["sampling_seed"] = sampling_seed
+        if finish != backend_finish["type"]:
+            result["backend_finish_reason"] = backend_finish
         return result
