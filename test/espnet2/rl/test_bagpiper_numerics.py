@@ -7,6 +7,7 @@ import torch
 
 pytest.importorskip("sglang")
 pytest.importorskip("transformers.models.qwen3.modeling_qwen3")
+pytest.importorskip("transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe")
 
 from sglang.srt.layers.activation import SiluAndMul
 from sglang.srt.layers.layernorm import RMSNorm
@@ -17,6 +18,9 @@ from transformers.models.qwen3.modeling_qwen3 import (
     Qwen3RMSNorm,
     Qwen3RotaryEmbedding,
     apply_rotary_pos_emb,
+)
+from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+    SinusoidsPositionEmbedding,
 )
 
 from espnet2.speechlm.model.speechlm.rl.bagpiper import sampling
@@ -48,6 +52,8 @@ def backbone():
             RotaryEmbedding(128, 128, 2048, 1000000.0, True, torch.bfloat16),
         ]
     )
+    model.audio_tower = nn.Module()
+    model.audio_tower.positional_embedding = SinusoidsPositionEmbedding(64, 32)
     return model
 
 
@@ -122,6 +128,33 @@ def test_native_bf16_profile_rejects_mixed_precision():
     model.model[0].weight.data = model.model[0].weight.float()
     with pytest.raises(ValueError, match="mixed-precision"):
         install_native_bf16_numerics(model)
+
+
+def test_native_audio_table_matches_full_size_hf_cpu_initialization():
+    previous_dtype = torch.get_default_dtype()
+    try:
+        torch.set_default_dtype(torch.float32)
+        expected = SinusoidsPositionEmbedding(1500, 1280).positional_embedding
+        torch.set_default_dtype(torch.bfloat16)
+        model = backbone()
+        position = model.audio_tower.positional_embedding = SinusoidsPositionEmbedding(
+            1500, 1280
+        )
+        position.positional_embedding.add_(0.01)
+        parameters = {name: value.clone() for name, value in model.named_parameters()}
+        install_native_bf16_numerics(model)
+        actual = position.positional_embedding
+        assert actual.dtype == torch.float32
+        assert actual.device.type == "cpu"
+        assert torch.get_default_dtype() == torch.bfloat16
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            actual.bfloat16(), expected.bfloat16(), rtol=0, atol=0
+        )
+        for name, value in model.named_parameters():
+            torch.testing.assert_close(value, parameters[name], rtol=0, atol=0)
+    finally:
+        torch.set_default_dtype(previous_dtype)
 
 
 @pytest.mark.parametrize("width", [3, 128])

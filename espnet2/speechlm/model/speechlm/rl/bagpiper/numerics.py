@@ -5,7 +5,9 @@
 The native HF policy rounds residual sums, normalized activations and SiLU
 outputs to BF16 before the following operation. Fused kernels can remove
 these boundaries. These instance-local replacements retain the native
-operations; they do not change parameters, attention or sampling settings.
+operations. Decoder inverse frequencies and the audio sinusoidal table are
+initialized on CPU in FP32, matching the native model's construction before
+its device move. Parameters, attention and sampling settings are unchanged.
 End-to-end numerical agreement still requires an actual rollout check.
 """
 
@@ -89,12 +91,37 @@ def _buffer_receipt(tensor):
     }
 
 
+def _restore_audio_position_table(model):
+    """Use the native HF CPU initialization for this model's audio positions."""
+    from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
+        SinusoidsPositionEmbedding,
+    )
+
+    position = model.audio_tower.positional_embedding
+    if type(position) is not SinusoidsPositionEmbedding:
+        raise ValueError("Bagpiper native BF16 audio requires the HF sinusoidal table")
+    original = position.positional_embedding
+    # This pinned HF class explicitly computes its timescales and trig in
+    # FP32, including under SGLang's BF16 default dtype. Avoid a global dtype
+    # change and rebuild only this nonpersistent buffer, not the encoder.
+    with torch.device("cpu"):
+        replacement = SinusoidsPositionEmbedding(
+            position.length, position.channels, position.max_timescale
+        ).positional_embedding
+    if replacement.dtype != torch.float32:
+        raise TypeError("Native HF sinusoidal initialization must remain FP32")
+    position.positional_embedding = replacement.to(
+        device=original.device, dtype=original.dtype
+    )
+
+
 def install_native_bf16_numerics(model):
     """Select native arithmetic only for this opted-in Bagpiper model.
 
     Supports the unquantized, all-BF16 Qwen3 backbone with default RoPE.
     SGLang's mixed-precision FSDP target is a different contract and is
-    rejected. The HF audio encoder continues using its existing SDPA path.
+    rejected. The HF audio encoder keeps SDPA and receives the same CPU
+    sinusoidal initialization as the native model.
     """
     from sglang.srt.layers.activation import SiluAndMul
     from sglang.srt.layers.layernorm import RMSNorm
@@ -117,6 +144,7 @@ def install_native_bf16_numerics(model):
             isinstance(module, RotaryEmbedding) and type(module) is not RotaryEmbedding
         ):
             raise ValueError("Bagpiper native BF16 compatibility requires default RoPE")
+    _restore_audio_position_table(model)
     for module in modules:
         if isinstance(module, RMSNorm):
             module._forward_method = MethodType(_native_rmsnorm, module)
