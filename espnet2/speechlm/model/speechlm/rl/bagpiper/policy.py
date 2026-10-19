@@ -103,6 +103,45 @@ def offload_saved_activations(model, enabled):
         yield
 
 
+def move_native_model(model, device, dtype, *, preserve_decoder_rope_fp32=False):
+    """Move native weights while retaining the decoder's exact RoPE frequencies.
+
+    ``Module.to(dtype=...)`` also rounds nonpersistent floating-point buffers.
+    HF computes rotary phases in FP32, but casting an already rounded frequency
+    back to FP32 cannot recover it. Save the original decoder buffers before
+    the move; audio frontends and every parameter follow the normal conversion.
+    """
+    frequencies = []
+    if preserve_decoder_rope_fp32:
+        decoder = getattr(getattr(model, "corelm", model), "model", None)
+        if decoder is None:
+            raise ValueError(
+                "FP32 decoder RoPE preservation requires a native decoder"
+            )
+        for module in decoder.modules():
+            if not hasattr(module, "inv_freq"):
+                continue
+            for name in ("inv_freq", "original_inv_freq"):
+                value = getattr(module, name, None)
+                if value is None:
+                    continue
+                if (
+                    not isinstance(value, torch.Tensor)
+                    or value.dtype != torch.float32
+                    or not torch.isfinite(value).all()
+                ):
+                    raise ValueError(
+                        "Preserve decoder RoPE before casting its original FP32 buffers"
+                    )
+                frequencies.append((module, name, value.detach().clone()))
+        if not frequencies:
+            raise ValueError("Native decoder exposes no original RoPE frequency buffers")
+    model = model.to(device=device, dtype=dtype)
+    for module, name, original in frequencies:
+        setattr(module, name, original.to(device=getattr(module, name).device))
+    return model
+
+
 class NativeSpeechLMPolicy(nn.Module):
     """Score Bagpiper rollouts as right-padded batches with one vectorised head.
 
@@ -790,7 +829,15 @@ def factory(config, device):
                 raise ValueError(
                     f"Native recipe modality order differs from frozen token assets: {field} {geometry[field]} != {exported[field]}; preserve original YAML mapping order"
                 )
-    model = model.to(device=device, dtype=getattr(torch, config.dtype)).eval()
+    west_grpo = getattr(config, "training_objective", "miles_ppo") == "west_grpo"
+    model = move_native_model(
+        model,
+        device,
+        getattr(torch, config.dtype),
+        preserve_decoder_rope_fp32=config.adapter_options.get(
+            "native_decoder_rope_fp32", west_grpo
+        ),
+    ).eval()
     if recipe.get("model", {}).get("activation_checkpointing", False):
         model.model.gradient_checkpointing_enable()
     return NativeSpeechLMPolicy(
@@ -807,7 +854,7 @@ def factory(config, device):
         support_mismatch_rate=config.adapter_options.get("support_mismatch_rate", 1e-3),
         temperature=config.temperature,
         top_k=config.top_k,
-        west_grpo=getattr(config, "training_objective", "miles_ppo") == "west_grpo",
+        west_grpo=west_grpo,
     )
 
 

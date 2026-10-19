@@ -89,6 +89,14 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
         self.sources_path = Path(config.espnet_rollout_sources)
         self.batch = self.phase = self.text_audio = self.pending = None
         self.codec = False
+        if getattr(config, "espnet_bagpiper_match_native_bf16", False):
+            from .numerics import install_native_bf16_numerics
+
+            install_native_bf16_numerics(self)
+        if getattr(config, "espnet_bagpiper_stateless_sampling", False):
+            from .sampling import install_safe_stateless_sampler
+
+            install_safe_stateless_sampler()
         if self.lm_head.weight.dtype == torch.float32:
             # sgl_kernel's RMSNorm has no float32 kernel; SGLang's native norm
             # is the full-precision reference (as for OpusLM).

@@ -23,13 +23,18 @@ scope differs from WEST's Qwen entry point.
 | AdamW | Initial LR 1e-6; betas 0.9/0.999; epsilon 1e-8; weight decay zero |
 | Scheduler | Linear decay over all 1,000 updates; zero LR warmup |
 | Gradient clipping | Global norm 1.0 after accumulating the complete update |
-| Generation | Temperature 0.7; top-k 50; top-p 1.0; at most 1,024 response frames |
+| Generation | Temperature 0.7; top-k 50; top-p 1.0; at most 2,048 response frames |
 | Reference KL | Fixed pre-RL model; coefficient 0.04; k3 estimator |
 | Checkpoints and MMAU Mini | Every 100 updates; identical evaluation contract versus pre-training |
 
 WEST's shell uses four candidates by default. The 32 × eight batch, Bagpiper
 terminal-answer parser, correctness 1.0 plus terminal-format 0.1 reward, and
-periodic MMAU evaluation are deliberate overrides. Captions and intermediate
+periodic MMAU evaluation are deliberate overrides. The 2,048-frame response
+limit is a Bagpiper adaptation to WEST's 1,024-token default: captions can
+otherwise consume the budget before the final answer. Context is 4,096 frames;
+64 concurrent inference requests and an 8,192-token native microbatch budget
+are engineering settings that require actual memory validation. Microbatch
+accumulation preserves the complete 32 × eight update. Captions and intermediate
 reasoning are allowed; the parser selects a terminal answer before consulting
 its ground truth. Format reward is excluded from benchmark accuracy.
 
@@ -60,7 +65,21 @@ replicas, generates one batch and performs one optimization update. Staleness is
 zero. Candidate seeds depend on the experiment seed, absolute rollout ID, source
 ID and candidate index, so an evaluation restart does not reset the training
 candidate sequence. This requires SGLang deterministic inference and is limited
-to text-only QA; codec sampling is not stateless.
+to text-only QA; codec sampling is not stateless. The opted-in worker reuses
+SGLang's seed/position hash with open-interval uniform values before the Gumbel
+transform. This prevents the uint32 maximum from creating infinity plus a
+filtered negative infinity, which can yield NaN and an action outside top-k.
+The compatibility helper lives under ESPnet's Bagpiper RL package; the pinned
+SGLang checkout is retained.
+
+This profile preserves the native decoder's FP32 RoPE frequency buffers when
+converting model parameters to BF16. Its explicit `match_native_bf16` option
+also selects native residual, RMSNorm, SiLU and rotary arithmetic in the Bagpiper
+SGLang model. These model-local operations retain the native BF16 rounding
+boundaries. The audio encoder keeps its existing SDPA path. The separate MMAU
+evaluation profile leaves these opt-in training flags disabled, preserving its
+fixed pre-training generation contract. Actual rollout/native agreement remains
+a required runtime check; these options do not establish it by themselves.
 
 The first update uses LR 1e-6. Update 100 uses 9.01e-7 and leaves 9.0e-7 for the
 next update; update 1,000 uses 1e-9 and leaves zero. Evaluation and checkpoint

@@ -23,8 +23,8 @@ sglang_source: /path/to/pinned/sglang
 sglang_engine_kwargs:
   weight_loader_disable_mmap: true
   attention_backend: fa3
-  context_length: 2048
-  max_running_requests: 32
+  context_length: 4096
+  max_running_requests: 64
   enable_deterministic_inference: true
 adapter_options:
   reference_assets: /path/to/released/hf_assets
@@ -36,6 +36,8 @@ adapter_options:
   score_chunk_size: 32
   activation_cpu_offload: true
   stateless_sampling: true
+  native_decoder_rope_fp32: true
+  match_native_bf16: true
 dtype: bfloat16
 optimizer_device: cpu
 seed: 42
@@ -46,7 +48,7 @@ keep_exports: 2
 prompts_per_step: 32
 group_size: 8
 micro_batch_size: 32
-micro_batch_tokens: 2048
+micro_batch_tokens: 8192
 training_objective: west_grpo
 learning_rate: 1.0e-6
 lr_scheduler: linear
@@ -64,7 +66,7 @@ loss_agg_mode: seq-mean-token-mean
 ppo_epochs: 1
 shuffle_train_data: true
 data_seed: 42
-max_tokens: 1024
+max_tokens: 2048
 temperature: 0.7
 top_p: 1.0
 top_k: 50

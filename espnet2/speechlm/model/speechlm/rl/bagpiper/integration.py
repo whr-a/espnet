@@ -277,6 +277,12 @@ def exporter(config, native_checkpoint_path, hf_output_dir):
         pad_token_id=0,
         tie_word_embeddings=False,
     )
+    # Explicit training profiles only: absent/false options preserve the
+    # previous export and baseline evaluation configuration verbatim.
+    if config.family == "bagpiper":
+        for option in ("match_native_bf16", "stateless_sampling"):
+            if config.adapter_options.get(option, False):
+                flat[f"espnet_bagpiper_{option}"] = True
     (directory / "config.json").write_text(json.dumps(flat, indent=2) + "\n")
     state = torch.load(native_checkpoint_path, map_location="cpu", weights_only=True)
     state = state.get("module", state)
