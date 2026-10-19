@@ -60,6 +60,18 @@ probabilities and never enter the raw WEST objective. Recorded sampling metadata
 names this domain explicitly. Different HF/SGLang top-k boundary tie handling
 and random-number streams can produce different texts from the same seed.
 
+The BF16 integrity limits in this profile are an absolute per-action maximum
+of 1.5 and a mean absolute difference of 0.02, checked together. They are
+operational numerical bounds, not loss clipping or reward settings. On the
+validated H100 control, changing only the numerical CUDA kernels of an unchanged
+native model produced a mean difference of 0.01175 and a maximum of 1.02786;
+ordinary native versus rollout scoring gave mean 0.01163 and maximum 0.43654.
+The earlier FP32 maximum of 0.03 did not describe this BF16 runtime. The controls
+used four questions and 38,180 sampled frames, so the first complete 32 × eight
+batch must still pass both bounds. Checkpoint, policy-version, prepared-input,
+action-mask and support checks remain separate requirements. Calibrate these
+bounds again for a different precision or kernel environment.
+
 Each update waits for the exact current policy snapshot on both rollout
 replicas, generates one batch and performs one optimization update. Staleness is
 zero. Candidate seeds depend on the experiment seed, absolute rollout ID, source
@@ -76,7 +88,8 @@ This profile preserves the native decoder's FP32 RoPE frequency buffers when
 converting model parameters to BF16. Its explicit `match_native_bf16` option
 also selects native residual, RMSNorm, SiLU and rotary arithmetic in the Bagpiper
 SGLang model. These model-local operations retain the native BF16 rounding
-boundaries. The audio encoder keeps its existing SDPA path. The separate MMAU
+boundaries. The audio encoder keeps SDPA and the native CPU initialization of its sinusoidal
+position table. The separate MMAU
 evaluation profile leaves these opt-in training flags disabled, preserving its
 fixed pre-training generation contract. Actual rollout/native agreement remains
 a required runtime check; these options do not establish it by themselves.

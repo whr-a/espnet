@@ -70,7 +70,8 @@ max_tokens: 2048
 temperature: 0.7
 top_p: 1.0
 top_k: 50
-score_tolerance: 0.03
+score_tolerance: 1.5
+score_mean_tolerance: 0.02
 execution_mode: disagg_sync
 update_weights_interval: 1
 max_weight_staleness: 0
