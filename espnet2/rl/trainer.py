@@ -578,16 +578,32 @@ class NativeGRPOTrainer:
 
     def save_training_checkpoint(self, path, step, *, extra_state=None):
         """Collectively save optimizer, scheduler, RNG and absolute data cursor."""
-        if step != self.completed_updates:
-            raise ValueError("Checkpoint step differs from completed optimizer updates")
-        rng = capture_rng_state(self.device)
-        states = [None] * self.world_size
+        local = {"rank": self.rank, "rng": None, "error": None}
+        try:
+            if step != self.completed_updates:
+                raise ValueError(
+                    "Checkpoint step differs from completed optimizer updates"
+                )
+            local["rng"] = capture_rng_state(self.device)
+        except Exception as error:
+            local["error"] = f"{type(error).__name__}: {error}"
+        reports = [None] * self.world_size
         if self.world_size > 1:
             distributed.all_gather_object(
-                states, rng, group=self._object_collective_group()
+                reports, local, group=self._object_collective_group()
             )
         else:
-            states[0] = rng
+            reports[0] = local
+        failures = [
+            f"rank {value['rank']}: {value['error']}"
+            for value in reports
+            if value["error"] is not None
+        ]
+        if failures:
+            raise RuntimeError(
+                "Collective checkpoint capture failed: " + "; ".join(failures)
+            )
+        states = [value["rng"] for value in reports]
         trainer_state = dict(extra_state or {})
         trainer_state.update(
             version=1,

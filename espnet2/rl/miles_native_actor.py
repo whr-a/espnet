@@ -15,6 +15,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 
 from .config import ESPnetRLConfig
+from .failure_checkpoint import preserve_preupdate_failure
 from .rollout import CheckpointRollout
 from .scoring import score_native_batch
 from .timing import learner_timing
@@ -259,7 +260,24 @@ class ESPnetTrainRayActor(TrainRayActor):
         self._broadcast_payload(payload)
         prepared = payload[0]
         if prepared["error"]:
-            raise RuntimeError(prepared["error"])
+            # The error has reached every rank. No optimizer update has begun.
+            failure = RuntimeError(prepared["error"])
+            try:
+                preservation = preserve_preupdate_failure(
+                    self, rollout_id, prepared["error"]
+                )
+                failure.add_note(
+                    "Pre-update checkpoint preservation: "
+                    + json.dumps(preservation, allow_nan=False)
+                )
+            except Exception as checkpoint_error:
+                # Collective/CUDA failure cannot be repaired here. Retain the
+                # original integrity failure as the primary exception.
+                failure.add_note(
+                    "Checkpoint preservation failed: "
+                    f"{type(checkpoint_error).__name__}: {checkpoint_error}"
+                )
+            raise failure from None
         batch, metrics = prepared["batch"], prepared["metrics"]
         # Nothing changes these weights before the optimizer step below. They
         # were exported as this version, so they generate the next batch and

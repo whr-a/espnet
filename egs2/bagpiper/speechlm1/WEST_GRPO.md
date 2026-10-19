@@ -98,6 +98,15 @@ The first update uses LR 1e-6. Update 100 uses 9.01e-7 and leaves 9.0e-7 for the
 next update; update 1,000 uses 1e-9 and leaves zero. Evaluation and checkpoint
 export do not advance this schedule.
 
+If all live learner ranks reject a batch during preparation, they preserve the
+last completed state under `failure-checkpoints/` before propagating the original
+error. The full checkpoint contains native weights, Adam moments and FP32 master
+weights, scheduler, per-rank RNG and the absolute data cursor. The rejected batch
+does not advance the optimizer or LR. Every learner RPC finishes this protocol
+before cleanup; a preservation error remains secondary to the training error.
+Resume requires a validated full checkpoint and a reviewed fix for the failure.
+There is no automatic retry, and weight-only rollout exports cannot resume Adam.
+
 ## Configure and launch
 
 Follow the shared [environment guide](../../../espnet2/rl/ENVIRONMENT.md), prepare
