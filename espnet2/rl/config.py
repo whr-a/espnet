@@ -105,8 +105,9 @@ class ESPnetRLConfig:
     top_p: float = 1.0
     top_k: int = -1
     # Drift gate over the sampled actions' native/rollout logprob differences:
-    # the largest one, and optionally their mean (null leaves it unchecked).
-    score_tolerance: float = 0.03
+    # The maximum is optional only for synchronous WEST training with a
+    # positive mean bound. All finite statistics remain recorded and checked.
+    score_tolerance: float | None = 0.03
     score_mean_tolerance: float | None = None
     language: str = "<eng>"
     task: str = "<asr>"
@@ -320,9 +321,24 @@ class ESPnetRLConfig:
             raise ValueError("allreduce_chunk_bytes must be positive")
         if self.learning_rate <= 0 or self.max_grad_norm <= 0 or self.kl_coef < 0:
             raise ValueError("Invalid optimizer or KL settings")
+        if self.score_tolerance is None:
+            if self.training_objective != "west_grpo" or self.execution_mode not in (
+                "sync",
+                "disagg_sync",
+            ):
+                raise ValueError(
+                    "score_tolerance must be finite and nonnegative outside "
+                    "synchronous WEST training"
+                )
+            mean = self.score_mean_tolerance
+            if type(mean) not in (int, float) or not 0 < mean < float("inf"):
+                raise ValueError(
+                    "A mean-only WEST guard requires score_mean_tolerance "
+                    "to be finite and positive"
+                )
         for name in ("score_tolerance", "score_mean_tolerance"):
             value = getattr(self, name)
-            if name == "score_mean_tolerance" and value is None:
+            if value is None:
                 continue
             if type(value) not in (int, float) or not 0 <= value < float("inf"):
                 raise ValueError(f"{name} must be finite and nonnegative")

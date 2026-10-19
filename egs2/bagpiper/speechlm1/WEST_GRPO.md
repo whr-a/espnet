@@ -60,17 +60,25 @@ probabilities and never enter the raw WEST objective. Recorded sampling metadata
 names this domain explicitly. Different HF/SGLang top-k boundary tie handling
 and random-number streams can produce different texts from the same seed.
 
-The BF16 integrity limits in this profile are an absolute per-action maximum
-of 1.5 and a mean absolute difference of 0.02, checked together. They are
-operational numerical bounds, not loss clipping or reward settings. On the
-validated H100 control, changing only the numerical CUDA kernels of an unchanged
-native model produced a mean difference of 0.01175 and a maximum of 1.02786;
-ordinary native versus rollout scoring gave mean 0.01163 and maximum 0.43654.
-The earlier FP32 maximum of 0.03 did not describe this BF16 runtime. The controls
-used four questions and 38,180 sampled frames, so the first complete 32 × eight
-batch must still pass both bounds. Checkpoint, policy-version, prepared-input,
-action-mask and support checks remain separate requirements. Calibrate these
-bounds again for a different precision or kernel environment.
+This synchronous WEST profile explicitly sets `score_tolerance: null` and
+`score_mean_tolerance: 0.02`: the maximum remains reported, while the mean
+bounds systematic rollout/native drift. Disabling the maximum is permitted only
+for `west_grpo` in `sync` or `disagg_sync`, with a finite positive mean bound.
+Nonfinite maximum/mean values, checkpoint and policy-version identity,
+prepared-input/action-mask validity and configured support checks still fail.
+Other profiles retain their existing maximum guard. This setting changes no
+WEST loss, LR schedule, sampling or reward.
+
+In an H100 control after 15 updates, one of 292,793 sampled actions had a
+log-probability difference of 2.84811 while the mean was 0.01289. Fresh loading
+both SG replicas reproduced all 256 saved responses and probabilities exactly;
+promoting the same published BF16 weights to FP32 for native scoring reduced
+that action's difference to 1.83165. Numerical precision contributes, but the
+first divergent operation is not isolated: packed projections, paged FA3 versus
+native SDPA and deterministic reductions still differ. This mean-only guard
+accepts isolated larger differences; it is not bitwise on-policy equivalence.
+Keep maximum and percentile errors visible and recheck the numerical contract
+when changing the backend or precision.
 
 Each update waits for the exact current policy snapshot on both rollout
 replicas, generates one batch and performs one optimization update. Staleness is
