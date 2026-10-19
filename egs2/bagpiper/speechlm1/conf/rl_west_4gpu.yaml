@@ -1,0 +1,90 @@
+# WEST-aligned Bagpiper QA; hardware and quality validation are still pending.
+# Replace paths and provide the reviewed periodic evaluation plan before launch.
+family: bagpiper
+train_config: /path/to/released/train_config.checkpointing.yaml
+checkpoint: /path/to/released/model.pt
+manifest: /path/to/avqa/train.jsonl
+eval_manifest: /path/to/avqa/dev.jsonl
+output_dir: /path/to/fresh/west-grpo-run
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_bagpiper_v2_reward
+device: cuda:0
+reference_device: null
+reference_cpu_offload: true
+train_gpus: '2,3'
+rollout_gpus: '0,1'
+distributed_strategy: native_allreduce
+rollout_python: /path/to/rl-env/bin/python
+miles_source: /path/to/pinned/miles
+sglang_source: /path/to/pinned/sglang
+sglang_engine_kwargs:
+  weight_loader_disable_mmap: true
+  attention_backend: fa3
+  context_length: 2048
+  max_running_requests: 32
+  enable_deterministic_inference: true
+adapter_options:
+  reference_assets: /path/to/released/hf_assets
+  native_attention: sdpa
+  codec_config_path: /path/to/released/codec_config
+  audio_config_path: /path/to/released/audio_config
+  audio_processor_path: /path/to/released/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: true
+  stateless_sampling: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 1000
+warmup_steps: 0
+save_interval: 100
+keep_exports: 2
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 32
+micro_batch_tokens: 2048
+training_objective: west_grpo
+learning_rate: 1.0e-6
+lr_scheduler: linear
+lr_warmup_steps: 0
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1.0e-8
+weight_decay: 0.0
+max_grad_norm: 1.0
+kl_coef: 0.04
+kl_type: k3
+entropy_coef: 0.0
+normalize_advantage: true
+loss_agg_mode: seq-mean-token-mean
+ppo_epochs: 1
+shuffle_train_data: true
+data_seed: 42
+max_tokens: 1024
+temperature: 0.7
+top_p: 1.0
+top_k: 50
+score_tolerance: 0.03
+execution_mode: disagg_sync
+update_weights_interval: 1
+max_weight_staleness: 0
+rollout_mem_fraction: 0.85
+# This callback pauses rollout replica0 and uses its existing GPU for evaluation.
+# The plan and admission command must be configured for the actual local host.
+periodic_eval_interval: 100
+periodic_eval_function: espnet2.speechlm.model.speechlm.rl.bagpiper.periodic:run_periodic_evaluation
+periodic_eval_options:
+  plan: /path/to/reviewed/mmau_plan.json
+  plan_sha256: REPLACE_WITH_REVIEWED_PLAN_SHA256
+  evaluation_config: /path/to/reviewed/mmau_evaluation.yaml
+  audit_script: /path/to/reviewed/audit_periodic.py
+  output_dir: /path/to/fresh/west-grpo-run/periodic_evaluation
+  resource_preflight_command:
+  - /path/to/rl-env/bin/python
+  - /path/to/reviewed/resource_preflight.py
+  - --operation
+  - eval

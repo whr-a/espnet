@@ -157,7 +157,18 @@ def score_native_batch(trainer, batch, behavior_policy=None):
             else:
                 behavior = trainer._score_chunks(behavior_policy, local)
                 supports["behavior"] = trainer.support_pass
-            reference = trainer._score_chunks(trainer.reference, local)
+            if (
+                getattr(trainer.config, "training_objective", "miles_ppo")
+                == "west_grpo"
+            ):
+                # WEST's reference KL uses the raw model distribution. Current
+                # and behavior passes above audit only rollout integrity; their
+                # tempered, pre-top-k probabilities never enter the WEST loss.
+                reference = trainer._score_chunks(
+                    trainer.reference, local, score_raw=True
+                )
+            else:
+                reference = trainer._score_chunks(trainer.reference, local)
             supports["reference"] = trainer.support_pass
         for scores in (old, behavior, reference):
             if scores.shape != local.batch["response_mask"].shape:

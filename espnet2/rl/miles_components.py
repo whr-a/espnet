@@ -14,6 +14,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from .data import collate_rollouts
 from .miles_native_actor import ESPnetTrainRayActor
 from .rollout import RolloutProcess, merge_generations, prune_exports
+from .utils import resolve_callable
 
 
 class RolloutActor:
@@ -23,18 +24,36 @@ class RolloutActor:
         from .config import ESPnetRLConfig
 
         config = ESPnetRLConfig(**config)
+        self.config = config
+        self.replica = replica
+        self.generation = 0
         self.identity = {
             "replica": replica,
             "node": ray.get_runtime_context().get_node_id(),
             "gpu_ids": ray.get_gpu_ids(),
             "gpu": os.environ["CUDA_VISIBLE_DEVICES"],
         }
+        directory = Path(config.output_dir, "rollout_batches", f"replica-{replica}")
+        if config.resume_checkpoint and directory.exists():
+            directory = self._next_process_directory()
         self.process = RolloutProcess(
             config,
             os.environ["CUDA_VISIBLE_DEVICES"],
-            Path(config.output_dir, "rollout_batches", f"replica-{replica}"),
+            directory,
             replica,
         )
+
+    def _next_process_directory(self):
+        """A recovery or evaluator restoration never overwrites prior batches."""
+        while True:
+            self.generation += 1
+            directory = Path(
+                self.config.output_dir,
+                "rollout_batches",
+                f"replica-{self.replica}-generation-{self.generation:06d}",
+            )
+            if not directory.exists():
+                return directory
 
     def load(self, model, version):
         self.process.load(model, version)
@@ -54,6 +73,50 @@ class RolloutActor:
 
     def close(self):
         self.process.close()
+
+    def evaluate(self, policy):
+        """Temporarily reuse this actor's reserved GPU for a family evaluator.
+
+        Only replica zero runs this method. Learner actors and the other rollout
+        actor remain resident and idle; no additional Ray/GPU reservation occurs.
+        The evaluator owns when to release and restore this actor's process so a
+        verified completed evaluation can be reused without restarting inference.
+        """
+        if self.replica != 0 or self.process.version != policy["step"]:
+            raise ValueError(
+                "Periodic evaluation requires replica0 at the published policy"
+            )
+        function = resolve_callable(self.config.periodic_eval_function)
+
+        def release():
+            process = self.process
+            process.close()
+            return {
+                "pid": process.process.pid,
+                "exit_code": process.process.returncode,
+                "closed": process.connection.closed,
+            }
+
+        def restore():
+            directory = self._next_process_directory()
+            self.process = RolloutProcess(
+                self.config, self.identity["gpu"], directory, self.replica
+            )
+            self.process.load(str(Path(policy["path"], "hf")), policy["step"])
+            return {
+                **self.identity,
+                "version": self.process.version,
+                "pid": self.process.process.pid,
+                "directory": str(directory),
+            }
+
+        return function(
+            self.config,
+            policy,
+            self.identity,
+            release_engine=release,
+            restore_engine=restore,
+        )
 
 
 class NativeTrainerGroup:
@@ -129,11 +192,13 @@ class NativeRolloutExecutor:
         self._active_get_task = asyncio.current_task()
         try:
             config = self.components.config
-            start = rollout_id * config.prompts_per_step
-            all_sources = self.components.sources
+            from .training_objectives import select_training_sources
+
             sources = [
-                copy.deepcopy(all_sources[(start + i) % len(all_sources)])
-                for i in range(config.prompts_per_step)
+                copy.deepcopy(source)
+                for source in select_training_sources(
+                    self.components.sources, rollout_id, config
+                )
             ]
             if len({source["id"] for source in sources}) != config.prompts_per_step:
                 raise ValueError(
@@ -294,6 +359,7 @@ class NativeComponents:
     async def create_training_models(self, args, rollout_executor):
         actor_args = SimpleNamespace(
             espnet_config=self.config.to_dict(),
+            espnet_source_count=len(self.sources),
             trainer_model_id=None,
             distributed_backend="nccl",
             distributed_timeout_minutes=self.config.distributed_timeout_minutes,
@@ -327,6 +393,10 @@ class NativeComponents:
             "configure_master_addr_and_port", master_addr=host, master_port=port
         )
         await group.call("init", actor_args, "actor", with_ref=True)
+        versions = await group.call("get_training_version")
+        if len(set(versions)) != 1:
+            raise ValueError("Training ranks restored different optimizer steps")
+        self.start_rollout_id = versions[0]
         census = await group.call("get_device_census")
         if (
             any(item["ray_node_id"] != self.train_node for item in census)
@@ -387,3 +457,8 @@ class NativeComponents:
                 + "\n"
             )
         prune_exports(Path(policy["path"]).parent, self.config.keep_exports)
+        interval = self.config.periodic_eval_interval
+        if interval and policy["step"] and policy["step"] % interval == 0:
+            # The synchronous driver awaits this safe point before requesting
+            # any next rollout. The same four actors retain their reservations.
+            await self.rollout.actors[0].evaluate.remote(policy)

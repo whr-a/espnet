@@ -1,4 +1,4 @@
-"""Run the pinned Miles async loop on existing Ray GPUs selected by the recipe."""
+"""Run native Miles actors on existing Ray GPUs selected by the recipe."""
 
 import argparse
 import asyncio
@@ -74,8 +74,13 @@ def main():
         if (value := getattr(args, field)) is not None:
             setattr(config, field, value)
     config.validate()
-    if config.execution_mode != "disagg_async":
-        raise ValueError("This launcher requires execution_mode=disagg_async")
+    if config.execution_mode != "disagg_async" and not (
+        config.execution_mode in ("sync", "disagg_sync")
+        and config.training_objective == "west_grpo"
+    ):
+        raise ValueError(
+            "This Ray launcher requires async training or synchronous WEST GRPO"
+        )
     sources = read_manifest(config.manifest, config=config)
     engine_class(config)
     if config.miles_source:

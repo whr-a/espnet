@@ -383,24 +383,28 @@ class CheckpointRollout:
         return subprocess_environment(self.config, self.config.rollout_gpus)
 
 
-def save_checkpoint(path, policy, optimizer, step, config):
-    """Atomic native ESPnet checkpoint, optimizer and CPU torch RNG snapshot.
+def save_checkpoint(
+    path, policy, optimizer, step, config, *, scheduler=None, trainer_state=None
+):
+    """Atomic native snapshot, optionally with collective trainer resume state.
 
-    Runs use immutable directories. Resume is not implemented; this snapshot
-    alone is not a complete distributed or CUDA random-state recovery recipe.
+    ``NativeGRPOTrainer.save_training_checkpoint`` supplies all-rank RNG and
+    the data cursor. Legacy callers retain their CPU-only RNG snapshot.
     """
     path = Path(path)
     temporary = path.with_suffix(".tmp")
-    torch.save(
-        {
-            "model": policy.checkpoint_state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "step": step,
-            "config": config.to_dict(),
-            "torch_rng_state": torch.get_rng_state(),
-        },
-        temporary,
-    )
+    snapshot = {
+        "model": policy.checkpoint_state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+        "config": config.to_dict(),
+        "torch_rng_state": torch.get_rng_state(),
+    }
+    if scheduler is not None:
+        snapshot["scheduler"] = scheduler.state_dict()
+    if trainer_state is not None:
+        snapshot["trainer_state"] = trainer_state
+    torch.save(snapshot, temporary)
     temporary.replace(path)
     # Native .pth permits direct ESPnet inference and exporter reuse.
     native = path.with_name(path.stem + ".native.pth")

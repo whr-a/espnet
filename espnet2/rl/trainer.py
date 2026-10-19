@@ -44,6 +44,18 @@ from .rollout import CheckpointRollout, save_checkpoint
 from .rollout_worker import engine_class
 from .scoring import score_native_batch
 from .timing import learner_timing
+from .training_objectives import (
+    build_lr_scheduler,
+    select_training_sources,
+    west_group_advantages,
+    west_policy_loss,
+)
+from .training_state import (
+    capture_rng_state,
+    load_native_model_state,
+    restore_rng_state,
+    validate_resume_checkpoint,
+)
 from .types import drift_gate, support_counts, validate_token_scores
 from .utils import build_policy, get_device_name, get_nccl_backend, get_torch_device
 
@@ -141,12 +153,16 @@ class NativeGRPOTrainer:
             [p for p in policy.parameters() if p.requires_grad],
             lr=config.learning_rate,
             weight_decay=config.weight_decay,
+            betas=(config.adam_beta1, config.adam_beta2),
+            eps=config.adam_epsilon,
             **(
                 {"chunk_bytes": config.allreduce_chunk_bytes}
                 if optimizer_class is CPUOffloadedAdamW
                 else {}
             ),
         )
+        self.scheduler = build_lr_scheduler(self.optimizer, config)
+        self.completed_updates = 0
         self.rollout = rollout
         # Set by every distributed scoring pass (espnet2.rl.scoring).
         self.support_metrics = {}
@@ -194,7 +210,7 @@ class NativeGRPOTrainer:
             parts.append(np.array(part))
         return parts
 
-    def _score_chunks(self, policy, batch):
+    def _score_chunks(self, policy, batch, *, score_raw=False):
         """Native log probabilities of the batch's actions.
 
         Also leaves in ``support_pass`` this pass's frames that a policy
@@ -204,27 +220,27 @@ class NativeGRPOTrainer:
         if isinstance(policy, AbstractContextManager):
             # A weight snapshot lends its values to a module for this pass.
             with policy as module:
-                return self._score_chunks(module, batch)
-        if policy is self.reference and getattr(
+                return self._score_chunks(module, batch, score_raw=score_raw)
+        if policy is getattr(self, "reference", None) and getattr(
             self.config, "reference_cpu_offload", False
         ):
             try:
                 policy.to(self.reference_scoring_device)
-                return self._score_chunks_on_device(policy, batch)
+                return self._score_chunks_on_device(policy, batch, score_raw=score_raw)
             finally:
                 # Detached scores already live on CPU. Offload even if transfer
                 # or scoring failed; the next pass alone brings weights back.
                 policy.to("cpu")
-        return self._score_chunks_on_device(policy, batch)
+        return self._score_chunks_on_device(policy, batch, score_raw=score_raw)
 
-    def _score_chunks_on_device(self, policy, batch):
+    def _score_chunks_on_device(self, policy, batch, *, score_raw=False):
         before = support_counts(policy)
         results = torch.zeros(batch.batch["response_mask"].shape)
         scoring_device = next(policy.parameters()).device
         for indices in self._micro_batches(batch):
             subset = batch.select_idxs(indices)
             subset.to(scoring_device)
-            scores = policy(subset)
+            scores = policy(subset, score_raw=True) if score_raw else policy(subset)
             validate_token_scores(scores, subset.batch["response_mask"])
             results[torch.as_tensor(indices)] = scores.log_probs.detach().cpu()
         self.support_pass = [
@@ -249,7 +265,11 @@ class NativeGRPOTrainer:
         if native_scores is None:
             with torch.no_grad():
                 old = self._score_chunks(self.policy, batch)
-                reference = self._score_chunks(self.reference, batch)
+                reference = self._score_chunks(
+                    self.reference,
+                    batch,
+                    score_raw=self.config.training_objective == "west_grpo",
+                )
         else:
             if not isinstance(native_scores, (tuple, list)) or len(native_scores) != 2:
                 raise ValueError("Native scores require current and reference tensors")
@@ -274,12 +294,7 @@ class NativeGRPOTrainer:
         )
         _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         metrics.update(self.support_metrics)
-        advantages, returns = compute_grpo_outcome_advantage(
-            token_rewards,
-            mask,
-            batch.non_tensor_batch["uid"],
-            norm_adv_by_std_in_grpo=self.config.normalize_advantage,
-        )
+        advantages, returns = self._advantages(token_rewards, mask, batch)
         batch.batch.update(
             {
                 "old_log_probs": old,
@@ -290,6 +305,18 @@ class NativeGRPOTrainer:
             }
         )
         return {**metrics, **drift}
+
+    def _advantages(self, token_rewards, mask, batch):
+        if self.config.training_objective == "west_grpo":
+            return west_group_advantages(
+                token_rewards, mask, batch.non_tensor_batch["uid"]
+            )
+        return compute_grpo_outcome_advantage(
+            token_rewards,
+            mask,
+            batch.non_tensor_batch["uid"],
+            norm_adv_by_std_in_grpo=self.config.normalize_advantage,
+        )
 
     def prepare_async_batch(
         self,
@@ -450,21 +477,32 @@ class NativeGRPOTrainer:
                 # accumulated gradients replaces one full-model reduction per
                 # candidate without changing the global token denominator.
                 with synchronization:
-                    current = self.actor(part)
+                    current = (
+                        self.actor(part, score_raw=True)
+                        if self.config.training_objective == "west_grpo"
+                        else self.actor(part)
+                    )
                     mask = part.batch["response_mask"]
                     validate_token_scores(current, mask)
-                    loss, ppo_metrics = compute_policy_loss_vanilla(
-                        part.batch["old_log_probs"],
-                        current.log_probs,
-                        part.batch["advantages"],
-                        mask,
-                        loss_agg_mode=self.config.loss_agg_mode,
-                        config=self.actor_config,
-                        # IcePop corrects whatever separates the engine that
-                        # sampled the actions from the learner: the async
-                        # policy lag and a low-precision engine's numerics.
-                        rollout_log_probs=part.batch["rollout_log_probs"],
-                    )
+                    if self.config.training_objective == "west_grpo":
+                        loss = west_policy_loss(
+                            current.log_probs,
+                            part.batch["advantages"],
+                            mask,
+                            **self.actor_config.global_batch_info,
+                        )
+                        ppo_metrics = {}
+                    else:
+                        loss, ppo_metrics = compute_policy_loss_vanilla(
+                            part.batch["old_log_probs"],
+                            current.log_probs,
+                            part.batch["advantages"],
+                            mask,
+                            loss_agg_mode=self.config.loss_agg_mode,
+                            config=self.actor_config,
+                            # Correct both async lag and engine numerics.
+                            rollout_log_probs=part.batch["rollout_log_probs"],
+                        )
                     kl = agg_loss(
                         kl_penalty(
                             current.log_probs,
@@ -518,13 +556,18 @@ class NativeGRPOTrainer:
                 raise FloatingPointError(
                     "Nonfinite gradient norm; optimizer was not stepped"
                 )
+            learning_rate = self.optimizer.param_groups[0]["lr"]
             self.optimizer.step()
+            self.scheduler.step()
             # Release the gradients here rather than at the next update: on a
             # collocated device they would otherwise hold a full copy of the
             # model through rollout, which is exactly the memory the engine
             # subprocess needs.
             self.optimizer.zero_grad(set_to_none=True)
             metrics["actor/grad_norm"] = norm.item()
+            metrics["actor/learning_rate"] = learning_rate
+            metrics["actor/next_learning_rate"] = self.optimizer.param_groups[0]["lr"]
+        self.completed_updates += 1
         if self.world_size > 1:
             keys = sorted(metrics)
             values = torch.tensor([metrics[key] for key in keys], device=self.device)
@@ -532,6 +575,91 @@ class NativeGRPOTrainer:
             values /= self.world_size
             metrics = dict(zip(keys, values.cpu().tolist(), strict=True))
         return metrics
+
+    def save_training_checkpoint(self, path, step, *, extra_state=None):
+        """Collectively save optimizer, scheduler, RNG and absolute data cursor."""
+        if step != self.completed_updates:
+            raise ValueError("Checkpoint step differs from completed optimizer updates")
+        rng = capture_rng_state(self.device)
+        states = [None] * self.world_size
+        if self.world_size > 1:
+            distributed.all_gather_object(
+                states, rng, group=self._object_collective_group()
+            )
+        else:
+            states[0] = rng
+        trainer_state = dict(extra_state or {})
+        trainer_state.update(
+            version=1,
+            completed_updates=step,
+            next_update=step,
+            consumed_prompts=step * self.config.prompts_per_step,
+            world_size=self.world_size,
+            rank_rng_states=states,
+            data_seed=self.config.data_seed,
+            data_order=(
+                "torch_randperm_seed_plus_epoch_v1"
+                if self.config.shuffle_train_data
+                else "cyclic_v1"
+            ),
+        )
+        if hasattr(self, "source_count"):
+            trainer_state["source_count"] = self.source_count
+        status = [None]
+        if self.rank == 0:
+            try:
+                save_checkpoint(
+                    path,
+                    self.policy,
+                    self.optimizer,
+                    step,
+                    self.config,
+                    scheduler=self.scheduler,
+                    trainer_state=trainer_state,
+                )
+            except Exception as error:
+                status[0] = f"{type(error).__name__}: {error}"
+        if self.world_size > 1:
+            distributed.broadcast_object_list(
+                status, src=0, group=self._object_collective_group()
+            )
+        if status[0]:
+            raise RuntimeError(f"Collective checkpoint save failed: {status[0]}")
+
+    def load_training_checkpoint(self, path):
+        """Restore after cloning the original fixed SFT reference, on every rank.
+
+        Rollout workers restart from the restored policy. Their sampling seed
+        is derived from the absolute update index by the rollout engine; their
+        previous process RNG is not presented as a bitwise continuation.
+        """
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False, mmap=True)
+        state = validate_resume_checkpoint(
+            checkpoint,
+            self.config,
+            self.world_size,
+            getattr(self, "source_count", None),
+        )
+        load_native_model_state(self.policy, checkpoint["model"])
+        if (
+            not isinstance(self.optimizer, CPUOffloadedAdamW)
+            or self.rank == self.optimizer.owner_rank
+        ):
+            self.optimizer.load_state_dict(checkpoint["optimizer"])
+        # All ranks must advance the same LR, including CPU-optimizer nonowners
+        # that intentionally do not allocate the full Adam state.
+        for group, saved in zip(
+            self.optimizer.param_groups,
+            checkpoint["optimizer"]["param_groups"],
+            strict=True,
+        ):
+            for name in ("lr", "initial_lr", "betas", "eps", "weight_decay"):
+                if name in saved:
+                    group[name] = saved[name]
+        self.scheduler.load_state_dict(checkpoint["scheduler"])
+        self.completed_updates = checkpoint["step"]
+        restore_rng_state(state["rank_rng_states"][self.rank], self.device)
+        return state
 
     def train(self, sources):
         if self.config.execution_mode != "sync":
@@ -541,20 +669,16 @@ class NativeGRPOTrainer:
         group = self._object_collective_group() if self.world_size > 1 else None
         output = Path(self.config.output_dir)
         output.mkdir(parents=True, exist_ok=True)
+        self.source_count = len(sources)
         if self.rollout is None and self.rank == 0:
             self.rollout = CheckpointRollout(self.config)
         if len({source["id"] for source in sources}) < self.config.prompts_per_step:
             raise ValueError("The prompt batch requires distinct source records")
         last_end = None
-        for step in range(self.config.steps):
+        for step in range(getattr(self, "completed_updates", 0), self.config.steps):
             if self.rank == 0:
                 try:
-                    chosen = [
-                        sources[
-                            (step * self.config.prompts_per_step + i) % len(sources)
-                        ]
-                        for i in range(self.config.prompts_per_step)
-                    ]
+                    chosen = select_training_sources(sources, step, self.config)
                     if self.config.collocated and self.device.type != "cpu":
                         # A collocated rollout engine is a separate process on
                         # this same device. Return cached allocator blocks so
@@ -634,8 +758,7 @@ class NativeGRPOTrainer:
                     with (output / "metrics.jsonl").open("a") as stream:
                         stream.write(json.dumps(metrics) + "\n")
                     print(json.dumps(metrics), flush=True)
-                    # The same cadence the Miles async loop applies.
-                    if (
+                    if self.config.training_objective != "west_grpo" and (
                         (step + 1) % self.config.save_interval == 0
                         or step + 1 == self.config.steps
                     ):
@@ -657,6 +780,13 @@ class NativeGRPOTrainer:
             if status[0]:
                 raise RuntimeError(
                     f"Checkpoint stage failed at step {step + 1}: {status[0]}"
+                )
+            if self.config.training_objective == "west_grpo" and (
+                (step + 1) % self.config.save_interval == 0
+                or step + 1 == self.config.steps
+            ):
+                self.save_training_checkpoint(
+                    output / f"step-{step + 1:06d}.pt", step + 1
                 )
 
     def _object_collective_group(self):
@@ -788,6 +918,9 @@ def run(config):
             word_error_reward(source, {"text": ""})
     policy = build_policy(config, config.device)
     trainer = NativeGRPOTrainer(policy, config)
+    trainer.source_count = len(sources)
+    if config.resume_checkpoint:
+        trainer.load_training_checkpoint(config.resume_checkpoint)
     try:
         trainer.train(sources)
     finally:

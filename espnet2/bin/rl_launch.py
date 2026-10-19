@@ -42,10 +42,15 @@ def launch_command(args, *, python=sys.executable):
     config.validate()
     command = [python, "-m"]
     environment = dict(os.environ)
-    if config.execution_mode == "disagg_async":
+    ray_selectors = any(
+        getattr(args, name) for name in ("ray_address", "train_node", "rollout_node")
+    )
+    if config.execution_mode in ("disagg_async", "disagg_sync") or (
+        config.training_objective == "west_grpo" and ray_selectors
+    ):
         for name in ("ray_address", "train_node", "rollout_node"):
             if not getattr(args, name):
-                raise ValueError(f"disagg_async requires --{name.replace('_', '-')}")
+                raise ValueError(f"Ray training requires --{name.replace('_', '-')}")
         command.append("espnet2.bin.rl_train_async")
     else:
         if any(

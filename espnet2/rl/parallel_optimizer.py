@@ -30,6 +30,8 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
         *,
         lr,
         weight_decay=0.0,
+        betas=(0.9, 0.999),
+        eps=1e-8,
         owner_rank=0,
         chunk_bytes=64 * 1024 * 1024,
     ):
@@ -40,7 +42,10 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
             raise ValueError("CPU AdamW accepts only trainable parameters")
         if any(not p.is_contiguous() for p in parameters):
             raise ValueError("CPU AdamW requires contiguous native parameter storage")
-        super().__init__(parameters, {"lr": lr, "weight_decay": weight_decay})
+        super().__init__(
+            parameters,
+            {"lr": lr, "weight_decay": weight_decay, "betas": betas, "eps": eps},
+        )
         self.rank = distributed.get_rank() if distributed.is_initialized() else 0
         self.world_size = (
             distributed.get_world_size() if distributed.is_initialized() else 1
@@ -61,7 +66,12 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
             ]
             # foreach allocates tensor-list intermediates at model scale.
             self._cpu_optimizer = torch.optim.AdamW(
-                self._shadow, lr=lr, weight_decay=weight_decay, foreach=False
+                self._shadow,
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=betas,
+                eps=eps,
+                foreach=False,
             )
 
     def zero_grad(self, set_to_none=True):
@@ -79,8 +89,8 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
                 for group, cpu_group in zip(
                     self.param_groups, self._cpu_optimizer.param_groups, strict=True
                 ):
-                    cpu_group["lr"] = group["lr"]
-                    cpu_group["weight_decay"] = group["weight_decay"]
+                    for key in ("lr", "weight_decay", "betas", "eps"):
+                        cpu_group[key] = group[key]
                 for native, shadow in zip(self._native, self._shadow, strict=True):
                     shadow.grad = (
                         None
@@ -121,11 +131,50 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
     def state_dict(self):
         if self.rank != self.owner_rank:
             raise RuntimeError("Only the CPU AdamW owner has a complete state_dict")
-        return self._cpu_optimizer.state_dict()
+        # A scheduler advances the public groups after step(), while the CPU
+        # Adam group still carries the LR used for that just-finished update.
+        # Save the next-update LR, as torch AdamW + HF Trainer would.
+        for group, cpu_group in zip(
+            self.param_groups, self._cpu_optimizer.param_groups, strict=True
+        ):
+            for key in ("lr", "weight_decay", "betas", "eps", "initial_lr"):
+                if key in group:
+                    cpu_group[key] = group[key]
+        state = self._cpu_optimizer.state_dict()
+        # Adam moments alone cannot resume sub-BF16 updates. The CPU masters
+        # are part of this optimizer's state, in native parameter order.
+        state["espnet_master_weights_version"] = 1
+        # Like standard optimizer state_dict(), these are live tensor views.
+        # The synchronous checkpoint save finishes before another update; an
+        # extra full FP32 model copy would only raise host peak memory.
+        state["espnet_master_weights"] = [p.detach() for p in self._shadow]
+        return state
 
     def load_state_dict(self, state_dict):
         if self.rank != self.owner_rank:
             raise RuntimeError("Only the CPU AdamW owner may restore optimizer state")
+        masters = state_dict.get("espnet_master_weights")
+        if masters is None and any(p.dtype != torch.float32 for p in self._native):
+            raise ValueError(
+                "A low-precision resume requires checkpointed FP32 masters"
+            )
+        if masters is not None:
+            if state_dict.get("espnet_master_weights_version") != 1 or len(
+                masters
+            ) != len(self._shadow):
+                raise ValueError("Invalid CPU AdamW master-weight checkpoint")
+            for native, shadow, value in zip(
+                self._native, self._shadow, masters, strict=True
+            ):
+                if value.shape != shadow.shape or value.dtype != torch.float32:
+                    raise ValueError("CPU AdamW master-weight shape or dtype differs")
+                if not torch.isfinite(value).all():
+                    raise ValueError("CPU AdamW master weights must be finite")
+                if not torch.equal(value.to(dtype=native.dtype), native.detach().cpu()):
+                    raise ValueError(
+                        "CPU AdamW master weights differ from the native checkpoint"
+                    )
+                shadow.data.copy_(value)
         self._cpu_optimizer.load_state_dict(state_dict)
         # Restore CPU placement even when loading a GPU-produced Adam checkpoint.
         for native, shadow in zip(self._native, self._shadow, strict=True):
@@ -139,5 +188,6 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
         for group, cpu_group in zip(
             self.param_groups, self._cpu_optimizer.param_groups, strict=True
         ):
-            group["lr"] = cpu_group["lr"]
-            group["weight_decay"] = cpu_group["weight_decay"]
+            for key in ("lr", "weight_decay", "betas", "eps", "initial_lr"):
+                if key in cpu_group:
+                    group[key] = cpu_group[key]

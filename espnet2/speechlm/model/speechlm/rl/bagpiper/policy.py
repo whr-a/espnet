@@ -113,6 +113,11 @@ class NativeSpeechLMPolicy(nn.Module):
     and the recipe's prompt features (``native_model_inputs``). Prompts must
     have exactly the same multimodal token expansion as SGLang; silently
     re-tokenizing the audio would change the policy.
+
+    WEST text-only QA additionally exposes ``score_raw=True``: unfiltered
+    full-primary-vocabulary probabilities at temperature one for its loss.
+    The default forward remains the tempered protocol integrity pass even
+    when WEST sampling truncates the engine distribution to its top 50.
     """
 
     def __init__(
@@ -125,6 +130,8 @@ class NativeSpeechLMPolicy(nn.Module):
         activation_cpu_offload=False,
         support_mismatch_rate=1e-3,
         temperature=1.0,
+        top_k=-1,
+        west_grpo=False,
     ):
         super().__init__()
         self.model = model
@@ -152,6 +159,8 @@ class NativeSpeechLMPolicy(nn.Module):
         self.support_mismatches = self.support_frames = 0
         # Every stream is sampled from softmax(logits / temperature).
         self.temperature = temperature
+        self.top_k = top_k
+        self.west_grpo = bool(west_grpo)
         # The primary ids every support allows, [len(SUPPORTS), vocab].
         weight = core.lm_head.weight
         self.register_buffer(
@@ -167,11 +176,17 @@ class NativeSpeechLMPolicy(nn.Module):
     def checkpoint_state_dict(self):
         return self.model.state_dict()
 
-    def forward(self, batch):
+    def forward(self, batch, *, score_raw=False):
+        if score_raw and not self.west_grpo:
+            raise ValueError("Raw Bagpiper scoring requires the WEST QA objective")
         with offload_saved_activations(self.model, self.activation_cpu_offload):
-            return self._forward(batch)
+            return self._forward(batch, score_raw=score_raw)
 
-    def _forward(self, batch):
+    def score_raw(self, batch):
+        """WEST objective probabilities, distinct from rollout integrity scores."""
+        return self(batch, score_raw=True)
+
+    def _forward(self, batch, *, score_raw=False):
         responses = batch.batch["responses"].cpu()
         masks = batch.batch["response_mask"].cpu().bool()
         streams = batch.batch.get("response_stream_mask")
@@ -201,13 +216,16 @@ class NativeSpeechLMPolicy(nn.Module):
             # One contract covers every stream of every frame.
             contract = source.get("sampling_contract") or {}
             top_k = contract.get("top_k", 0)
-            if (
-                contract.get("temperature") != self.temperature
-                or 0 < top_k < self.allowed.shape[1]
-            ):
+            full_support = top_k <= 0 or top_k >= self.allowed.shape[1]
+            allowed_top_k = (
+                top_k == self.top_k
+                if self.west_grpo and self.top_k > 0
+                else full_support
+            )
+            if contract.get("temperature") != self.temperature or not allowed_top_k:
                 raise ValueError(
-                    "Bagpiper rollouts must sample every stream's whole support at "
-                    f"the policy's temperature {self.temperature}"
+                    "Bagpiper rollout sampling contract differs from its policy: "
+                    f"temperature={self.temperature}, top_k={self.top_k}"
                 )
             support = source.get("support")
             if support is None or len(support) != length:
@@ -227,6 +245,8 @@ class NativeSpeechLMPolicy(nn.Module):
             prompts.append(prompt)
             supports.append(torch.as_tensor(support, dtype=torch.long))
             modes.append(mode == "text_audio")
+        if score_raw and (any(modes) or streams[..., 1:].any()):
+            raise ValueError("Raw WEST Bagpiper scoring requires text_only QA actions")
         support = torch.cat(supports)
         if ((support < 0) | (support >= len(SUPPORTS))).any():
             raise ValueError("Unknown Bagpiper support")
@@ -256,6 +276,7 @@ class NativeSpeechLMPolicy(nn.Module):
             hidden,
             *(item.to(device) for item in (labels, active, support, phase, text_audio)),
             block=self.token_chunk_size * rows,
+            score_raw=score_raw,
         )
         frame_index = frame_index.to(device)
 
@@ -345,7 +366,16 @@ class NativeSpeechLMPolicy(nn.Module):
         return output.last_hidden_state
 
     def _score_frames(
-        self, hidden, labels, active, support, phase, text_audio, block=None
+        self,
+        hidden,
+        labels,
+        active,
+        support,
+        phase,
+        text_audio,
+        block=None,
+        *,
+        score_raw=False,
     ):
         """Log probabilities of frames under the supports their rollout recorded.
 
@@ -361,6 +391,8 @@ class NativeSpeechLMPolicy(nn.Module):
         cfg = self.bagpiper_config
         frames, streams = labels.shape
         secondary = active[:, 1:].any(-1)
+        if score_raw and (text_audio.any() or secondary.any()):
+            raise ValueError("Raw WEST Bagpiper scoring requires text_only QA actions")
         if (active[:, 1:] != secondary[:, None]).any():
             # The seven secondary codec streams are sampled together or not.
             raise ValueError(
@@ -383,6 +415,7 @@ class NativeSpeechLMPolicy(nn.Module):
         codec_rows = secondary.nonzero()[:, 0].cpu()
         block = block or self.token_chunk_size
         parts = []
+        head = self._raw_head if score_raw else self._head
         for start in range(0, frames, block):
             end = min(frames, start + block)
             first, last = torch.searchsorted(
@@ -396,11 +429,11 @@ class NativeSpeechLMPolicy(nn.Module):
                 (codec_rows[first:last] - start).to(hidden.device),
             )
             if counting:
-                parts.append(self._head(*args, phase[start:end], text_audio[start:end]))
+                parts.append(head(*args, phase[start:end], text_audio[start:end]))
             elif self.score_checkpointing:
-                parts.append(checkpoint(self._head, *args, use_reentrant=False))
+                parts.append(checkpoint(head, *args, use_reentrant=False))
             else:
-                parts.append(self._head(*args))
+                parts.append(head(*args))
         stream_logp = torch.cat([part[0] for part in parts]) if parts else None
         if stream_logp is None:
             stream_logp = hidden.new_zeros((0, streams), dtype=torch.float32)
@@ -421,6 +454,35 @@ class NativeSpeechLMPolicy(nn.Module):
             # gradients, so optimizer state and weight decay stay unchanged.
             logp = logp + self.core.stream_emb.weight.sum() * 0
         return logp, entropy, stream_logp
+
+    def _raw_head(
+        self, hidden, labels, active, support, codec_rows, phase=None, text_audio=None
+    ):
+        """Raw full-vocabulary log probabilities for the literal WEST QA loss.
+
+        The sampled-action mask still excludes forced native control frames.
+        Temperature and protocol support masking belong only to the separate
+        rollout-integrity pass; top-k is never part of this loss distribution.
+        """
+        if len(codec_rows) or active[:, 1:].any():
+            raise ValueError("Raw WEST Bagpiper scoring requires text_only QA actions")
+        core = self.core
+        raw = F.linear(hidden, core.lm_head.weight, core.lm_head.bias)
+        dist = raw.float().log_softmax(-1)
+        sampled = active[:, 0]
+        primary = torch.where(sampled, dist.gather(-1, labels[:, :1])[:, 0], 0.0)
+        columns = torch.cat(
+            (primary[:, None], primary.new_zeros((len(primary), labels.shape[1] - 1))),
+            -1,
+        )
+        entropy = -(dist.exp() * dist).sum(-1)
+        entropy = torch.where(sampled, entropy, 0.0)
+        allowed = self.allowed[support] & torch.isfinite(raw)
+        mismatches = None
+        if phase is not None:
+            own, codec = frame_supports(raw, phase, text_audio, self.bagpiper_config)
+            mismatches = ((own != support) | codec).sum()
+        return columns, entropy, allowed.sum(-1) > 1, mismatches
 
     def _head(
         self, hidden, labels, active, support, codec_rows, phase=None, text_audio=None
@@ -744,6 +806,8 @@ def factory(config, device):
         ),
         support_mismatch_rate=config.adapter_options.get("support_mismatch_rate", 1e-3),
         temperature=config.temperature,
+        top_k=config.top_k,
+        west_grpo=getattr(config, "training_objective", "miles_ppo") == "west_grpo",
     )
 
 

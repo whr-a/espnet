@@ -17,6 +17,10 @@ by the seven secondary ids and their log probabilities when the secondary
 streams are active. TP=1; the engine freezes radix cache, chunked prefill, CUDA
 graphs and overlap scheduling off, so every extend row is one complete new
 prompt and every decode row one frame.
+
+WEST QA retains this temperature-scaled protocol path for integrity traces;
+SGLang applies top-k afterwards. Its separate native objective scores raw
+full-vocabulary logits, so these traces are never used as WEST loss ratios.
 """
 
 from pathlib import Path
@@ -146,6 +150,8 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
         self.batch, self.sources = batch, record["sources"]
         self.temperature = record["temperature"]
         self.codec = any(source["text_audio"] for source in self.sources)
+        if record.get("stateless_sampling", False) and self.codec:
+            raise ValueError("Stateless Bagpiper sampling requires text_only QA")
         self.audio, self.seen = {}, set()
 
     def _audio(self, index, like):

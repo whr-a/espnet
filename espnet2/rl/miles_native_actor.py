@@ -15,7 +15,7 @@ from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 
 from .config import ESPnetRLConfig
-from .rollout import CheckpointRollout, save_checkpoint
+from .rollout import CheckpointRollout
 from .scoring import score_native_batch
 from .timing import learner_timing
 from .trainer import NativeGRPOTrainer
@@ -129,15 +129,22 @@ class ESPnetTrainRayActor(TrainRayActor):
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         self.trainer = NativeGRPOTrainer(build_policy(config, config.device), config)
+        self.trainer.source_count = args.espnet_source_count
         self.config = config
-        self.version = 0
-        self.snapshot = BehaviorSnapshot(self.trainer.policy)
+        if config.resume_checkpoint:
+            self.trainer.load_training_checkpoint(config.resume_checkpoint)
+        self.version = self.trainer.completed_updates
+        self.snapshot = (
+            BehaviorSnapshot(self.trainer.policy)
+            if config.execution_mode == "disagg_async"
+            else None
+        )
         self.exporter = CheckpointRollout(config) if self._rank == 0 else None
         # Rank zero's record of each exported version's native sha256.
         self.exported = {}
         self.last_end = None
         self.last_metrics = None
-        return 0
+        return self.version
 
     @property
     def train_parallel_config(self):
@@ -148,6 +155,9 @@ class ESPnetTrainRayActor(TrainRayActor):
 
     def get_device_census(self):
         return self.device_census
+
+    def get_training_version(self):
+        return self.version
 
     def sleep(self):
         raise ValueError("The disaggregated learner stays resident")
@@ -183,12 +193,19 @@ class ESPnetTrainRayActor(TrainRayActor):
                         <= self.config.max_weight_staleness
                     ):
                         raise ValueError("Invalid behavior checkpoint staleness")
+                    if (
+                        self.config.execution_mode != "disagg_async"
+                        and version != self.version
+                    ):
+                        raise ValueError("Synchronous training rejects a stale policy")
                     digest = data["behavior_checkpoint_sha256"]
                     if digest != self.exported.get(version):
                         raise ValueError(
                             "Behavior checkpoint differs from this learner's export"
                         )
-                    if version != self.version and self.snapshot.version != version:
+                    if version != self.version and (
+                        self.snapshot is None or self.snapshot.version != version
+                    ):
                         raise ValueError("No snapshot holds the behavior policy")
                     payload[0] = {
                         "batch": batch,
@@ -218,14 +235,19 @@ class ESPnetTrainRayActor(TrainRayActor):
         payload = [None]
         if self._rank == 0:
             try:
-                metrics = self.trainer.prepare_async_batch(
-                    batch,
-                    behavior,
-                    behavior_version=version,
-                    learner_version=self.version,
-                    behavior_checkpoint_sha256=data["behavior_checkpoint_sha256"],
-                    native_scores=native_scores,
-                )
+                if self.config.execution_mode != "disagg_async":
+                    metrics = self._prepare_synchronous_batch(
+                        batch, data, native_scores
+                    )
+                else:
+                    metrics = self.trainer.prepare_async_batch(
+                        batch,
+                        behavior,
+                        behavior_version=version,
+                        learner_version=self.version,
+                        behavior_checkpoint_sha256=data["behavior_checkpoint_sha256"],
+                        native_scores=native_scores,
+                    )
                 batch.save_to_disk(
                     Path(self.config.output_dir) / f"rollout-{rollout_id:06d}.pkl"
                 )
@@ -242,7 +264,8 @@ class ESPnetTrainRayActor(TrainRayActor):
         # Nothing changes these weights before the optimizer step below. They
         # were exported as this version, so they generate the next batch and
         # this copy audits it.
-        self.snapshot.take(self.version)
+        if self.snapshot is not None:
+            self.snapshot.take(self.version)
         metrics.update(self.trainer.update_actor(batch))
         if self.trainer.device.type == "cuda":
             torch.cuda.synchronize(self.trainer.device)
@@ -272,6 +295,43 @@ class ESPnetTrainRayActor(TrainRayActor):
         self.last_end = end
         return TrainStepOutput(TrainStepOutcome.NORMAL)
 
+    def _prepare_synchronous_batch(self, batch, data, native_scores):
+        """Validate the on-policy global groups before WEST reward normalization."""
+        if (
+            data["behavior_version"] != self.version
+            or len(batch) != self.config.global_candidate_batch_size
+        ):
+            raise ValueError("Synchronous training requires the current complete batch")
+        identities = batch.non_tensor_batch["uid"].tolist()
+        size = self.config.group_size
+        groups = [identities[i : i + size] for i in range(0, len(batch), size)]
+        if (
+            any(len(set(group)) != 1 for group in groups)
+            or len({group[0] for group in groups}) != self.config.prompts_per_step
+        ):
+            raise ValueError("Synchronous training requires complete unique groups")
+        for generation in batch.non_tensor_batch["generation"]:
+            if (
+                generation.get("behavior_policy_version") != self.version
+                or generation.get("behavior_checkpoint_sha256")
+                != data["behavior_checkpoint_sha256"]
+            ):
+                raise ValueError("Synchronous batch mixes or omits behavior identities")
+        if not torch.equal(native_scores[0], native_scores[1]):
+            raise ValueError("Synchronous native behavior and current scores differ")
+        metrics = self.trainer.prepare_batch(
+            batch, native_scores=(native_scores[0], native_scores[2])
+        )
+        return {
+            **metrics,
+            "rollout/current_behavior_logprob_max_difference": 0.0,
+            "rollout/behavior_policy_version": self.version,
+            "rollout/learner_policy_version": self.version,
+            "rollout/weight_staleness": 0,
+            "rollout/global_prompt_batch_size": len(groups),
+            "rollout/global_candidate_batch_size": len(batch),
+        }
+
     def _broadcast_payload(self, payload):
         if self._world_size > 1:
             dist.broadcast_object_list(
@@ -291,14 +351,21 @@ class ESPnetTrainRayActor(TrainRayActor):
     def save_model(self, rollout_id, force_sync=False):
         if rollout_id + 1 != self.version:
             raise ValueError("Checkpoint update identity mismatch")
-        if self._rank == 0:
-            save_checkpoint(
-                Path(self.config.output_dir, f"step-{self.version:06d}.pt"),
-                self.trainer.policy,
-                self.trainer.optimizer,
-                self.version,
-                self.config,
-            )
+        self.trainer.save_training_checkpoint(
+            Path(self.config.output_dir, f"step-{self.version:06d}.pt"),
+            self.version,
+            extra_state={
+                "source_count": self.trainer.source_count,
+                "next_update": self.version,
+                "consumed_prompts": self.version * self.config.prompts_per_step,
+                "data_seed": self.config.data_seed,
+                "data_order": (
+                    "torch_randperm_seed_plus_epoch_v1"
+                    if self.config.shuffle_train_data
+                    else "cyclic_v1"
+                ),
+            },
+        )
 
     def export_async_snapshot(self):
         if self._rank != 0:

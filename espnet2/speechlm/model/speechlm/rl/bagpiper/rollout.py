@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Bagpiper rollouts: one batched SGLang generate per rollout batch."""
 
+import hashlib
 import json
 import math
 import os
@@ -89,6 +90,13 @@ class BagpiperEngine(SGLangRolloutEngine):
         overrides = json.loads(settings.get("json_model_override_args", "{}"))
         overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
         settings["json_model_override_args"] = json.dumps(overrides)
+        if self.config.adapter_options.get("stateless_sampling", False):
+            if settings.get("enable_deterministic_inference") is False:
+                raise ValueError(
+                    "Stateless Bagpiper sampling requires deterministic inference"
+                )
+            # SGLang constructs request seed tensors only in this mode.
+            settings["enable_deterministic_inference"] = True
         return settings
 
     def update(self, model_path):
@@ -98,8 +106,9 @@ class BagpiperEngine(SGLangRolloutEngine):
     def generate(self, sources, rollout_id, sampling=None):
         """Return ``group_size`` generations per source, in source order.
 
-        RL samples every stream from its full support at the recipe's
-        temperature. ``sampling`` overrides that for evaluation only:
+        Standard RL samples every stream from its full support at the recipe's
+        temperature; WEST QA uses its explicit top-k for the primary stream.
+        ``sampling`` overrides the following for evaluation only:
         ``temperature`` (0 is greedy in every stream, at most 1),
         ``max_new_tokens`` and ``samples`` per source.
         """
@@ -118,6 +127,15 @@ class BagpiperEngine(SGLangRolloutEngine):
             )
         _, prefixes = request_factory(self.config, self.model_path, sources)
         group = sampling["samples"]
+        west = getattr(self.config, "training_objective", "miles_ppo") == "west_grpo"
+        top_k = self.config.top_k if west else -1
+        stateless = self.config.adapter_options.get("stateless_sampling", False)
+        if (west or stateless) and any(
+            source.get("mode") != "text_only" for source in sources
+        ):
+            raise ValueError(
+                "WEST and stateless Bagpiper sampling require text_only QA"
+            )
         self.check_request(max(map(len, prefixes)), sampling["max_new_tokens"])
         batch, self.batches = self.batches, self.batches + 1
         prepared = []
@@ -147,27 +165,27 @@ class BagpiperEngine(SGLangRolloutEngine):
                 )
             )
         staging = self.sources_path.with_suffix(".tmp")
-        torch.save(
-            dict(
-                batch=batch,
-                rollout_id=rollout_id,
-                temperature=sampling["temperature"],
-                sources=prepared,
-            ),
-            staging,
+        record = dict(
+            batch=batch,
+            rollout_id=rollout_id,
+            temperature=sampling["temperature"],
+            sources=prepared,
         )
+        if stateless:
+            record["stateless_sampling"] = True
+        torch.save(record, staging)
         staging.replace(self.sources_path)
         rids = [f"{batch}:{i}:{s}" for i in range(len(sources)) for s in range(group)]
-        outputs = self.engine.generate(
-            input_ids=[
-                [frame[0] for frame in p] for p in prefixes for _ in range(group)
-            ],
-            sampling_params=[
-                dict(
-                    # The model already divided the logits by the temperature.
+        parameters = []
+        for source in sources:
+            for candidate in range(group):
+                params = dict(
+                    # Model-side temperature scaling is deliberate: the
+                    # original logprob is the tempered protocol distribution
+                    # before SGLang's top-k. It audits inference integrity only.
                     temperature=1.0 if sampling["temperature"] else 0.0,
                     top_p=1.0,
-                    top_k=-1,
+                    top_k=top_k,
                     min_p=0.0,
                     max_new_tokens=sampling["max_new_tokens"],
                     stop_token_ids=[self.geometry["eos_token_id"]],
@@ -175,8 +193,21 @@ class BagpiperEngine(SGLangRolloutEngine):
                     presence_penalty=0.0,
                     frequency_penalty=0.0,
                 )
-            ]
-            * len(rids),
+                if stateless:
+                    material = json.dumps(
+                        [self.config.seed, int(rollout_id), source["id"], candidate],
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode()
+                    params["sampling_seed"] = int.from_bytes(
+                        hashlib.sha256(material).digest()[:4], "big"
+                    )
+                parameters.append(params)
+        outputs = self.engine.generate(
+            input_ids=[
+                [frame[0] for frame in p] for p in prefixes for _ in range(group)
+            ],
+            sampling_params=parameters,
             rid=rids,
             return_logprob=True,
             logprob_start_len=-1,
@@ -190,13 +221,24 @@ class BagpiperEngine(SGLangRolloutEngine):
         for index, (source, prefix) in enumerate(zip(sources, prefixes, strict=True)):
             # Identical for the whole group: hash the native inputs once.
             native = prepared_native_metadata(source)
-            for output in outputs[index * group : (index + 1) * group]:
+            for candidate, output in enumerate(
+                outputs[index * group : (index + 1) * group]
+            ):
                 generations.append(
-                    self._record(source, prefix, output, native, sampling)
+                    self._record(
+                        source,
+                        prefix,
+                        output,
+                        native,
+                        sampling,
+                        sampling_seed=parameters[index * group + candidate].get(
+                            "sampling_seed"
+                        ),
+                    )
                 )
         return generations
 
-    def _record(self, source, prefix, output, native, sampling):
+    def _record(self, source, prefix, output, native, sampling, *, sampling_seed=None):
         """One generation in the native rollout schema, plus its supports."""
         info, tokens = output["meta_info"], list(output["output_ids"])
         logprobs, trace = info.get("output_token_logprobs"), info.get("espnet_bagpiper")
@@ -252,16 +294,22 @@ class BagpiperEngine(SGLangRolloutEngine):
             ],
             skip_special_tokens=True,
         )
-        return {
+        west = getattr(self.config, "training_objective", "miles_ppo") == "west_grpo"
+        contract = {
+            "temperature": sampling["temperature"],
+            "top_k": self.config.top_k if west and self.config.top_k > 0 else 0,
+        }
+        if west:
+            contract["log_prob_domain"] = "tempered_protocol_before_top_k"
+        result = {
             "source_id": source["id"],
             "token_ids": frames,
             "log_probs": scores,
             "stream_log_probs": stream_scores,
             "stream_mask": masks,
             "action_mask": [any(mask) for mask in masks],
-            # Every stream of every frame samples its full support; the stream
-            # masks say which streams were sampled.
-            "sampling_contract": {"temperature": sampling["temperature"], "top_k": 0},
+            # WEST keeps pre-top-k integrity scores separate from its raw loss.
+            "sampling_contract": contract,
             "codec_frame_mask": [mask[1] for mask in masks],
             "support": supports,
             "prompt_token_ids": prefix,
@@ -270,3 +318,6 @@ class BagpiperEngine(SGLangRolloutEngine):
             "prepared_native_source": native,
             "rollout_engine": "sglang",
         }
+        if sampling_seed is not None:
+            result["sampling_seed"] = sampling_seed
+        return result

@@ -84,8 +84,16 @@ def compute_grpo_outcome_advantage(
 def agg_loss(
     values, mask, mode="token-mean", dp_size=1, batch_num_tokens=None, **kwargs
 ):
+    if mode == "seq-mean-token-mean":
+        lengths = mask.sum(-1)
+        if (lengths <= 0).any():
+            raise ValueError("Each WEST answer requires valid sampled actions")
+        denominator = kwargs.get("global_batch_size", len(mask))
+        if denominator <= 0:
+            raise ValueError("No valid rollout answers")
+        return ((values * mask).sum(-1) / lengths).sum() * dp_size / denominator
     if mode != "token-mean":
-        raise ValueError("Only global token-mean reduction is supported")
+        raise ValueError("Unsupported native loss reduction")
     denominator = batch_num_tokens if batch_num_tokens is not None else mask.sum()
     if denominator <= 0:
         raise ValueError("No valid rollout actions")
