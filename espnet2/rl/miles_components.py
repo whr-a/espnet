@@ -142,6 +142,9 @@ class NativeTrainerGroup:
     async def save_model(self, rollout_id, force_sync=False):
         return await self.call("save_model", rollout_id, force_sync=force_sync)
 
+    async def preserve_rollout_failure(self, rollout_id, original_error):
+        return await self.call("preserve_rollout_failure", rollout_id, original_error)
+
     async def dispose(self):
         if self.disposed:
             return

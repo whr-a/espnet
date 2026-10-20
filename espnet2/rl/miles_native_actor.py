@@ -160,6 +160,19 @@ class ESPnetTrainRayActor(TrainRayActor):
     def get_training_version(self):
         return self.version
 
+    def preserve_rollout_failure(self, rollout_id, original_error):
+        """Collectively preserve idle learners before failed generation disposal.
+
+        The synchronous driver dispatches this RPC to every rank and awaits
+        every reply. No train RPC for this rollout has started.
+        """
+        return preserve_preupdate_failure(
+            self,
+            rollout_id,
+            original_error,
+            failure_stage="rollout_generation_before_update",
+        )
+
     def sleep(self):
         raise ValueError("The disaggregated learner stays resident")
 

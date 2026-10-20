@@ -72,8 +72,21 @@ Resolve source/interpreter paths in the YAML, then select native model assets
 and prepared data with `--checkpoint`, `--train-config`, `--manifest`,
 `--eval-manifest` and a fresh `--output-dir`. Logs retain rollout records,
 loss/timing metrics, native checkpoints and standard Adam state. Held-out
-evaluation has a separate manifest and explicit denominator. Interrupted-run
-optimizer recovery is not implemented.
+evaluation has a separate manifest and explicit denominator.
+
+Synchronous WEST checkpoints include FP32 optimizer masters, Adam moments,
+scheduler, each learner's RNG and the absolute data cursor. Before a train RPC
+begins, the synchronous driver attempts preservation when rollout preparation
+or generation raises an exception. The shared prepared-batch rejection path
+also attempts preservation. Both write under `failure-checkpoints/` before
+live learners are disposed; preservation errors remain secondary to the
+original failure. Set `resume_checkpoint` to a validated full-state checkpoint
+to resume. Model-only rollout exports cannot restore optimizer state.
+
+This boundary does not cover post-update publication/export/eviction or
+evaluation errors, cancellation/process death, dead ranks, broken collectives,
+CUDA failures or a partial optimizer update. Restarted rollout processes are
+not a claim of bitwise inference continuation.
 
 Short-run success establishes an engineering path. It does not establish
 quality improvement, inference-backend equivalence or an optimal GPU layout.

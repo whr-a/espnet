@@ -1,8 +1,9 @@
 """Preserve completed optimizer state after a shared pre-update failure.
 
-Call only after rank zero has broadcast the prepared-batch error to all live
-learner ranks, before update_actor starts. This is not a recovery mechanism
-for dead ranks, broken process groups, CUDA failure or a partial optimizer step.
+Call on all live learner ranks before update_actor starts: either after the
+shared prepared-batch error or through the synchronous driver's failure RPC.
+This cannot recover dead ranks, broken process groups, CUDA failure or a
+partial optimizer step.
 """
 
 import json
@@ -23,7 +24,13 @@ def _all_ranks(actor, value):
     return values
 
 
-def preserve_preupdate_failure(actor, rollout_id, original_error):
+def preserve_preupdate_failure(
+    actor,
+    rollout_id,
+    original_error,
+    *,
+    failure_stage="prepare_batch_before_update",
+):
     """Finish the same collective sequence on every live rank before raising.
 
     Checkpoint failures are secondary records. The caller must still raise the
@@ -53,6 +60,16 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
             raise ValueError(
                 "Failure checkpoint requires one completed pre-update state"
             )
+        if failure_stage not in (
+            "prepare_batch_before_update",
+            "rollout_generation_before_update",
+        ):
+            raise ValueError("Unknown clean pre-update failure stage")
+        if failure_stage == "rollout_generation_before_update" and (
+            actor.config.execution_mode not in ("sync", "disagg_sync")
+            or actor.config.training_objective != "west_grpo"
+        ):
+            raise ValueError("Driver failure preservation requires synchronous WEST")
         rates = [float(group["lr"]) for group in trainer.optimizer.param_groups]
         if not rates or any(not math.isfinite(rate) or rate < 0 for rate in rates):
             raise ValueError("Invalid next-update learning rates")
@@ -65,6 +82,7 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
             next_learning_rates=rates,
             scheduler_last_epoch=epoch,
             original_error=original_error,
+            failure_stage=failure_stage,
         )
         # Reserve an immutable destination once; never overwrite an earlier
         # successful checkpoint or an earlier failed preservation attempt.
@@ -85,6 +103,7 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
                 value["next_learning_rates"],
                 value["scheduler_last_epoch"],
                 value["original_error"],
+                value["failure_stage"],
             )
             == (
                 admission[0]["step"],
@@ -92,6 +111,7 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
                 admission[0]["next_learning_rates"],
                 admission[0]["scheduler_last_epoch"],
                 admission[0]["original_error"],
+                admission[0]["failure_stage"],
             )
             for value in admission
         )
@@ -107,7 +127,7 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
                 checkpoint,
                 step,
                 extra_state={
-                    "failure_stage": "prepare_batch_before_update",
+                    "failure_stage": failure_stage,
                     "failed_rollout_id": rollout_id,
                     "original_error": original_error,
                 },
@@ -121,6 +141,7 @@ def preserve_preupdate_failure(actor, rollout_id, original_error):
     result = {
         "status": "Saved" if succeeded else "NotSaved",
         "original_error": original_error,
+        "failure_stage": failure_stage,
         "failed_rollout_id": rollout_id,
         "completed_updates": step,
         "next_update": step,

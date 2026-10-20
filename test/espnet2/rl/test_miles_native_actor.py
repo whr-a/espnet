@@ -198,6 +198,7 @@ def _actor_worker(rank, root):
         actor._rank, actor._world_size = rank, 8
         actor.config = cfg
         actor.trainer = NativeGRPOTrainer(Policy(), cfg)
+        actor.trainer.source_count = 32
         actor.version, actor.last_end, actor.last_metrics = 0, None, None
         actor.snapshot = BehaviorSnapshot(actor.trainer.policy)
         # Rank zero exported the initial policy as version 0.

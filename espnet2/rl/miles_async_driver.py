@@ -8,6 +8,7 @@ update ordering remain Miles' implementation. This boundary is pinned and audite
 
 import hashlib
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from types import FunctionType, SimpleNamespace
@@ -101,8 +102,27 @@ async def run_synchronous_loop(args, components, *, disposer):
     args.start_rollout_id = start
     await components.update_weights(args, actor, rollout, inference)
     for rollout_id in range(start, args.num_rollout):
-        await inference.prepare_rollout(rollout_id)
-        data = await rollout.get(rollout_id)
+        try:
+            await inference.prepare_rollout(rollout_id)
+            data = await rollout.get(rollout_id)
+        except Exception as error:
+            # No train RPC has started: every learner still holds the last
+            # completed optimizer state. Await all ranks' preservation before
+            # with_disposer can destroy them, even if one save RPC fails.
+            try:
+                preservation = await actor.preserve_rollout_failure(
+                    rollout_id, f"{type(error).__name__}: {error}"
+                )
+                error.add_note(
+                    "Pre-update checkpoint preservation: "
+                    + json.dumps(preservation, allow_nan=False)
+                )
+            except Exception as checkpoint_error:
+                error.add_note(
+                    "Checkpoint preservation failed: "
+                    f"{type(checkpoint_error).__name__}: {checkpoint_error}"
+                )
+            raise
         await actor.train(rollout_id, data)
         remove_rollout_data_refs(args, data)
         evaluation_due = bool(
