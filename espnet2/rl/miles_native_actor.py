@@ -4,7 +4,6 @@ import copy
 import json
 import os
 import time
-import traceback
 from pathlib import Path
 
 import ray
@@ -14,11 +13,12 @@ from miles.backends.training_utils.types import TrainStepOutcome, TrainStepOutpu
 from miles.ray.train_actor import TrainRayActor
 from miles.utils import object_store
 
+from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
+
 from .config import ESPnetRLConfig
 from .failure_checkpoint import preserve_preupdate_failure
 from .rollout import CheckpointRollout
 from .scoring import score_native_batch
-from .timing import learner_timing
 from .trainer import NativeGRPOTrainer
 from .utils import build_policy
 
@@ -126,7 +126,7 @@ class ESPnetTrainRayActor(TrainRayActor):
                 "Native Ray actor requires one assigned visible GPU at local rank zero"
             )
         config.device = f"cuda:{os.environ['LOCAL_RANK']}"
-        torch.manual_seed(config.seed)
+        set_all_random_seed(config.seed)
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         self.trainer = NativeGRPOTrainer(build_policy(config, config.device), config)
@@ -241,89 +241,49 @@ class ESPnetTrainRayActor(TrainRayActor):
         # every rank snapshotted just before that version's update.
         # Rank-zero-only reward decoding avoids TTS races.
         behavior = self.snapshot if version != self.version else None
-        try:
-            native_scores = score_native_batch(self.trainer, batch, behavior)
-        except Exception:
-            self._record_rollout_error(rollout_id)
-            raise
-        payload = [None]
-        if self._rank == 0:
+
+        def prepare(scores):
+            if self.config.execution_mode != "disagg_async":
+                return self._prepare_synchronous_batch(batch, data, scores)
+            return self.trainer.prepare_async_batch(
+                batch,
+                behavior,
+                behavior_version=version,
+                learner_version=self.version,
+                behavior_checkpoint_sha256=data["behavior_checkpoint_sha256"],
+                native_scores=scores,
+            )
+
+        def preserve(error):
+            failure = RuntimeError(error)
             try:
-                if self.config.execution_mode != "disagg_async":
-                    metrics = self._prepare_synchronous_batch(
-                        batch, data, native_scores
-                    )
-                else:
-                    metrics = self.trainer.prepare_async_batch(
-                        batch,
-                        behavior,
-                        behavior_version=version,
-                        learner_version=self.version,
-                        behavior_checkpoint_sha256=data["behavior_checkpoint_sha256"],
-                        native_scores=native_scores,
-                    )
-                batch.save_to_disk(
-                    Path(self.config.output_dir) / f"rollout-{rollout_id:06d}.pkl"
-                )
-                payload[0] = {"batch": batch, "metrics": metrics, "error": None}
-            except Exception as error:
-                self._record_rollout_error(rollout_id)
-                payload[0] = {"error": f"{type(error).__name__}: {error}"}
-        del native_scores
-        self._broadcast_payload(payload)
-        prepared = payload[0]
-        if prepared["error"]:
-            # The error has reached every rank. No optimizer update has begun.
-            failure = RuntimeError(prepared["error"])
-            try:
-                preservation = preserve_preupdate_failure(
-                    self, rollout_id, prepared["error"]
-                )
+                result = preserve_preupdate_failure(self, rollout_id, error)
                 failure.add_note(
                     "Pre-update checkpoint preservation: "
-                    + json.dumps(preservation, allow_nan=False)
+                    + json.dumps(result, allow_nan=False)
                 )
             except Exception as checkpoint_error:
-                # Collective/CUDA failure cannot be repaired here. Retain the
-                # original integrity failure as the primary exception.
                 failure.add_note(
                     "Checkpoint preservation failed: "
                     f"{type(checkpoint_error).__name__}: {checkpoint_error}"
                 )
             raise failure from None
-        batch, metrics = prepared["batch"], prepared["metrics"]
-        # Nothing changes these weights before the optimizer step below. They
-        # were exported as this version, so they generate the next batch and
-        # this copy audits it.
-        if self.snapshot is not None:
-            self.snapshot.take(self.version)
-        metrics.update(self.trainer.update_actor(batch))
-        if self.trainer.device.type == "cuda":
-            torch.cuda.synchronize(self.trainer.device)
-        end = time.monotonic()
-        end_wall = time.time()
-        self.version += 1
+
+        metrics = self.trainer.train_batch(
+            batch,
+            rollout_id,
+            behavior=behavior,
+            prepare=prepare,
+            snapshot=self.snapshot,
+            on_prepare_error=preserve,
+            scorer=score_native_batch,
+        )
+        self.version = self.trainer.completed_updates
+        self.last_end = self.trainer.record_metrics(
+            metrics, start, start_wall, self.last_end
+        )
         if self._rank == 0:
-            metrics.update(
-                learner_timing(
-                    start,
-                    end,
-                    self.last_end,
-                    warmup=self.version <= self.config.warmup_steps,
-                    start_wall=start_wall,
-                    end_wall=end_wall,
-                )
-            )
-            metrics.update(
-                {
-                    "step": self.version,
-                    "runtime/train_world_size": self._world_size,
-                }
-            )
-            with Path(self.config.output_dir, "metrics.jsonl").open("a") as stream:
-                stream.write(json.dumps(metrics, allow_nan=False) + "\n")
             self.last_metrics = metrics
-        self.last_end = end
         return TrainStepOutput(TrainStepOutcome.NORMAL)
 
     def _prepare_synchronous_batch(self, batch, data, native_scores):
@@ -333,21 +293,9 @@ class ESPnetTrainRayActor(TrainRayActor):
             or len(batch) != self.config.global_candidate_batch_size
         ):
             raise ValueError("Synchronous training requires the current complete batch")
-        identities = batch.non_tensor_batch["uid"].tolist()
-        size = self.config.group_size
-        groups = [identities[i : i + size] for i in range(0, len(batch), size)]
-        if (
-            any(len(set(group)) != 1 for group in groups)
-            or len({group[0] for group in groups}) != self.config.prompts_per_step
-        ):
-            raise ValueError("Synchronous training requires complete unique groups")
-        for generation in batch.non_tensor_batch["generation"]:
-            if (
-                generation.get("behavior_policy_version") != self.version
-                or generation.get("behavior_checkpoint_sha256")
-                != data["behavior_checkpoint_sha256"]
-            ):
-                raise ValueError("Synchronous batch mixes or omits behavior identities")
+        self.trainer.validate_behavior_batch(
+            batch, self.version, data["behavior_checkpoint_sha256"]
+        )
         if not torch.equal(native_scores[0], native_scores[1]):
             raise ValueError("Synchronous native behavior and current scores differ")
         metrics = self.trainer.prepare_batch(
@@ -356,11 +304,7 @@ class ESPnetTrainRayActor(TrainRayActor):
         return {
             **metrics,
             "rollout/current_behavior_logprob_max_difference": 0.0,
-            "rollout/behavior_policy_version": self.version,
-            "rollout/learner_policy_version": self.version,
-            "rollout/weight_staleness": 0,
-            "rollout/global_prompt_batch_size": len(groups),
-            "rollout/global_candidate_batch_size": len(batch),
+            **self.trainer.behavior_metrics(batch, self.version, self.version),
         }
 
     def _broadcast_payload(self, payload):
@@ -370,14 +314,7 @@ class ESPnetTrainRayActor(TrainRayActor):
             )
 
     def _record_rollout_error(self, rollout_id):
-        """Preserve failures without masking them with a logging-path exception."""
-        try:
-            suffix = "" if self._rank == 0 else f".rank-{self._rank}"
-            Path(
-                self.config.output_dir, f"rollout-{rollout_id:06d}{suffix}.error.txt"
-            ).write_text(traceback.format_exc())
-        except OSError:
-            pass
+        self.trainer.record_rollout_error(rollout_id)
 
     def save_model(self, rollout_id, force_sync=False):
         if rollout_id + 1 != self.version:
@@ -385,17 +322,6 @@ class ESPnetTrainRayActor(TrainRayActor):
         self.trainer.save_training_checkpoint(
             Path(self.config.output_dir, f"step-{self.version:06d}.pt"),
             self.version,
-            extra_state={
-                "source_count": self.trainer.source_count,
-                "next_update": self.version,
-                "consumed_prompts": self.version * self.config.prompts_per_step,
-                "data_seed": self.config.data_seed,
-                "data_order": (
-                    "torch_randperm_seed_plus_epoch_v1"
-                    if self.config.shuffle_train_data
-                    else "cyclic_v1"
-                ),
-            },
         )
 
     def export_async_snapshot(self):

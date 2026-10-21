@@ -20,7 +20,12 @@ def _algorithms():
     return math_utils
 
 
-def verify_miles(config):
+def verify_miles(config, *, runtime=False):
+    """Verify the imported algorithm pin and, optionally, the async runtime.
+
+    Runtime binding additionally requires the original driver and an unchanged
+    tracked worktree, including files outside the algorithm boundary.
+    """
     # Editable installs can expose ``miles`` as a namespace package. Verify
     # the imported algorithm module itself, which must have a real source file.
     root = Path(_algorithms().__file__).resolve().parents[5]
@@ -38,24 +43,40 @@ def verify_miles(config):
             f"Miles revision {revision} differs from recipe pin {requested}"
         )
     paths = [
-        root / "miles/backends/training_utils/loss/hub/math_utils.py",
-        root / "miles/ray/rollout/train_data_conversion.py",
-        # IcePop, which both execution modes apply.
-        root / "miles/backends/training_utils/loss/hub/corrections.py",
+        "miles/backends/training_utils/loss/hub/math_utils.py",
+        "miles/ray/rollout/train_data_conversion.py",
+        "miles/backends/training_utils/loss/hub/corrections.py",
     ]
+    if runtime:
+        paths.append("train_async.py")
     result = {"commit": revision, "source": str(root), "algorithms": {}}
-    for path in paths:
-        relative = str(path.relative_to(root))
+    for relative in paths:
         original = subprocess.run(
             ["git", "-C", str(root), "show", f"{revision}:{relative}"],
             check=True,
             capture_output=True,
         ).stdout
-        contents = path.read_bytes()
+        contents = (root / relative).read_bytes()
         if original != contents:
+            if relative == "train_async.py":
+                raise ValueError("Pinned Miles async driver has local changes")
             raise ValueError(f"Pinned Miles algorithm has local changes: {relative}")
-        result["algorithms"][relative] = hashlib.sha256(contents).hexdigest()
-    _algorithms()
+        digest = hashlib.sha256(contents).hexdigest()
+        if relative == "train_async.py":
+            result["async_driver_sha256"] = digest
+        else:
+            result["algorithms"][relative] = digest
+    if runtime:
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        if status:
+            raise ValueError(
+                "The Miles runtime requires an unchanged tracked source tree"
+            )
     return result
 
 

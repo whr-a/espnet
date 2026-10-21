@@ -5,7 +5,6 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
@@ -161,6 +160,49 @@ def test_answer_reduction_weights_short_and_long_answers_equally():
     torch.testing.assert_close(
         current.grad, torch.tensor([[-0.5, 0, 0], [1 / 6, 1 / 6, 1 / 6]])
     )
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
+@pytest.mark.parametrize("parts", [[list(range(4))], [[0], [1, 2], [3]]])
+def test_west_miles_primitive_preserves_exact_values_and_gradients(dtype, parts):
+    current = torch.tensor(
+        [
+            [-0.1, -20.0, -0.4],
+            [-100.0, -0.2, -0.7],
+            [-1.3, -2.4, -3.1],
+            [-2.0, -0.6, -0.9],
+        ],
+        dtype=dtype,
+        requires_grad=True,
+    )
+    original = current.detach().clone().requires_grad_(True)
+    mask = torch.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1], [1, 1, 0]], dtype=dtype)
+    # Include both advantage signs, zero, and a constant-group rounding residue.
+    advantages = torch.tensor(
+        [[0.53994524] * 3, [-0.123456789] * 3, [0.0] * 3, [1e-7] * 3],
+        dtype=dtype,
+    )
+    values = -(torch.exp(original - original.detach()) * advantages)
+    expected = sum(
+        ((values[indices] * mask[indices]).sum(-1) / mask[indices].sum(-1)).sum() / 4
+        for indices in parts
+    )
+    expected.backward()
+    actual = sum(
+        west_policy_loss(
+            current[indices],
+            advantages[indices],
+            mask[indices],
+            global_batch_size=4,
+            dp_size=1,
+        )
+        for indices in parts
+    )
+    actual.backward()
+    # FP32 is the production scoring dtype; non-FP32 callers retain the prior
+    # path because Miles itself rounds its log-ratio and upstream gradient.
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(current.grad, original.grad, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize("micro_batch_size", [1, 3, 8])
@@ -376,3 +418,48 @@ def test_multirank_microbatch_weighting_matches_independent_west_oracle(
     assert resumed["optimizer"]["param_groups"][0]["lr"] == pytest.approx(
         cfg.learning_rate * 0.998
     )
+
+
+def shared_step_reward(source, generation):
+    return float(generation["token_ids"][0] % 2)
+
+
+@pytest.mark.parametrize("objective", ["miles_ppo", "west_grpo"])
+def test_shared_step_matches_explicit_scoring_reward_and_optimizer(tmp_path, objective):
+    """Transport consolidation preserves real parameters, moments and fixed reference."""
+    from espnet2.rl.scoring import score_native_batch
+
+    cfg = config(tmp_path)
+    cfg.training_objective = objective
+    cfg.loss_agg_mode = (
+        "token-mean" if objective == "miles_ppo" else "seq-mean-token-mean"
+    )
+    cfg.reward_function = f"{__name__}:shared_step_reward"
+    combined = NativeGRPOTrainer(TinyPolicy(), cfg)
+    explicit = NativeGRPOTrainer(TinyPolicy(), copy.deepcopy(cfg))
+    batch = make_batch()
+    batch.batch["rollout_log_probs"] = batch.batch["old_log_probs"].clone()
+    manual = copy.deepcopy(batch)
+    fixed_reference = copy.deepcopy(combined.reference.state_dict())
+    old, _, reference = score_native_batch(explicit, manual)
+    expected = explicit.prepare_batch(manual, native_scores=(old, reference))
+    expected.update(explicit.update_actor(manual))
+    actual = combined.train_batch(batch, 0)
+    assert actual == expected
+    for name, value in combined.policy.state_dict().items():
+        torch.testing.assert_close(
+            value, explicit.policy.state_dict()[name], rtol=0, atol=0
+        )
+    for name, value in combined.reference.state_dict().items():
+        torch.testing.assert_close(value, fixed_reference[name], rtol=0, atol=0)
+    observed = combined.optimizer.state_dict()
+    wanted = explicit.optimizer.state_dict()
+    assert observed["param_groups"] == wanted["param_groups"]
+    for key, state in observed["state"].items():
+        for field, value in state.items():
+            torch.testing.assert_close(
+                value, wanted["state"][key][field], rtol=0, atol=0
+            )
+    assert combined.scheduler.state_dict() == explicit.scheduler.state_dict()
+    assert combined.completed_updates == explicit.completed_updates == 1
+    assert (tmp_path / "rollout-000000.pkl").is_file()

@@ -6,7 +6,7 @@ They intentionally remain separate from Miles' versioned PPO/IcePop default.
 
 import torch
 
-from .miles_library import agg_loss
+from .miles_library import _algorithms, agg_loss
 
 
 def west_group_advantages(rewards, mask, identities):
@@ -16,8 +16,6 @@ def west_group_advantages(rewards, mask, identities):
     including a possible tiny centering residual on constant decimal rewards.
     Miles still expands the resulting outcome to the valid sampled actions.
     """
-    from .miles_library import _algorithms
-
     groups = {}
     for row, identity in enumerate(identities):
         groups.setdefault(identity, []).append(row)
@@ -34,7 +32,16 @@ def west_group_advantages(rewards, mask, identities):
 
 def west_policy_loss(current, advantages, mask, **global_batch_info):
     """WEST's unit-valued on-policy ratio with a nonzero policy gradient."""
-    values = -(torch.exp(current - current.detach()) * advantages)
+    # The ratio is exactly one, strictly inside both clip bounds. Miles' PPO
+    # primitive therefore supplies WEST's original value and policy gradient.
+    if current.dtype == torch.float32:
+        values, _ = _algorithms().compute_policy_loss(
+            current.detach() - current, advantages, 0.2, 0.2
+        )
+    else:
+        # Native scores are FP32. Preserve the helper's other dtypes rather
+        # than inherit the Miles primitive's unconditional FP32 conversion.
+        values = -(torch.exp(current - current.detach()) * advantages)
     return agg_loss(values, mask, "seq-mean-token-mean", **global_batch_info)
 
 

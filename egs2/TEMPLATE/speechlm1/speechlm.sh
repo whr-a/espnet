@@ -80,7 +80,7 @@ launch_rl_stage() {
     if "${rl_validate_only}"; then
         rl_data_args+=(--validate-only)
     fi
-    ${python} -m espnet2.bin.rl_launch --config "${rl_config}" "${rl_data_args[@]}"
+    ${python} -m espnet2.bin.rl_train --config "${rl_config}" "${rl_data_args[@]}"
 }
 
 # Data preparation related

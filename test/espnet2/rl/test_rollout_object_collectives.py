@@ -2,6 +2,7 @@
 
 import copy
 import json
+import sys
 import tempfile
 import time
 import unittest
@@ -138,17 +139,31 @@ def _delayed_training(rank, root):
         assert trainer._object_collective_group() is group
         original_broadcast = dist.broadcast_object_list
         original_gather = dist.all_gather_object
-        broadcasts, gathers = [], []
+        phases = []
+
+        def record(kind, operation, args, kwargs, caller):
+            assert kwargs.get("group") is group
+            assert dist.get_backend(group) == "gloo"
+            phases.append((kind, caller))
+            return operation(*args, **kwargs)
 
         def broadcast(*args, **kwargs):
-            assert kwargs.get("group") is group
-            broadcasts.append(time.monotonic())
-            return original_broadcast(*args, **kwargs)
+            return record(
+                "broadcast",
+                original_broadcast,
+                args,
+                kwargs,
+                sys._getframe(1).f_code.co_name,
+            )
 
         def gather(*args, **kwargs):
-            assert kwargs.get("group") is group
-            gathers.append(time.monotonic())
-            return original_gather(*args, **kwargs)
+            return record(
+                "gather",
+                original_gather,
+                args,
+                kwargs,
+                sys._getframe(1).f_code.co_name,
+            )
 
         # Rank zero also delays reward/prepare, while the other rank waits on
         # the same explicit group used for generation and native score objects.
@@ -168,7 +183,14 @@ def _delayed_training(rank, root):
         ):
             trainer.train(sources)
         assert not torch.equal(initial, trainer.policy.weight.detach())
-        assert len(broadcasts) == 3 and len(gathers) == 1
+        assert phases == [
+            ("broadcast", "train"),
+            ("gather", "score_native_batch"),
+            ("broadcast", "train_batch"),
+            ("broadcast", "record_metrics"),
+            ("gather", "save_training_checkpoint"),
+            ("broadcast", "save_training_checkpoint"),
+        ]
         (Path(root) / f"rank-{rank}.passed").write_text("passed\n")
     finally:
         dist.destroy_process_group()
@@ -208,7 +230,33 @@ class TestRolloutObjectCollectives(unittest.TestCase):
             self.assertEqual(len(list(Path(root).glob("rank-*.passed"))), 2)
             metrics = json.loads((Path(root) / "metrics.jsonl").read_text())
             self.assertEqual(metrics["step"], 1)
-            self.assertTrue((Path(root) / "step-000001.pt").exists())
+            checkpoint = torch.load(
+                Path(root) / "step-000001.pt", map_location="cpu", weights_only=False
+            )
+            state = checkpoint["trainer_state"]
+            self.assertEqual(checkpoint["step"], 1)
+            self.assertEqual(checkpoint["scheduler"]["last_epoch"], 1)
+            self.assertEqual(state["world_size"], 2)
+            self.assertEqual(state["completed_updates"], 1)
+            self.assertEqual(state["next_update"], 1)
+            self.assertEqual(state["consumed_prompts"], 32)
+            self.assertEqual(state["source_count"], 32)
+            self.assertEqual(len(state["rank_rng_states"]), 2)
+            for rng in state["rank_rng_states"]:
+                self.assertEqual(set(rng), {"python", "numpy", "torch_cpu"})
+            self.assertTrue(checkpoint["optimizer"]["state"])
+            for adam in checkpoint["optimizer"]["state"].values():
+                self.assertEqual(adam["step"].item(), 1)
+                self.assertTrue(torch.isfinite(adam["exp_avg"]).all())
+                self.assertTrue(torch.isfinite(adam["exp_avg_sq"]).all())
+            native = torch.load(
+                Path(root) / "step-000001.native.pth", weights_only=True
+            )
+            self.assertEqual(set(native), set(checkpoint["model"]))
+            for name, value in native.items():
+                torch.testing.assert_close(
+                    value, checkpoint["model"][name], rtol=0, atol=0
+                )
 
     def test_timeout_is_finite_and_configured(self):
         cfg = ESPnetRLConfig(

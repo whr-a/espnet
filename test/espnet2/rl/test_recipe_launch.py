@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from espnet2.bin.rl_launch import launch_command, parser
+from espnet2.rl.cli import launch_command, parser
 from espnet2.rl.config import ESPnetRLConfig
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -92,7 +92,7 @@ def test_shared_launcher_routes_async_and_collocate_and_keeps_small_sync(
     assert launch_command(args, python="pinned-python")[0][:3] == [
         "pinned-python",
         "-m",
-        "espnet2.bin.rl_train_async",
+        "espnet2.bin.rl_train",
     ]
     args.rollout_node = None
     with pytest.raises(ValueError, match="rollout-node"):
@@ -233,13 +233,13 @@ def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
     assert launch_command(args, python="pinned-python")[0][:3] == [
         "pinned-python",
         "-m",
-        "espnet2.bin.rl_train_async",
+        "espnet2.bin.rl_train",
     ]
     # An admission receipt is optional for both launchers; the Ray selectors
     # are not.
     assert launch_command(parser().parse_args(selectors), python="pinned-python")[0][
         :3
-    ] == ["pinned-python", "-m", "espnet2.bin.rl_train_async"]
+    ] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
     for dropped in ("--ray-address", "--train-node", "--rollout-node"):
         trimmed = list(selectors)
         index = trimmed.index(dropped)
@@ -288,9 +288,9 @@ def test_shipped_opuslm_recipes_resolve_their_geometry_and_engine(
         else []
     )
     args = parser().parse_args(["--config", str(path), *selectors])
-    assert launch_command(args, python="pinned-python")[0][2] == (
-        "espnet2.bin.rl_train_async" if selectors else "espnet2.bin.rl_train"
-    )
+    command = launch_command(args, python="pinned-python")[0]
+    assert command[2] == "espnet2.bin.rl_train"
+    assert command[command.index("--worker") + 1] == ("ray" if selectors else "local")
 
 
 def mock_python(tmp_path):
@@ -339,7 +339,7 @@ def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
     subprocess.run(args, env=env, check=True)
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert len(calls) == 2
-    assert all(call[:2] == ["-m", "espnet2.bin.rl_launch"] for call in calls)
+    assert all(call[:2] == ["-m", "espnet2.bin.rl_train"] for call in calls)
     assert "--validate-only" in calls[0] and "--validate-only" not in calls[1]
     assert all(
         call[call.index("--manifest") + 1] == "train manifest.jsonl" for call in calls
@@ -393,8 +393,8 @@ def test_owsm_and_librispeech_recipe_routes_keep_template_step_budget(tmp_path):
         calls = [json.loads(line) for line in log.read_text().splitlines()]
         assert calls[0][:2] == ["-m", "espnet2.s2t.rl.recipe"]
         assert "--steps" not in calls[0]
-        assert calls[1][:2] == ["-m", "espnet2.bin.rl_launch"]
-        assert calls[2][:2] == ["-m", "espnet2.bin.rl_launch"]
+        assert calls[1][:2] == ["-m", "espnet2.bin.rl_train"]
+        assert calls[2][:2] == ["-m", "espnet2.bin.rl_train"]
         assert calls[2][calls[2].index("--rollout-node") + 1] == "rollout-node"
 
 
@@ -485,7 +485,7 @@ def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
         check=True,
     )
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert len(calls) == 1 and calls[0][:2] == ["-m", "espnet2.bin.rl_launch"]
+    assert len(calls) == 1 and calls[0][:2] == ["-m", "espnet2.bin.rl_train"]
     assert "--validate-only" in calls[0]
     assert calls[0][calls[0].index("--rollout-node") + 1] == "rollout-node"
 

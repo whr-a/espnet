@@ -54,5 +54,5 @@ For the pinned native ESPnet/Miles/SGLang profile, follow the
 It uses `installers/install_miles_async_env.sh` to create a new isolated
 environment and verifies source pins, dependency hashes and imports. Keep it
 separate from full supervised SpeechLM extras. The guide also supplies an
-[English architecture diagram](../espnet2/rl/ARCHITECTURE.md) and the current
+[shared architecture and training guide](../espnet2/rl/README.md) and the current
 validation limits. This feature requires the reviewed RL checkout.

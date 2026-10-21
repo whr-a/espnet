@@ -6,35 +6,18 @@ its function, or any Miles source. The exact loop code and its safe-point weight
 update ordering remain Miles' implementation. This boundary is pinned and audited.
 """
 
-import hashlib
 import importlib.util
 import json
-import subprocess
 from pathlib import Path
 from types import FunctionType, SimpleNamespace
 
-from .miles_library import PIN, verify_miles
+from .miles_library import verify_miles
 
 
 def load_async_loop(config, components):
-    evidence = verify_miles(config)
+    evidence = verify_miles(config, runtime=True)
     root = Path(evidence["source"])
     path = root / "train_async.py"
-    original = subprocess.run(
-        ["git", "-C", str(root), "show", f"{PIN}:train_async.py"],
-        check=True,
-        capture_output=True,
-    ).stdout
-    if path.read_bytes() != original:
-        raise ValueError("Pinned Miles async driver has local changes")
-    status = subprocess.run(
-        ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    if status:
-        raise ValueError("The Miles runtime requires an unchanged tracked source tree")
     if config.execution_mode in ("sync", "disagg_sync"):
         if config.training_objective != "west_grpo":
             raise ValueError("The synchronous Ray adapter requires WEST GRPO")
@@ -70,7 +53,7 @@ def load_async_loop(config, components):
     driver.__kwdefaults__ = module.train.__kwdefaults__
     evidence["runtime"] = {
         "entrypoint": "train_async.py:train",
-        "sha256": hashlib.sha256(original).hexdigest(),
+        "sha256": evidence["async_driver_sha256"],
         "bindings": sorted(factories),
         "source_modified": False,
         "original_function_modified": False,

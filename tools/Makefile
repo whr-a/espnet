@@ -294,16 +294,7 @@ fairseq.done: espnet.done
 	. ./activate_python.sh && ./installers/install_fairseq.sh
 	$(call end_timer_and_touch,fairseq.done)
 
-# Optional native RL libraries; these are not part of the default build.
-miles_rl.done: espnet.done
-	$(call start_timer,miles_rl.done)
-	. ./activate_python.sh && ./installers/install_miles_rl.sh
-	$(call end_timer_and_touch,miles_rl.done)
-
-sglang_rl.done: espnet.done
-	$(call start_timer,sglang_rl.done)
-	. ./activate_python.sh && ./installers/install_sglang_rl.sh
-	$(call end_timer_and_touch,sglang_rl.done)
+# Native RL uses the isolated installer documented in espnet2/rl/ENVIRONMENT.md.
 
 s3prl.done: espnet.done
 	$(call start_timer,s3prl.done)

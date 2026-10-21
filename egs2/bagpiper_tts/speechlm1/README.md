@@ -328,110 +328,41 @@ When using the foundation model, also cite the
 
 ## Optional Miles RL stage
 
-The default `conf/rl.yaml` (also `conf/rl_collocate.yaml`) shares **one H100
-80 GB** between the BF16 learner and a persistent SGLang engine.
-`conf/rl_disagg_async.yaml` uses **two H100s**, one learner GPU and one rollout
-GPU, with Miles' original async loop. Both templates use five updates of
-32 prompts × 8 candidates; scoring micro-batches and gradient accumulation
-keep that batch independent of GPU count. Custom layouts should use at most
-four GPUs.
+Optional stage 4 adds generated-audio WER RL through the unchanged Miles library
+and persistent SGLang Bagpiper rollout. `conf/rl.yaml` shares one H100 between
+learner and inference; `conf/rl_disagg_async.yaml` uses one learner plus one
+rollout H100. Both retain 32 prompts × 8 candidates and five default updates.
+These small-GPU templates still require actual memory/numerical/full-loop
+acceptance; historical engineering runs do not validate every layout.
 
-Reference scoring and AdamW run on CPU; Adam retains FP32 master weights.
-Allow substantial host memory (about 192 GB for an 8B model and its CPU
-optimizer/reference) and preserve the native model's activation checkpointing.
-The one-GPU engine limits concurrent requests and shares the remaining memory
-with training. These low-resource Bagpiper templates have CPU configuration
-checks only: the exact one-/two-GPU settings still require a GPU acceptance
-run. Historical FP32 engineering results do not validate these BF16 layouts.
-
-Miles is an unmodified optional library pinned to
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See the
-[shared recipe guide](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for environment
-installation, audited data and launch options. Historical larger layouts stay
-in their frozen experiment records and are not the public recipe defaults.
-
-The existing stages remain the default. `run.sh --stage 4` selects an optional
-post-training stage using a pinned Miles library and SGLang rollout. Architecture
-adapters live in `espnet2/speechlm/model/speechlm/rl/bagpiper`; Miles is not patched
-or vendored. Set the pretrained checkpoint, original training YAML, token assets,
-codec/audio geometry and GPU assignments in `conf/rl.yaml` before launching.
-Use the checkpoint's original SFT model configuration, set
-`model.activation_checkpointing: true`, and inspect its `trainer.freeze_param`
-list. The supervised warmup `conf/train.yaml` freezes decoder layers and is
-not a suitable default for full-decoder RL. Preserve the original modality order
-and model geometry when making the checkpointing-only configuration copy.
+Follow the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md)
+and [environment setup](../../../espnet2/rl/ENVIRONMENT.md). Prepare a real
+LibriTTS train split and separate held-out split with the existing Bagpiper data
+module. `--max-words 25 --shuffle-seed 42` keeps the 1536-token generation budget
+useful for this model's text-plan-plus-audio output.
 
 ```bash
-./run.sh --stage 4 --data-input /path/to/libritts --rl-config conf/rl.yaml
-# A user data directory is accepted directly:
-./run.sh --rl --wav-scp data/rl/wav.scp --text data/rl/text
-# Existing frozen manifests can skip preparation:
-./run.sh --rl --stage 2 --rl-config conf/rl.yaml
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
+  --dataset libritts --input /path/to/train-split --task tts_asr_wer \
+  --max-words 25 --shuffle-seed 42 --output data/rl/train.jsonl
+python -m espnet2.bin.rl_train --config conf/rl.yaml \
+  --manifest data/rl/train.jsonl --eval-manifest /path/to/dev.jsonl \
+  --checkpoint /path/to/native.pt --train-config /path/to/native.yaml \
+  --output-dir /path/to/fresh/run --validate-only
 ```
 
-For a sequence that also includes supervised stages, select `--stop-stage 4`
-and pass `--rl-config`, with `--rl-data-input` or `--rl-wav-scp`/`--rl-text`.
-To reuse a prepared dataset, pass `--rl-manifest`; this skips preparation when no
-new RL data is supplied. Each RL run starts from the explicit native checkpoint
-in its YAML and writes a fresh output directory.
+Keep the original model/codec/audio geometry and activation checkpointing.
+The supervised warmup's decoder freeze list is not a substitute for the intended
+RL trainable parameters. `run.sh --stage 4` and existing `rl.sh` options use the
+same training module. Combined SFT/RL runs accept separate `--rl-*` inputs.
 
-The RL wrapper performs data preparation, configuration validation and training.
-Call `rl.sh --stage 2` to start from an existing manifest; `run.sh --rl` is also
-available. `--manifest` selects the prepared file used by both validation and
-training. `--python` selects the native interpreter; rollout uses the separate
-`rollout_python` from the YAML. LibriTTS uses `.normalized.txt` paired with
-WAV files. All manifests have unique identities, references, input audio paths
-and SHA256 audit sidecars.
+Reward decodes actual eight-stream Xcodec actions, then the pinned frozen ASR
+transcribes their waveform. The batch reward is `-min(WER, 1)`; missing or invalid
+audio gets -1 and is counted separately. Candidate codec/actions, transcripts,
+WER and sampled waveform audits are retained. References do not enter the TTS
+condition beyond the intended text to be spoken.
 
-TTS reward decodes actual generated 8-stream Xcodec actions, transcribes the
-result with a separately frozen ASR model and returns negative normalized WER.
-It scores the whole batch at once on `reward_device` (default: the learner's
-device): each candidate's codes are decoded alone, then the ASR transcribes
-`asr_batch_size` (default 64) waveforms together. A candidate with no
-decodable audio (fewer than eight codec frames) or an invalid codec token in
-an aligned frame gets WER 1; `reward/no_audio` and `reward/invalid_codec`
-log their fractions next to `reward/wer`. The reward is -min(WER, 1), so no
-candidate with audio scores below one without. Each update
-writes every transcript to `reward_audit/batch-NNNNNN.jsonl` and the WAV and
-JSON of four evenly spaced candidates. Prepare manifests with `--max-words 25`
-to keep utterances whose audio fits the 1536-token budget, and with
-`--shuffle-seed 42` so that each update draws new prompts across the corpus.
-LibriTTS and `wav.scp` use one shared verbatim reading instruction and preserve
-the reference separately for WER. The native text preprocessor and rollout prefix
-are identical. The templates use eight candidates per prompt and a 1536-token
-limit because this TTS model emits a text plan before its audio.
-Freeze the native recipe's `activation_checkpointing: true`; the RL scorer
-recomputes native decoder layers and 32-token score blocks in evaluation mode.
-
-Prepare a separate held-out LibriTTS split and evaluate a native checkpoint
-with it; the evaluator exports the checkpoint and decodes every prompt with the
-recipe's rollout engine (greedy and 2,048 new tokens by default;
-`--temperature 1 --samples 8`, the recipe's temperature, samples the RL policy
-instead):
-
-```bash
-PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
-  --dataset libritts --input /path/to/heldout-libritts --max-words 25 \
-  --shuffle-seed 42 --limit 200 --task tts_asr_wer --output data/rl/eval.jsonl
-PYTHONPATH=../../.. python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-  --config exp/rl/frozen_config.json --manifest data/rl/eval.jsonl \
-  --checkpoint exp/rl/step-000005.native.pth --policy-step 5 \
-  --output exp/rl/heldout
-```
-
-The evaluation refuses train/eval identity overlap and scores every candidate
-with the training reward's ASR. `items.jsonl` keeps each transcript, WER and
-decoding status, `reward_audit/` every WAV and its codec actions, and
-`summary.json` the mean and corpus WER, failure counts and checkpoint identity.
-
-`BagpiperEngine` sends a whole rollout batch to SGLang's own Qwen3 layers
-(FP32: triton attention with IEEE float32, native RMSNorm; bfloat16: fa3) and
-records every primary and secondary action, stream mask, the frame's support
-and the joint behavior log probability. `max_running_requests` requests of
-`context_length` tokens must fit its KV pool (checked at startup), so SGLang
-never retracts a request and recomputes it without its secondary streams.
-Checkpoints, exports, nonzero gradients, probability agreement and held-out
-task metrics must all pass before claiming end-to-end acceptance.
-
-The small end-to-end run and its exact scope are recorded in
-[RL validation](RL_VALIDATION.md).
+The shared Bagpiper evaluator generates every held-out candidate, checks native
+probabilities and reports both completion-mean and corpus WER. Keep its inputs
+separate from training and report generation/failure counts. A successful
+optimizer loop does not establish improved intelligibility or held-out WER.

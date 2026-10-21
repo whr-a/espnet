@@ -125,16 +125,13 @@ class NativeTrainerGroup:
         self.disposed = False
 
     async def call(self, name, *args, **kwargs):
+        from miles.utils.async_utils import gather_and_raise_first
+
         # Every rank must finish its checkpoint/exception protocol before an
         # exception reaches with_disposer and Miles destroys the actor group.
-        replies = await asyncio.gather(
-            *[getattr(worker, name).remote(*args, **kwargs) for worker in self.workers],
-            return_exceptions=True,
+        return await gather_and_raise_first(
+            [getattr(worker, name).remote(*args, **kwargs) for worker in self.workers]
         )
-        for reply in replies:
-            if isinstance(reply, BaseException):
-                raise reply
-        return replies
 
     async def train(self, rollout_id, data):
         return await self.call("train", rollout_id, data.data_ref)

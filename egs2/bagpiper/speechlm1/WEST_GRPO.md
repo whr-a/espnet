@@ -1,159 +1,34 @@
-# WEST-aligned Bagpiper QA training
+# Advanced four-H100 WEST-aligned Bagpiper example
 
-[conf/rl_west_4gpu.yaml](conf/rl_west_4gpu.yaml) provides a synchronous, four-GPU
-Bagpiper QA profile. Its source and CPU contracts are implemented; actual GPU
-memory/probability validation and MMAU improvement are not yet established for
-this profile. Results from the older 100-step asynchronous FP32 profile do not
-validate this new configuration.
+[conf/advanced/rl_west_4gpu.yaml](conf/advanced/rl_west_4gpu.yaml) is an advanced
+synchronous-disaggregated example: two native learners and two TP=1 SGLang
+replicas. The main public targets remain the one-/two-GPU templates documented
+in the [shared RL guide](../../../espnet2/rl/README.md). Those templates retain
+their own loss/reward settings and are not validated by a four-GPU run.
 
-The reference is WEST commit
-[`b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb`](https://github.com/wenet-e2e/west/tree/b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb/examples/grpo),
-with its pinned Transformers 4.52.3 defaults. The model remains native Bagpiper;
-Miles is imported as a library for rollout orchestration and training components.
-The recipe retains its existing native audio encoder and codec freeze, while
-updating the language model and audio adaptor. This model-specific parameter
-scope differs from WEST's Qwen entry point.
+This example retains the existing 32× 8 batch, native final-answer correctness 1
+plus format 0.1 reward, BF16 native/FA3 inference, temperature 0.7/top-k 50,
+2048-frame cap, 8192-token scoring microbatches, AdamW 1e-6 and linear 1000-update
+schedule, fixed-reference k3 KL 0.04 and gradient clip 1. The language model and
+audio adaptor train; audio encoder/codec remain frozen according to the native
+configuration. Prepare QA with `--qa-template bagpiper`.
 
-| Setting | This profile |
-| --- | --- |
-| Hardware | Two native all-reduce learners and two independent TP=1 SGLang replicas |
-| Policy batches | 32 audio questions × eight candidates = 256 responses per update |
-| Updates | 1,000; fresh run from the pre-RL checkpoint |
-| Precision and offload | BF16; CPU AdamW, reference model and activation offload |
-| AdamW | Initial LR 1e-6; betas 0.9/0.999; epsilon 1e-8; weight decay zero |
-| Scheduler | Linear decay over all 1,000 updates; zero LR warmup |
-| Gradient clipping | Global norm 1.0 after accumulating the complete update |
-| Generation | Temperature 0.7; top-k 50; top-p 1.0; at most 2,048 response frames |
-| Reference KL | Fixed pre-RL model; coefficient 0.04; k3 estimator |
-| Checkpoints and MMAU Mini | Every 100 updates; identical evaluation contract versus pre-training |
+WEST detached-current loss scores the full primary vocabulary at temperature 1.
+Its within-group advantages use sample standard deviation plus 1e-4, and loss
+reduction gives each response equal weight after valid-token averaging. Forced
+DETECT/padding frames are masked; sampled EOS remains a loss action. There is
+no PPO clipping, stale-policy correction or truncated importance denominator
+in this synchronous objective. Protocol scores at temperature 0.7 serve the
+integrity audit and are separate from the raw loss scores.
 
-WEST's shell uses four candidates by default. The 32 × eight batch, Bagpiper
-terminal-answer parser, correctness 1.0 plus terminal-format 0.1 reward, and
-periodic MMAU evaluation are deliberate overrides. The 2,048-frame response
-limit is a Bagpiper adaptation to WEST's 1,024-token default: captions can
-otherwise consume the budget before the final answer. Context is 4,096 frames;
-64 concurrent inference requests and an 8,192-token native microbatch budget
-are engineering settings that require actual memory validation. Microbatch
-accumulation preserves the complete 32 × eight update. Captions and intermediate
-reasoning are allowed; the parser selects a terminal answer before consulting
-its ground truth. Format reward is excluded from benchmark accuracy.
+The mean-error bound 0.02 and retained maximum telemetry do not establish exact
+inference/learner distribution equality. The public example does not activate
+a private periodic evaluation plan, resource admission script, auditor or
+observer. Use the ordinary evaluator on saved checkpoints; the generic optional
+callback hook accepts an explicitly supplied external implementation.
 
-## Loss and inference integrity
-
-Within each group of eight, advantages use the reward mean and sample standard
-deviation with an added 1e-4. The loss uses raw, unfiltered full-primary-vocabulary
-model log probabilities at temperature one, for both actor and fixed reference.
-It follows WEST's detached-current policy-gradient factor and k3 KL; it has no
-PPO clipping, stale-policy correction or truncated importance weights. Loss is
-averaged over valid sampled action frames within each response and then equally
-over the 256 responses, so long answers do not receive more batch weight.
-
-Bagpiper's forced DETECT control frame has no sampled action and remains masked
-from the loss. Sampled EOS counts; padding after EOS does not. Text-only QA never
-activates secondary codec streams. The response limit includes native control
-frames, so it is not identical to a standard text tokenizer's completion count.
-
-Rollout integrity is audited separately. SGLang returns the temperature-0.7,
-protocol-masked log probability **before** top-k filtering; the native integrity
-pass checks the same values. These are not renormalized top-k sampling
-probabilities and never enter the raw WEST objective. Recorded sampling metadata
-names this domain explicitly. Different HF/SGLang top-k boundary tie handling
-and random-number streams can produce different texts from the same seed.
-
-This synchronous WEST profile explicitly sets `score_tolerance: null` and
-`score_mean_tolerance: 0.02`: the maximum remains reported, while the mean
-bounds systematic rollout/native drift. Disabling the maximum is permitted only
-for `west_grpo` in `sync` or `disagg_sync`, with a finite positive mean bound.
-Nonfinite maximum/mean values, checkpoint and policy-version identity,
-prepared-input/action-mask validity and configured support checks still fail.
-Other profiles retain their existing maximum guard. This setting changes no
-WEST loss, LR schedule, sampling or reward.
-
-In an H100 control after 15 updates, one of 292,793 sampled actions had a
-log-probability difference of 2.84811 while the mean was 0.01289. Fresh loading
-both SG replicas reproduced all 256 saved responses and probabilities exactly;
-promoting the same published BF16 weights to FP32 for native scoring reduced
-that action's difference to 1.83165. Numerical precision contributes, but the
-first divergent operation is not isolated: packed projections, paged FA3 versus
-native SDPA and deterministic reductions still differ. This mean-only guard
-accepts isolated larger differences; it is not bitwise on-policy equivalence.
-Keep maximum and percentile errors visible and recheck the numerical contract
-when changing the backend or precision.
-
-Each update waits for the exact current policy snapshot on both rollout
-replicas, generates one batch and performs one optimization update. Staleness is
-zero. Candidate seeds depend on the experiment seed, absolute rollout ID, source
-ID and candidate index, so an evaluation restart does not reset the training
-candidate sequence. This requires SGLang deterministic inference and is limited
-to text-only QA; codec sampling is not stateless. The opted-in worker reuses
-SGLang's seed/position hash with open-interval uniform values before the Gumbel
-transform. This prevents the uint32 maximum from creating infinity plus a
-filtered negative infinity, which can yield NaN and an action outside top-k.
-The compatibility helper lives under ESPnet's Bagpiper RL package; the pinned
-SGLang checkout is retained.
-
-This profile preserves the native decoder's FP32 RoPE frequency buffers when
-converting model parameters to BF16. Its explicit `match_native_bf16` option
-also selects native residual, RMSNorm, SiLU and rotary arithmetic in the Bagpiper
-SGLang model. These model-local operations retain the native BF16 rounding
-boundaries. The audio encoder keeps SDPA and the native CPU initialization of its sinusoidal
-position table. The separate MMAU
-evaluation profile leaves these opt-in training flags disabled, preserving its
-fixed pre-training generation contract. Actual rollout/native agreement remains
-a required runtime check; these options do not establish it by themselves.
-
-The first update uses LR 1e-6. Update 100 uses 9.01e-7 and leaves 9.0e-7 for the
-next update; update 1,000 uses 1e-9 and leaves zero. Evaluation and checkpoint
-export do not advance this schedule.
-
-If all live learner ranks reject a batch during preparation, they preserve the
-last completed state under `failure-checkpoints/` before propagating the original
-error. The full checkpoint contains native weights, Adam moments and FP32 master
-weights, scheduler, per-rank RNG and the absolute data cursor. The rejected batch
-does not advance the optimizer or LR. Every learner RPC finishes this protocol
-before cleanup; a preservation error remains secondary to the training error.
-Resume requires a validated full checkpoint and a reviewed fix for the failure.
-There is no automatic retry, and weight-only rollout exports cannot resume Adam.
-
-## Configure and launch
-
-Follow the shared [environment guide](../../../espnet2/rl/ENVIRONMENT.md), prepare
-native AVQA manifests with the existing recipe data stage, and copy the portable
-configuration to a local experiment file. Replace its checkpoint, model assets,
-manifest, pinned Miles/SGLang source and environment paths. The native training
-YAML must enable activation checkpointing for the memory profile.
-
-Periodic evaluation requires a reviewed, hash-bound evaluation plan, a matching
-MMAU baseline/configuration, an audit script and a host-specific resource
-admission command. These files are site-specific and are not fabricated by this
-portable template. Set `periodic_eval_options` to those real files before
-launching. Its family callback closes rollout replica0's engine, evaluates on
-that same assigned GPU, and restores the current training engine. It adds no
-GPU reservation, overlaps no training/evaluation, and does not automatically
-retry a failed evaluation. Learner/optimizer/LR/data-cursor state remains resident.
-
-Run on an existing four-GPU allocation with a Ray head on that same node. Reuse
-its verified Ray address and active node ID; do not create an extra allocation.
-Both selectors name the same host, while Ray reserves disjoint two-GPU actor
-groups. The template requests learner physical GPUs 2/3 and inference 0/1;
-verify actual actor GPU IDs before training because device numbering is local to
-the host. Pass all three selectors through the standard recipe entry point:
-
-```bash
-RAY_ADDRESS=127.0.0.1:6379   # Existing head on the assigned four-GPU host.
-RAY_NODE_ID=your_verified_active_node_id
-./rl.sh --stage 2 --stop-stage 2 --rl-config conf/rl_west_local.yaml \
-    --ray-address "$RAY_ADDRESS" --train-node "$RAY_NODE_ID" \
-    --rollout-node "$RAY_NODE_ID"
-./rl.sh --stage 3 --stop-stage 3 --rl-config conf/rl_west_local.yaml \
-    --ray-address "$RAY_ADDRESS" --train-node "$RAY_NODE_ID" \
-    --rollout-node "$RAY_NODE_ID"
-```
-
-Before the long run, require a real audio rollout and finite nonzero parameter
-update, matching inference/native integrity scores, current-policy version
-identity, correct reward extraction, and actual BF16 memory acceptance. Keep all
-1,000 updates and the ten complete 1,000-item MMAU Mini evaluations under
-supervision. Report both the established benchmark answer-mapping view and the
-strict final-choice view against the same pre-training baseline. A training
-reward increase alone is not MMAU improvement.
+Resolve all paths/assets, start a dedicated Ray cluster on existing resources,
+then use `python -m espnet2.bin.rl_train --config conf/advanced/rl_west_4gpu.yaml`
+with explicit `--ray-address`, `--train-node` and `--rollout-node` selectors.
+Validate the configuration before GPU execution. Historical attempt logs and
+quality results are archived separately and are not public recipe defaults.

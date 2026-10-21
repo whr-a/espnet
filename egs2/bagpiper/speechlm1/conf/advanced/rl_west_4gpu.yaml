@@ -1,5 +1,7 @@
+# Advanced four-H100 example; the main public targets use one or two GPUs.
+# Standalone evaluation is documented in espnet2/rl/README.md.
 # WEST-aligned Bagpiper QA; hardware and quality validation are still pending.
-# Replace paths and provide the reviewed periodic evaluation plan before launch.
+# Replace model/data paths and validate this configuration before launch.
 family: bagpiper
 train_config: /path/to/released/train_config.checkpointing.yaml
 checkpoint: /path/to/released/model.pt
@@ -76,18 +78,3 @@ execution_mode: disagg_sync
 update_weights_interval: 1
 max_weight_staleness: 0
 rollout_mem_fraction: 0.85
-# This callback pauses rollout replica0 and uses its existing GPU for evaluation.
-# The plan and admission command must be configured for the actual local host.
-periodic_eval_interval: 100
-periodic_eval_function: espnet2.speechlm.model.speechlm.rl.bagpiper.periodic:run_periodic_evaluation
-periodic_eval_options:
-  plan: /path/to/reviewed/mmau_plan.json
-  plan_sha256: REPLACE_WITH_REVIEWED_PLAN_SHA256
-  evaluation_config: /path/to/reviewed/mmau_evaluation.yaml
-  audit_script: /path/to/reviewed/audit_periodic.py
-  output_dir: /path/to/fresh/west-grpo-run/periodic_evaluation
-  resource_preflight_command:
-  - /path/to/rl-env/bin/python
-  - /path/to/reviewed/resource_preflight.py
-  - --operation
-  - eval

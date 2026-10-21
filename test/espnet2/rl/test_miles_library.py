@@ -1,12 +1,14 @@
 """Independent analytical checks of the native library boundary."""
 
 import json
+import subprocess
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 
+import espnet2.rl.miles_library as miles_library
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
 from espnet2.rl.miles_library import (
@@ -16,6 +18,91 @@ from espnet2.rl.miles_library import (
 )
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
+
+
+@pytest.fixture
+def pinned_source(tmp_path, monkeypatch):
+    """Use an isolated tiny Git repository; never modify the real Miles pin."""
+    relative_paths = [
+        "miles/backends/training_utils/loss/hub/math_utils.py",
+        "miles/ray/rollout/train_data_conversion.py",
+        "miles/backends/training_utils/loss/hub/corrections.py",
+        "train_async.py",
+        "other.py",
+    ]
+    for relative in relative_paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Frozen source fixture.\n")
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init")
+    git("add", ".")
+    git(
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "Freeze fixture",
+    )
+    revision = git("rev-parse", "HEAD")
+    monkeypatch.setattr(miles_library, "PIN", revision)
+    monkeypatch.setattr(
+        miles_library,
+        "_algorithms",
+        lambda: SimpleNamespace(__file__=str(tmp_path / relative_paths[0])),
+    )
+    return tmp_path, SimpleNamespace(miles_commit=revision)
+
+
+def test_miles_runtime_verification_retains_algorithm_and_driver_evidence(
+    pinned_source,
+):
+    root, config = pinned_source
+    algorithms = miles_library.verify_miles(config)
+    runtime = miles_library.verify_miles(config, runtime=True)
+    assert runtime["source"] == str(root)
+    assert algorithms["algorithms"] == runtime["algorithms"]
+    assert len(runtime["algorithms"]) == 3
+    assert len(runtime["async_driver_sha256"]) == 64
+    # Untracked files do not modify pinned source or widen the tracked gate.
+    (root / "untracked.txt").write_text("Untracked evidence.\n")
+    assert miles_library.verify_miles(config, runtime=True) == runtime
+
+
+@pytest.mark.parametrize(
+    "relative, message",
+    [
+        ("miles/backends/training_utils/loss/hub/math_utils.py", "algorithm"),
+        ("miles/ray/rollout/train_data_conversion.py", "algorithm"),
+        ("miles/backends/training_utils/loss/hub/corrections.py", "algorithm"),
+        ("train_async.py", "async driver"),
+        ("other.py", "unchanged tracked source"),
+    ],
+)
+def test_miles_runtime_rejects_modified_tracked_source(
+    pinned_source, relative, message
+):
+    root, config = pinned_source
+    (root / relative).write_text("# Modified source fixture.\n")
+    with pytest.raises(ValueError, match=message):
+        miles_library.verify_miles(config, runtime=True)
+
+
+def test_miles_verification_rejects_unreviewed_recipe_pin(pinned_source):
+    _, config = pinned_source
+    config.miles_commit = "0" * 40
+    with pytest.raises(ValueError, match="reviewed Miles pin"):
+        miles_library.verify_miles(config, runtime=True)
 
 
 def test_frozen_json_configuration_retains_scientific_numeric_types(tmp_path):

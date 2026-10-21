@@ -263,7 +263,7 @@ def test_scoring_rejects_a_changed_sampling_contract(temperature, contract):
         **({} if contract is None else {"sampling_contract": contract}),
     )
     batch = collate_rollouts([{"id": "u"}], [generation] * 2, 2)
-    with pytest.raises(ValueError, match="whole support at the policy's temperature"):
+    with pytest.raises(ValueError, match="sampling contract differs from its policy"):
         policy(batch)
 
 

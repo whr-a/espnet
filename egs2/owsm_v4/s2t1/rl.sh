@@ -53,7 +53,7 @@ launch_args=(--config "${config_path}")
 for key in data_admission ray_address train_node rollout_node; do
     [[ -z ${!key} ]] || launch_args+=(--${key//_/-} "${!key}")
 done
-"${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}" --validate-only
+"${python_cmd}" -m espnet2.bin.rl_train "${launch_args[@]}" --validate-only
 if ! ${validate_only}; then
-    exec "${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}"
+    exec "${python_cmd}" -m espnet2.bin.rl_train "${launch_args[@]}"
 fi

@@ -149,63 +149,32 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
 
 ## Optional Miles RL stage
 
-The default is one H100: training and SGLang rollout share GPU 0. The
-asynchronous profile uses two H100s, one for training and one for rollout,
-with the original pinned Miles async loop overlapping successive updates.
+Stage 18 adds native WER GRPO using the unchanged Miles library and persistent
+SGLang rollout. The main configurations are
+`conf/rl_miles_wer_1gpu.yaml` (one H100, collocated) and
+`conf/rl_miles_wer_2gpu_async.yaml` (one learner plus one rollout H100).
+Both use 32 prompts × 8 candidates and five default updates. Existing short
+configuration names remain symlinks to these profiles.
 
-| Configuration | GPUs | Per optimizer update | Default updates |
-|---|---|---|---|
-| `conf/rl_miles_wer.yaml` or `conf/rl_miles_wer_1gpu.yaml` | 1, collocate | 32 × 8 = 256 candidates | 100 |
-| `conf/rl_miles_wer_2gpu_async.yaml` | 2, disaggregated async | 32 × 8 = 256 candidates | 100 |
-
-`rl_miles_wer_collocate.yaml` and `rl_miles_wer_disagg_async.yaml` are relative
-symlinks to these same profiles. Both use the same training batch; gradient
-accumulation preserves 32 prompts × 8 candidates with smaller scoring
-micro-batches. The default budget is five updates; `--steps` overrides it. The public RL recipes focus
-on one and two GPUs; custom configurations should use at most four GPUs.
-
-OWSM v4 base keeps its reference policy, Adam state and native scoring on the
-training GPU. `rollout_mem_fraction` limits the persistent SGLang engine when
-it shares that device. The templates keep temperature 1; a temperature in
-(0, 1] samples from softmax(logits / T), and the engine and learner both score
-that distribution. See the [sampling contract](../../../espnet2/rl/README.md#sampling-temperature).
-
-Miles is an unmodified optional library pinned to
-`a22fd824191c64ba7c5d6c531f125406e4ce9cc6`. See
-[`SHORT_RUN_RECIPES.md`](../../../espnet2/rl/SHORT_RUN_RECIPES.md) for installation,
-audited manifests and launch options. Historical runs retain their frozen
-configurations separately; their GPU layouts are not the current defaults.
-
-Stage 18 adds WER GRPO post-training to an existing OWSM checkpoint:
-`./run.sh --stage 18 --wav-scp /path/wav.scp --text /path/text
---train-config /path/config.yaml --checkpoint /path/model.pth`.
-The same standalone stage also accepts `--rl-` prefixes, and
-`--stop_stage` or `--stop-stage` may limit the selected stage range.
-
-To append RL after the existing supervised stages succeed, explicitly include
-stage 18 and supply separate RL inputs:
+Prepare independent LibriSpeech train/dev splits with the ordinary data recipe,
+then follow the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md)
+and [environment setup](../../../espnet2/rl/ENVIRONMENT.md). The canonical entry
+is `python -m espnet2.bin.rl_train`; the recipe stage forwards to it:
 
 ```bash
-./run.sh --stage 1 --stop_stage 18 \
-    --rl-wav-scp /path/librispeech/wav.scp --rl-text /path/librispeech/text \
-    --rl-train-config /path/owsm/config.yaml --rl-checkpoint /path/owsm/model.pth \
-    --rl-config conf/rl_miles_wer.yaml --rl-work-dir exp/rl_miles_wer
+./run.sh --stage 18 --wav-scp /path/to/train/wav.scp --text /path/to/train/text \
+  --train-config /path/to/owsm/config.yaml --checkpoint /path/to/owsm/model.pth
 ```
 
-The four RL data/model inputs are required. Other supported combined-run options
-are `--rl-steps`, `--rl-device`, `--rl-reference-device`, `--rl-rollout-gpus`,
-`--rl-rollout-python`, `--rl-sglang-source`, `--rl-miles-source`, and
-`--rl-language`. Each maps to the existing `rl.sh` option without the `rl-`
-prefix. Ordinary S2T options are forwarded unchanged, and RL options are kept
-out of `s2t.sh`. The RL checkpoint and model configuration must be supplied
-explicitly; they may refer to files produced by the preceding supervised run.
+For combined supervised/RL execution, explicitly include 18 in the stage range
+and pass separate `--rl-wav-scp`, `--rl-text`, `--rl-train-config` and
+`--rl-checkpoint` options. Ordinary supervised execution stays unchanged; if it
+fails, RL is not started. A prepared `--rl-manifest` can replace data conversion.
+The original model configuration/checkpoint is always explicit.
 
-Without RL options, the ordinary recipe retains its default behavior even when
-its default `stop_stage=10000` includes 18. Combined RL requires an explicit
-stop stage; a range excluding 18 reports that RL was skipped. Missing required
-inputs, unknown RL options, and unreadable RL config files fail before the
-supervised stages start. Config contents retain the existing RL validation.
-If supervised stages fail, RL is not started.
-
-The [LibriSpeech RL recipe](../../librispeech/owsm_rl1/README.md) documents
-optional SGLang installation, devices, audited data and current limitations.
+OWSM base keeps reference/Adam/native scoring on the learner GPU. The declared
+rollout memory fraction bounds its collocated engine. The optional
+`conf/rl_miles_wer_vllm.yaml` is an advanced backend with its own source,
+interpreter and acceptance requirements. OWSM-CTC needs a separate policy.
+One-/two-H100 200-update runs establish an engineering path, without a demonstrated
+held-out WER improvement; new checkpoints/layouts need their own acceptance.

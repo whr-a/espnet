@@ -306,6 +306,24 @@ def _actor_worker(rank, root):
         assert synchronous.reference.scored == 64
         assert synchronous.policy.backward_calls == 8
         assert _REWARD_CALLS == (512 if rank == 0 else 0)
+        # Miles PPO now shares WEST's complete collective checkpoint contract.
+        full_path = sync_root / "step-000002.pt"
+        full = torch.load(full_path, map_location="cpu", weights_only=False)
+        assert full["scheduler"]["last_epoch"] == 2
+        state = full["trainer_state"]
+        assert state["next_update"] == 2 and state["consumed_prompts"] == 64
+        assert len(state["rank_rng_states"]) == 8
+        restored_config = copy.deepcopy(sync_config)
+        restored_config.output_dir = str(sync_root / "restored")
+        restored = NativeGRPOTrainer(Policy(), restored_config)
+        restored.source_count = 32
+        restored.load_training_checkpoint(full_path)
+        assert restored.completed_updates == synchronous.completed_updates == 2
+        for name, value in restored.policy.state_dict().items():
+            torch.testing.assert_close(
+                value, synchronous.policy.state_dict()[name], rtol=0, atol=0
+            )
+        assert restored.scheduler.state_dict() == synchronous.scheduler.state_dict()
         if rank == 0:
             assert sync_rollout.calls == 2
         (Path(root) / f"rank-{rank}.passed").write_text("passed\n")

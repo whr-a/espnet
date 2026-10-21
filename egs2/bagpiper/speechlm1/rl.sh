@@ -86,8 +86,8 @@ for key in eval_manifest data_admission ray_address train_node rollout_node outp
     [[ -z ${!key} ]] || launch_args+=(--${key//_/-} "${!key}")
 done
 if (( stage <= 2 && stop_stage >= 2 )); then
-    "${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}" --validate-only
+    "${python_cmd}" -m espnet2.bin.rl_train "${launch_args[@]}" --validate-only
 fi
 if (( stage <= 3 && stop_stage >= 3 )); then
-    "${python_cmd}" -m espnet2.bin.rl_launch "${launch_args[@]}"
+    "${python_cmd}" -m espnet2.bin.rl_train "${launch_args[@]}"
 fi

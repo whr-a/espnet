@@ -119,15 +119,15 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
     tmp_path, monkeypatch, mode, validate_only
 ):
     from espnet2.bin import rl_train, rl_train_async
-    from espnet2.rl import miles_library
+    from espnet2.rl import cli as shared_cli
+    from espnet2.rl import miles_library, rollout_worker
 
     cli = rl_train if mode == "sync" else rl_train_async
     path = manifest(tmp_path, [{**native_source(), "qa_template": "default"}])
     config = config_for(path, mode)
-    monkeypatch.setattr(cli.ESPnetRLConfig, "load", lambda path: config)
+    monkeypatch.setattr(shared_cli.ESPnetRLConfig, "load", lambda path: config)
     monkeypatch.setattr(miles_library, "verify_miles", forbidden)
-    if mode == "disagg_async":
-        monkeypatch.setattr(cli, "engine_class", forbidden)
+    monkeypatch.setattr(rollout_worker, "engine_class", forbidden)
     monkeypatch.setitem(sys.modules, "ray", None)
     argv = ["rl_train", "--config", "unused.yaml"]
     if mode == "disagg_async":
@@ -149,15 +149,15 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
 @pytest.mark.parametrize("mode", ["sync", "disagg_async"])
 def test_validate_only_accepts_native_sources_without_ray(tmp_path, monkeypatch, mode):
     from espnet2.bin import rl_train, rl_train_async
-    from espnet2.rl import miles_library
+    from espnet2.rl import cli as shared_cli
+    from espnet2.rl import miles_library, rollout_worker
 
     cli = rl_train if mode == "sync" else rl_train_async
     path = manifest(tmp_path, [native_source(), {**native_source(), "id": "qa-2"}])
     config = config_for(path, mode)
-    monkeypatch.setattr(cli.ESPnetRLConfig, "load", lambda path: config)
+    monkeypatch.setattr(shared_cli.ESPnetRLConfig, "load", lambda path: config)
     monkeypatch.setattr(miles_library, "verify_miles", lambda config: {"checked": True})
-    if mode == "disagg_async":
-        monkeypatch.setattr(cli, "engine_class", lambda config: None)
+    monkeypatch.setattr(rollout_worker, "engine_class", lambda config: None)
     monkeypatch.setitem(sys.modules, "ray", None)
     argv = ["rl_train", "--config", "unused.yaml", "--validate-only"]
     if mode == "disagg_async":

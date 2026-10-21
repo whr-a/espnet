@@ -16,7 +16,6 @@
 import copy
 import json
 import os
-import random
 import time
 import traceback
 from contextlib import AbstractContextManager, nullcontext
@@ -27,6 +26,8 @@ import numpy as np
 import torch
 import torch.distributed as distributed
 from torch.nn.parallel import DistributedDataParallel
+
+from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 
 from .data import collate_rollouts, read_manifest
 from .miles_library import (
@@ -274,36 +275,47 @@ class NativeGRPOTrainer:
             if not isinstance(native_scores, (tuple, list)) or len(native_scores) != 2:
                 raise ValueError("Native scores require current and reference tensors")
             old, reference = native_scores
+        return self._prepare_scored_batch(batch, old, reference)
+
+    def _prepare_scored_batch(
+        self, batch, old, reference, behavior=None, *, current_behavior=False
+    ):
+        """Validate detached scores and build one globally normalized reward batch."""
         mask = batch.batch["response_mask"]
+        scores = (old, reference) if behavior is None else (old, behavior, reference)
         if any(
             not isinstance(value, torch.Tensor)
             or value.shape != mask.shape
             or value.requires_grad
             or value.device.type != "cpu"
             or not torch.isfinite(value).all()
-            for value in (old, reference)
+            for value in scores
         ):
             raise ValueError(
-                "The ESPnet scorer must return finite detached CPU probabilities per action"
+                "Native scores must be finite, detached CPU tensors preserving sampled actions"
+            )
+        if current_behavior and not torch.equal(old, behavior):
+            raise ValueError(
+                "Current behavior native scores differ from learner scores"
             )
         drift = self._drift_gate(
-            old,
+            old if behavior is None else behavior,
             batch,
-            "Rollout/native",
+            "Rollout/native" if behavior is None else "Behavior native/SGLang",
             "check checkpoint version, prefix, audio frontend and sampling distribution",
         )
         _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
         metrics.update(self.support_metrics)
         advantages, returns = self._advantages(token_rewards, mask, batch)
         batch.batch.update(
-            {
-                "old_log_probs": old,
-                "ref_log_probs": reference,
-                "advantages": advantages,
-                "returns": returns,
-                "token_level_rewards": token_rewards,
-            }
+            old_log_probs=old,
+            ref_log_probs=reference,
+            advantages=advantages,
+            returns=returns,
+            token_level_rewards=token_rewards,
         )
+        if behavior is not None:
+            batch.batch["behavior_native_log_probs"] = behavior
         return {**metrics, **drift}
 
     def _advantages(self, token_rewards, mask, batch):
@@ -351,27 +363,9 @@ class NativeGRPOTrainer:
             raise ValueError(
                 "The async batch requires an exact behavior checkpoint SHA256"
             )
-        if len(batch) != self.config.global_candidate_batch_size:
-            raise ValueError(
-                "Async batch does not contain the full global candidate count"
-            )
-        identities = batch.non_tensor_batch["uid"].tolist()
-        size = self.config.group_size
-        groups = [identities[i : i + size] for i in range(0, len(batch), size)]
-        if (
-            any(len(set(group)) != 1 for group in groups)
-            or len({group[0] for group in groups}) != self.config.prompts_per_step
-        ):
-            raise ValueError("Async batches must contain complete unique prompt groups")
-        for generation in batch.non_tensor_batch["generation"]:
-            if (
-                generation.get("behavior_policy_version") != behavior_version
-                or generation.get("behavior_checkpoint_sha256")
-                != behavior_checkpoint_sha256
-            ):
-                raise ValueError(
-                    "Mixed or unrecorded behavior checkpoint in async batch"
-                )
+        self.validate_behavior_batch(
+            batch, behavior_version, behavior_checkpoint_sha256
+        )
         if behavior_version == learner_version:
             behavior_policy = self.policy
         elif behavior_policy is None:
@@ -393,53 +387,51 @@ class NativeGRPOTrainer:
                     "Native async scores require current, behavior, reference"
                 )
             old, behavior, reference = native_scores
+        metrics = self._prepare_scored_batch(
+            batch,
+            old,
+            reference,
+            behavior,
+            current_behavior=behavior_version == learner_version,
+        )
         mask = batch.batch["response_mask"]
-        for scores in (old, behavior, reference):
-            if (
-                not isinstance(scores, torch.Tensor)
-                or scores.shape != mask.shape
-                or not torch.isfinite(scores).all()
-                or scores.requires_grad
-                or scores.device.type != "cpu"
-            ):
-                raise ValueError(
-                    "Native async scores must be finite, detached CPU tensors preserving sampled actions"
-                )
-        if behavior_version == learner_version and not torch.equal(old, behavior):
-            raise ValueError(
-                "Current behavior native scores differ from learner scores"
-            )
-        drift = self._drift_gate(
-            behavior, batch, "Behavior native/SGLang", "the generating actor must match"
-        )
-        _, token_rewards, metrics = outcome_rewards(batch, self.config.reward_function)
-        metrics.update(self.support_metrics)
-        advantages, returns = compute_grpo_outcome_advantage(
-            token_rewards,
-            mask,
-            batch.non_tensor_batch["uid"],
-            norm_adv_by_std_in_grpo=self.config.normalize_advantage,
-        )
-        batch.batch.update(
-            old_log_probs=old,
-            ref_log_probs=reference,
-            behavior_native_log_probs=behavior,
-            advantages=advantages,
-            returns=returns,
-            token_level_rewards=token_rewards,
-        )
         return {
             **metrics,
-            **drift,
+            **self.behavior_metrics(batch, behavior_version, learner_version),
             "rollout/current_behavior_logprob_max_difference": (
                 (old - behavior).abs() * mask
             )
             .max()
             .item(),
+        }
+
+    def validate_behavior_batch(self, batch, version, digest):
+        """A versioned rollout must contain complete, unique, uniformly bound groups."""
+        if len(batch) != self.config.global_candidate_batch_size:
+            raise ValueError("Rollout does not contain the full global candidate count")
+        identities = batch.non_tensor_batch["uid"].tolist()
+        size = self.config.group_size
+        groups = [identities[i : i + size] for i in range(0, len(batch), size)]
+        if (
+            any(len(set(group)) != 1 for group in groups)
+            or len({group[0] for group in groups}) != self.config.prompts_per_step
+        ):
+            raise ValueError("Rollouts require complete unique prompt groups")
+        for generation in batch.non_tensor_batch["generation"]:
+            if (
+                generation.get("behavior_policy_version") != version
+                or generation.get("behavior_checkpoint_sha256") != digest
+            ):
+                raise ValueError(
+                    "Mixed or unrecorded behavior checkpoint in rollout batch"
+                )
+
+    def behavior_metrics(self, batch, behavior_version, learner_version):
+        return {
             "rollout/behavior_policy_version": behavior_version,
             "rollout/learner_policy_version": learner_version,
             "rollout/weight_staleness": learner_version - behavior_version,
-            "rollout/global_prompt_batch_size": len(groups),
+            "rollout/global_prompt_batch_size": len(batch) // self.config.group_size,
             "rollout/global_candidate_batch_size": len(batch),
         }
 
@@ -677,6 +669,111 @@ class NativeGRPOTrainer:
         restore_rng_state(state["rank_rng_states"][self.rank], self.device)
         return state
 
+    def train_batch(
+        self,
+        batch,
+        rollout_id,
+        *,
+        behavior=None,
+        prepare=None,
+        snapshot=None,
+        on_prepare_error=None,
+        scorer=None,
+    ):
+        """Run the same audited native update for local and Ray transports.
+
+        All ranks score before rank zero prepares rewards; the prepared result or
+        error reaches every rank before any optimizer or snapshot can change.
+        Transport-specific identity checks and clean-state preservation stay with
+        the caller, while scoring, persistence and update ordering live here.
+        """
+        try:
+            scores = (scorer or score_native_batch)(self, batch, behavior)
+        except Exception:
+            self.record_rollout_error(rollout_id)
+            raise
+        payload = [None]
+        if self.rank == 0:
+            try:
+                metrics = (
+                    prepare(scores)
+                    if prepare is not None
+                    else self.prepare_batch(batch, native_scores=(scores[0], scores[2]))
+                )
+                batch.save_to_disk(
+                    Path(self.config.output_dir, f"rollout-{rollout_id:06d}.pkl")
+                )
+                payload[0] = {"batch": batch, "metrics": metrics, "error": None}
+            except Exception as error:
+                self.record_rollout_error(rollout_id)
+                payload[0] = {"error": f"{type(error).__name__}: {error}"}
+        del scores
+        if self.world_size > 1:
+            distributed.broadcast_object_list(
+                payload, src=0, group=self._object_collective_group()
+            )
+        prepared = payload[0]
+        if prepared["error"]:
+            if on_prepare_error is not None:
+                on_prepare_error(prepared["error"])
+            raise RuntimeError(prepared["error"])
+        if snapshot is not None:
+            snapshot.take(self.completed_updates)
+        metrics = prepared["metrics"]
+        metrics.update(self.update_actor(prepared["batch"]))
+        return metrics
+
+    def record_rollout_error(self, rollout_id):
+        """Preserve the original failure even if its logging path is unwritable."""
+        try:
+            suffix = "" if self.rank == 0 else f".rank-{self.rank}"
+            Path(
+                self.config.output_dir, f"rollout-{rollout_id:06d}{suffix}.error.txt"
+            ).write_text(traceback.format_exc())
+        except OSError:
+            pass
+
+    def record_metrics(
+        self, metrics, start, start_wall, last_end, *, extra=None, echo=False
+    ):
+        """Finish the native update timing before checkpoint or publication work."""
+        if self.device.type != "cpu":
+            get_torch_device().synchronize()
+        end, end_wall = time.monotonic(), time.time()
+        status = [None]
+        if self.rank == 0:
+            try:
+                metrics.update(
+                    learner_timing(
+                        start,
+                        end,
+                        last_end,
+                        warmup=self.completed_updates <= self.config.warmup_steps,
+                        start_wall=start_wall,
+                        end_wall=end_wall,
+                    )
+                )
+                metrics.update(
+                    step=self.completed_updates,
+                    **{
+                        "runtime/train_world_size": self.world_size,
+                        **(extra or {}),
+                    },
+                )
+                with Path(self.config.output_dir, "metrics.jsonl").open("a") as stream:
+                    stream.write(json.dumps(metrics, allow_nan=False) + "\n")
+                if echo:
+                    print(json.dumps(metrics), flush=True)
+            except Exception as error:
+                status[0] = f"{type(error).__name__}: {error}"
+        if self.world_size > 1:
+            distributed.broadcast_object_list(
+                status, src=0, group=self._object_collective_group()
+            )
+        if status[0]:
+            raise RuntimeError(f"Metrics publication failed: {status[0]}")
+        return end
+
     def train(self, sources):
         if self.config.execution_mode != "sync":
             raise ValueError("Use the Miles async driver for disagg_async training")
@@ -721,86 +818,18 @@ class NativeGRPOTrainer:
                 raise RuntimeError(
                     f"Rollout/score stage failed at step {step}: {error}"
                 )
-            try:
-                old, _, reference = score_native_batch(self, batch)
-            except Exception:
-                (output / f"rollout-{step:06d}.rank-{self.rank}.error.txt").write_text(
-                    traceback.format_exc()
-                )
-                raise
-            payload = [None, None, None]
-            if self.rank == 0:
-                try:
-                    metrics = self.prepare_batch(batch, native_scores=(old, reference))
-                    batch.save_to_disk(output / f"rollout-{step:06d}.pkl")
-                    payload = [batch, metrics, None]
-                except Exception as error:
-                    (output / f"rollout-{step:06d}.error.txt").write_text(
-                        traceback.format_exc()
-                    )
-                    payload[2] = f"{type(error).__name__}: {error}"
-            if self.world_size > 1:
-                distributed.broadcast_object_list(payload, src=0, group=group)
-            batch, metrics, error = payload
-            if error:
-                raise RuntimeError(
-                    f"Reward/prepare stage failed at step {step}: {error}"
-                )
-            metrics.update(self.update_actor(batch))
-            if self.device.type != "cpu":
-                get_torch_device().synchronize()
-            update_end = time.monotonic()
-            update_end_wall = time.time()
-            status = [None]
-            if self.rank == 0:
-                try:
-                    metrics["step"] = step + 1
-                    metrics.update(
-                        learner_timing(
-                            train_start,
-                            update_end,
-                            last_end,
-                            warmup=step < self.config.warmup_steps,
-                            start_wall=train_start_wall,
-                            end_wall=update_end_wall,
-                        )
-                    )
-                    metrics.update(
-                        {
-                            "runtime/train_world_size": self.world_size,
-                            "runtime/rollout_replicas": self.config.rollout_replicas,
-                        }
-                    )
-                    with (output / "metrics.jsonl").open("a") as stream:
-                        stream.write(json.dumps(metrics) + "\n")
-                    print(json.dumps(metrics), flush=True)
-                    if self.config.training_objective != "west_grpo" and (
-                        (step + 1) % self.config.save_interval == 0
-                        or step + 1 == self.config.steps
-                    ):
-                        save_checkpoint(
-                            output / f"step-{step + 1:06d}.pt",
-                            self.policy,
-                            self.optimizer,
-                            step + 1,
-                            self.config,
-                        )
-                except Exception as error:
-                    (output / f"checkpoint-{step + 1:06d}.error.txt").write_text(
-                        traceback.format_exc()
-                    )
-                    status[0] = f"{type(error).__name__}: {error}"
-            last_end = update_end
-            if self.world_size > 1:
-                distributed.broadcast_object_list(status, src=0, group=group)
-            if status[0]:
-                raise RuntimeError(
-                    f"Checkpoint stage failed at step {step + 1}: {status[0]}"
-                )
-            if self.config.training_objective == "west_grpo" and (
-                (step + 1) % self.config.save_interval == 0
-                or step + 1 == self.config.steps
-            ):
+            metrics = self.train_batch(batch, step)
+            last_end = self.record_metrics(
+                metrics,
+                train_start,
+                train_start_wall,
+                last_end,
+                extra={"runtime/rollout_replicas": self.config.rollout_replicas},
+                echo=True,
+            )
+            if (
+                step + 1
+            ) % self.config.save_interval == 0 or step + 1 == self.config.steps:
                 self.save_training_checkpoint(
                     output / f"step-{step + 1:06d}.pt", step + 1
                 )
@@ -831,9 +860,7 @@ def run(config):
         torch.backends.cudnn.allow_tf32 = False
     engine_class(config)
     miles_evidence = verify_miles(config)
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
-    random.seed(config.seed)
+    set_all_random_seed(config.seed)
     if int(os.getenv("WORLD_SIZE", "1")) > 1:
         device_type = torch.device(config.device).type
         distributed.init_process_group(

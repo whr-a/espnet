@@ -41,7 +41,8 @@ def test_sync_ray_launch_routes_to_native_actor_driver(tmp_path):
         ]
     )
     command, _ = launch_command(args, python="python")
-    assert command[:3] == ["python", "-m", "espnet2.bin.rl_train_async"]
+    assert command[:3] == ["python", "-m", "espnet2.bin.rl_train"]
+    assert command[command.index("--worker") + 1] == "ray"
 
 
 def test_sync_driver_has_no_stale_overlap_and_saves_before_evaluation_on_resume():
