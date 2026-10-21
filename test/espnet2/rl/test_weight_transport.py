@@ -151,15 +151,17 @@ def test_original_miles_nccl_helper_transfers_one_complete_policy(
 def test_receiver_commit_requires_independent_digest_receipt(tmp_path):
     engine = object.__new__(SGLangRolloutEngine)
     engine.directory, engine.released = tmp_path, True
+    engine.memory_saver = True
     resumed = []
     engine.engine = SimpleNamespace(
-        resume_memory_occupation=lambda: resumed.append(True)
+        resume_memory_occupation=lambda tags: resumed.append(tags),
+        flush_cache=lambda: SimpleNamespace(success=True),
     )
     payload, identity = sealed([("frozen_audio", torch.arange(4.0))])
     server = RolloutServer(SimpleNamespace(), tmp_path, 0)
     server.engine, server.version = engine, 2
     server.weight_update("begin", (identity,), {})
-    assert server.version is None and not engine.released and resumed == [True]
+    assert server.version is None and not engine.released and resumed == [["weights"]]
     with pytest.raises(ValueError, match="already in progress"):
         server.weight_update("begin", (identity,), {})
     with pytest.raises(FileNotFoundError):
@@ -170,6 +172,89 @@ def test_receiver_commit_requires_independent_digest_receipt(tmp_path):
     assert server.version is None
     assert server.weight_update("finish", (identity,), {}) == identity
     assert server.version == 3
+    assert resumed == [["weights"], ["kv_cache", "cuda_graph"]]
+
+
+@pytest.mark.parametrize("released", [False, True])
+def test_publication_keeps_full_receive_buffer_separate_from_kv(tmp_path, released):
+    payload, identity = sealed([("weight", torch.ones(4))])
+    kv = {"kv_cache", "cuda_graph"}
+    offloaded = {"weights", *kv} if released else set()
+    calls = []
+
+    class TaggedEngine:
+        def release_memory_occupation(self, tags):
+            assert not (set(tags) & offloaded)
+            offloaded.update(tags)
+            calls.append(("release", tags))
+
+        def resume_memory_occupation(self, tags):
+            assert set(tags) <= offloaded
+            offloaded.difference_update(tags)
+            calls.append(("resume", tags))
+
+        def update_weights_from_distributed(self, **kwargs):
+            # The real SG receiver allocates the entire incoming policy here.
+            assert offloaded == kv and "weights" not in offloaded
+            verify_weights(payload, tmp_path / "sources.weights.json")
+            calls.append(("receive",))
+            return True, "loaded"
+
+        def flush_cache(self):
+            assert offloaded == kv
+            calls.append(("trim",))
+            return SimpleNamespace(success=True)
+
+    engine = object.__new__(SGLangRolloutEngine)
+    engine.directory, engine.released, engine.memory_saver = tmp_path, released, True
+    engine.engine = TaggedEngine()
+    server = RolloutServer(SimpleNamespace(), tmp_path, 0)
+    server.engine, server.version = engine, 2
+    server.weight_update("begin", (identity,), {})
+    assert server.version is None and engine.publication_kv_released
+    server.weight_update("update_weights_from_distributed", (), {})
+    assert offloaded == kv and server.version is None
+    server.weight_update("finish", (identity,), {})
+    assert not offloaded and not engine.publication_kv_released
+    assert server.version == 3
+    first = (
+        ("resume", ["weights"]) if released else ("release", ["kv_cache", "cuda_graph"])
+    )
+    assert calls == [
+        first,
+        ("receive",),
+        ("trim",),
+        ("resume", ["kv_cache", "cuda_graph"]),
+    ]
+
+
+@pytest.mark.parametrize("phase", ["begin", "trim", "finish"])
+def test_memory_tag_failure_never_advertises_a_usable_policy(tmp_path, phase):
+    payload, identity = sealed([("weight", torch.ones(4))])
+    engine = object.__new__(SGLangRolloutEngine)
+    engine.directory, engine.released, engine.memory_saver = tmp_path, False, True
+
+    def fail(tags):
+        raise RuntimeError("synthetic memory tag failure")
+
+    engine.engine = SimpleNamespace(release_memory_occupation=fail)
+    server = RolloutServer(SimpleNamespace(), tmp_path, 0)
+    server.engine, server.version = engine, 2
+    if phase != "begin":
+        engine.engine.release_memory_occupation = lambda tags: None
+        server.weight_update("begin", (identity,), {})
+        verify_weights(payload, tmp_path / "sources.weights.json")
+        engine.engine.resume_memory_occupation = fail
+        engine.engine.flush_cache = lambda: SimpleNamespace(
+            success=phase != "trim", message="synthetic memory tag failure"
+        )
+    with pytest.raises(RuntimeError, match="memory tag failure"):
+        server.weight_update("begin" if phase == "begin" else "finish", (identity,), {})
+    assert server.version is None
+    with pytest.raises(RuntimeError, match="Load a policy"):
+        server.generate("unused", "unused", 3)
+    if phase != "begin":
+        assert engine.expected_weights == identity and engine.publication_kv_released
 
 
 @pytest.mark.parametrize("fail", [False, True])

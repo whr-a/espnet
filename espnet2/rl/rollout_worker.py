@@ -109,10 +109,10 @@ class RolloutServer:
     def weight_update(self, method, args, kwargs):
         if self.engine is None:
             raise RuntimeError("Load the bootstrap export before transferring weights")
-        result = self.engine.weight_update(method, args, kwargs)
         if method == "begin":
             self.version = None
-        elif method == "finish":
+        result = self.engine.weight_update(method, args, kwargs)
+        if method == "finish":
             self.version = result["step"]
         return result
 

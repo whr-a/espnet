@@ -121,6 +121,7 @@ class SGLangRolloutEngine(RolloutEngine):
     # A memory-saver engine releases its weights and KV pool as well; it then
     # holds no policy until update() resumes them and loads the next one.
     memory_saver = released = False
+    publication_kv_released = False
 
     def __init__(self, config, model_path, *, directory, replica=0):
         super().__init__(config, model_path, directory=directory, replica=replica)
@@ -200,8 +201,16 @@ class SGLangRolloutEngine(RolloutEngine):
                 raise ValueError("A native weight update is already in progress")
             if identity["hash_kind"] != HASH_KIND:
                 raise ValueError("Unknown native weight digest protocol")
-            if self.released:
-                self.engine.resume_memory_occupation()
+            if self.memory_saver:
+                # Miles onloads weights before publication and KV/graphs only
+                # afterwards. A full receive buffer must fit beside the model.
+                if self.released:
+                    self.engine.resume_memory_occupation(tags=["weights"])
+                else:
+                    self.engine.release_memory_occupation(
+                        tags=["kv_cache", "cuda_graph"]
+                    )
+                self.publication_kv_released = True
                 self.released = False
             receipt.unlink(missing_ok=True)
             self.expected_weights = dict(identity)
@@ -215,6 +224,16 @@ class SGLangRolloutEngine(RolloutEngine):
                 or json.loads(receipt.read_text()) != identity
             ):
                 raise ValueError("Rollout acknowledgment differs from verified tensors")
+            if self.publication_kv_released:
+                # SG's per-update flush keeps allocator blocks by default.
+                # Return the completed full receive buffer before remapping KV.
+                result = self.engine.flush_cache()
+                if not result.success:
+                    raise RuntimeError(
+                        f"SGLang kept its receive buffer: {result.message}"
+                    )
+                self.engine.resume_memory_occupation(tags=["kv_cache", "cuda_graph"])
+                self.publication_kv_released = False
             self.expected_weights = None
             return dict(identity)
         if method not in (
