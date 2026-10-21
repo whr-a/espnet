@@ -417,6 +417,11 @@ class NativeComponents:
         if len(set(versions)) != 1:
             raise ValueError("Training ranks restored different optimizer steps")
         self.start_rollout_id = versions[0]
+        if type(self.start_rollout_id) is not int or not (
+            0 <= self.start_rollout_id <= args.num_rollout
+        ):
+            raise ValueError("Restored optimizer cursor is outside the update budget")
+        args.start_rollout_id = self.start_rollout_id
         census = await group.call("get_device_census")
         if (
             any(item["ray_node_id"] != self.train_node for item in census)

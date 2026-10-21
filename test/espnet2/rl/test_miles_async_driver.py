@@ -1,6 +1,9 @@
 """Run the exact upstream loop against instrumented component contracts."""
 
 import asyncio
+from types import SimpleNamespace
+
+import pytest
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.miles_async_driver import load_async_loop, orchestration_args
@@ -130,3 +133,103 @@ def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
         assert events.index(("rollout_end", update + 1)) < events.index(
             ("publish", update + 1)
         )
+
+
+@pytest.mark.parametrize("restored", [2, 6])
+def test_pinned_async_loop_consumes_restored_native_cursor(
+    tmp_path, monkeypatch, restored
+):
+    from miles.utils import object_store
+    from miles.utils.async_utils import with_disposer
+    from miles.utils.data import RolloutDataPack
+
+    from espnet2.rl import miles_components
+    from espnet2.rl.miles_components import NativeComponents
+
+    events = []
+    node_id = "1" * 56
+
+    class Worker:
+        version = restored
+
+        def __getattr__(self, name):
+            async def call(*args, **kwargs):
+                if name == "get_training_version":
+                    return self.version
+                if name == "get_device_census":
+                    return {"rank": 0, "ray_node_id": node_id, "ray_gpu_ids": [0]}
+                if name == "propose_master_addr_and_port":
+                    return "host", 12345
+                if name == "train":
+                    assert args[0] == self.version
+                    events.append(("train", args[0]))
+                    self.version += 1
+                elif name == "save_model":
+                    assert args[0] + 1 == self.version
+                    events.append(("save", self.version))
+
+            return SimpleNamespace(remote=call)
+
+    worker = Worker()
+    factory = SimpleNamespace(
+        options=lambda **kwargs: factory, remote=lambda **kwargs: worker
+    )
+    monkeypatch.setattr(
+        miles_components.ray, "remote", lambda **kwargs: lambda cls: factory
+    )
+    monkeypatch.setattr(miles_components.ray, "kill", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        object_store, "_INSTANCE", SimpleNamespace(remove=lambda ref: None)
+    )
+
+    class Components(NativeComponents):
+        def initialize(self, args, *, disposer):
+            pass
+
+        async def create_rollout_components(self, args):
+            return self, self, None
+
+        async def prepare_rollout(self, rollout_id):
+            pass
+
+        async def get(self, rollout_id):
+            events.append(("rollout", rollout_id))
+            return RolloutDataPack()
+
+        async def save(self, rollout_id):
+            pass
+
+        async def update_weights(self, args, *roles, rollout_id=None):
+            events.append(("publish", worker.version))
+
+        async def dispose(self):
+            pass
+
+    config = ESPnetRLConfig(
+        execution_mode="disagg_async",
+        train_gpus="0",
+        rollout_gpus="1",
+        steps=5,
+        warmup_steps=1,
+        output_dir=str(tmp_path),
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+    )
+    components = Components(config, [], node_id, node_id)
+    driver, evidence = load_async_loop(config, components)
+    assert evidence["runtime"]["same_code_object"] is True
+
+    async def execute():
+        await with_disposer(driver, orchestration_args(config))
+
+    if restored > config.steps:
+        with pytest.raises(ValueError, match="outside the update budget"):
+            asyncio.run(execute())
+        assert not events
+    else:
+        asyncio.run(execute())
+        assert [value for event, value in events if event == "rollout"] == [2, 3, 4]
+        assert [value for event, value in events if event == "train"] == [2, 3, 4]
+        assert [value for event, value in events if event == "save"] == [3, 4, 5]
+        assert [value for event, value in events if event == "publish"] == [2, 3, 4, 5]
