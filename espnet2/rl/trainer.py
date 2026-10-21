@@ -762,7 +762,11 @@ class NativeGRPOTrainer:
             with profile_phase(self, "behavior_snapshot"):
                 snapshot.take(self.completed_updates)
         metrics = prepared["metrics"]
-        metrics.update(self.update_actor(prepared["batch"]))
+        try:
+            metrics.update(self.update_actor(prepared["batch"]))
+        except Exception:
+            self.record_rollout_error(rollout_id)
+            raise
         if self.profiler.enabled:
             profiles = [None] * self.world_size
             local_profile = self.profiler.result()

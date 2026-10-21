@@ -84,6 +84,12 @@ def read_json(path):
 def subprocess_environment(config, gpus):
     """An inference interpreter's environment: its devices and source paths."""
     environment = dict(os.environ)
+    # Memory saver owns the rollout allocator; learner tuning stays local.
+    if config.rollout_backend == "sglang" and config.sglang_engine_kwargs.get(
+        "enable_memory_saver"
+    ):
+        for name in ("PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF"):
+            environment.pop(name, None)
     paths = [str(Path(__file__).resolve().parents[2])]
     if config.rollout_backend == "sglang" and config.sglang_source:
         paths.insert(0, str(Path(config.sglang_source).resolve() / "python"))

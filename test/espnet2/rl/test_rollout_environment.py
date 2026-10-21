@@ -1,19 +1,20 @@
 """Real bounded CPU TCPStore oracle for independent torchrun child rollouts."""
 
-from datetime import timedelta
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
+from datetime import timedelta
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from espnet2.rl.rollout import CheckpointRollout
+import pytest
 
+from espnet2.rl.rollout import CheckpointRollout
 
 TRAIN_IDENTITY = {
     "RANK": "0",
@@ -49,6 +50,7 @@ def config(root):
         output_dir=str(root),
         rollout_backend="sglang",
         sglang_source="",
+        sglang_engine_kwargs={},
         vllm_source="",
         miles_source="",
         rollout_gpus="7",
@@ -60,6 +62,31 @@ def unused_port():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
+
+
+@pytest.mark.parametrize(
+    "backend,memory_saver", [("sglang", True), ("sglang", False), ("vllm", True)]
+)
+def test_allocator_configuration_belongs_to_the_learner_with_memory_saver(
+    tmp_path, monkeypatch, backend, memory_saver
+):
+    aliases = {
+        "PYTORCH_ALLOC_CONF": "expandable_segments:True",
+        "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128",
+    }
+    for name, value in aliases.items():
+        monkeypatch.setenv(name, value)
+    settings = config(tmp_path)
+    settings.rollout_backend = backend
+    settings.sglang_engine_kwargs = {"enable_memory_saver": memory_saver}
+    parent = dict(os.environ)
+    child = CheckpointRollout(settings)._environment()
+    assert dict(os.environ) == parent
+    for name, value in aliases.items():
+        if backend == "sglang" and memory_saver:
+            assert name not in child
+        else:
+            assert child[name] == value
 
 
 class RolloutEnvironment(unittest.TestCase):

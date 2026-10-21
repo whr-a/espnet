@@ -379,6 +379,12 @@ including its frozen audio frontend, without repeating HF export. An independent
 receiver digest and acknowledgment bind each active version to exact tensors.
 This option requires an unchanged reviewed Miles checkout. Periodic evaluation
 can require another disk export and transport reconnection.
+With `sglang_engine_kwargs.enable_memory_saver: true`, publication keeps weights
+resident while KV and CUDA graphs are paused. After loading, SGLang trims its
+receive buffer and restores KV before acknowledging the version.
+Learner allocator settings stay in the learner: the memory-saver interpreter
+omits both PyTorch allocator environment aliases because the reviewed
+TorchMemorySaver version rejects expandable segments.
 
 `weight_sync_backend: miles_shm` uses the same Miles helper with CPU shared
 memory for a collocated synchronous profile that cannot afford a full CUDA
