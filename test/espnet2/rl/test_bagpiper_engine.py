@@ -95,20 +95,42 @@ def batch(mode, rids, slots, lengths=None, prefixes=None):
     )
 
 
-def engine_model(directory, hidden, backbone, lm_head):
+def engine_model(directory, hidden, backbone, lm_head, **options):
     """The SGLang model class around a stand-in body and head."""
     model = ESPnetBagpiperForCausalLM.__new__(ESPnetBagpiperForCausalLM)
     nn.Module.__init__(model)
     model.model, model.lm_head = backbone, lm_head
+    model.logits_processor = SimpleNamespace(
+        use_fp32_lm_head=options.pop("enable_fp32_lm_head", False)
+    )
     model.setup(
         SimpleNamespace(
             espnet_bagpiper=GEOMETRY,
             hidden_size=hidden,
             vocab_size=VOCAB,
             espnet_rollout_sources=str(directory / "sources.pt"),
+            **options,
         )
     )
     return model.eval()
+
+
+@pytest.mark.parametrize(
+    "published,runtime", [(False, False), (True, False), (False, True), (True, True)]
+)
+def test_custom_head_honors_published_and_sglang_precision_options(
+    tmp_path, published, runtime
+):
+    model = engine_model(
+        tmp_path,
+        7,
+        nn.Identity(),
+        nn.Linear(7, VOCAB, bias=False).bfloat16(),
+        espnet_bagpiper_fp32_lm_head=published,
+        enable_fp32_lm_head=runtime,
+    )
+    assert model.fp32_lm_head == (published or runtime)
+    assert model.lm_head.weight.dtype == torch.bfloat16
 
 
 def reference_support(raw, phase, mode):
@@ -381,8 +403,9 @@ def test_model_state_tables_phases_secondary_inputs_and_guards(tmp_path):
         model(qa[:4, 0], None, batch(ForwardMode.EXTEND, ["1:0:0"], [3], [4]))
 
 
-def test_load_weights_is_strict_and_complete():
+def test_load_weights_is_strict_and_complete(tmp_path):
     model = ESPnetBagpiperForCausalLM.__new__(ESPnetBagpiperForCausalLM)
+    model.sources_path = tmp_path / "sources.pt"
     nn.Module.__init__(model)
     calls = []
 

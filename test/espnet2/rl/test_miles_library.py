@@ -27,6 +27,9 @@ def pinned_source(tmp_path, monkeypatch):
         "miles/backends/training_utils/loss/hub/math_utils.py",
         "miles/ray/rollout/train_data_conversion.py",
         "miles/backends/training_utils/loss/hub/corrections.py",
+        "miles/backends/training_utils/weight_update/protocols/cuda_ipc.py",
+        "miles/backends/training_utils/weight_update/protocols/broadcast.py",
+        "miles/backends/training_utils/weight_update/session.py",
         "train_async.py",
         "other.py",
     ]
@@ -103,6 +106,16 @@ def test_miles_verification_rejects_unreviewed_recipe_pin(pinned_source):
     config.miles_commit = "0" * 40
     with pytest.raises(ValueError, match="reviewed Miles pin"):
         miles_library.verify_miles(config, runtime=True)
+
+
+def test_fast_weight_transfer_checks_transport_and_all_tracked_source(pinned_source):
+    root, config = pinned_source
+    config.weight_sync_backend = "miles"
+    evidence = miles_library.verify_miles(config)
+    assert len(evidence["algorithms"]) == 6
+    (root / "other.py").write_text("# Modified source fixture.\n")
+    with pytest.raises(ValueError, match="unchanged tracked source"):
+        miles_library.verify_miles(config)
 
 
 def test_frozen_json_configuration_retains_scientific_numeric_types(tmp_path):

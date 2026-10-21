@@ -47,6 +47,19 @@ def verify_miles(config, *, runtime=False):
         "miles/ray/rollout/train_data_conversion.py",
         "miles/backends/training_utils/loss/hub/corrections.py",
     ]
+    fast_weights = getattr(config, "weight_sync_backend", "disk") in (
+        "miles",
+        "miles_shm",
+    )
+    if fast_weights:
+        paths.extend(
+            "miles/backends/training_utils/weight_update/" + name
+            for name in (
+                "protocols/cuda_ipc.py",
+                "protocols/broadcast.py",
+                "session.py",
+            )
+        )
     if runtime:
         paths.append("train_async.py")
     result = {"commit": revision, "source": str(root), "algorithms": {}}
@@ -66,7 +79,7 @@ def verify_miles(config, *, runtime=False):
             result["async_driver_sha256"] = digest
         else:
             result["algorithms"][relative] = digest
-    if runtime:
+    if runtime or fast_weights:
         status = subprocess.run(
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
             check=True,

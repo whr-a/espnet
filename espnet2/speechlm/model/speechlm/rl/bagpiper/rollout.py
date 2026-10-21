@@ -51,7 +51,9 @@ class BagpiperEngine(SGLangRolloutEngine):
         # so this is the primary's log_softmax of exactly those logits, as the
         # learner computes it, rather than the log of their softmax.
         os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
-        if config.dtype == "float32":
+        from .head import fp32_lm_head_enabled
+
+        if config.dtype == "float32" or fp32_lm_head_enabled(config):
             # Triton's TF32 default puts float32 attention at the drift gate.
             os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
         super().__init__(config, model_path, directory=directory, replica=replica)

@@ -106,6 +106,16 @@ class RolloutServer:
         )
         return {"version": version}
 
+    def weight_update(self, method, args, kwargs):
+        if self.engine is None:
+            raise RuntimeError("Load the bootstrap export before transferring weights")
+        result = self.engine.weight_update(method, args, kwargs)
+        if method == "begin":
+            self.version = None
+        elif method == "finish":
+            self.version = result["step"]
+        return result
+
     def close(self):
         engine, self.engine = self.engine, None
         if engine is not None:
@@ -122,7 +132,7 @@ def serve(connection, server):
                 return
             operation = request.pop("op")
             try:
-                if operation not in ("load", "generate", "close"):
+                if operation not in ("load", "generate", "close", "weight_update"):
                     raise ValueError(f"Unknown rollout operation {operation!r}")
                 reply = {"ok": True, **(getattr(server, operation)(**request) or {})}
             except Exception:

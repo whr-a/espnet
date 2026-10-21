@@ -508,6 +508,7 @@ def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
         "batch",
         "behavior_policy_version",
         "behavior_checkpoint_sha256",
+        "behavior_hash_kind",
     }
     generations = payload["batch"].non_tensor_batch["generation"]
     assert [row["source_id"] for row in generations] == [

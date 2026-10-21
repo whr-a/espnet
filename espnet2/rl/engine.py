@@ -189,6 +189,64 @@ class SGLangRolloutEngine(RolloutEngine):
         if not success:
             raise RuntimeError(f"SGLang could not load {model_path}: {message}")
 
+    def weight_update(self, method, args, kwargs):
+        """Expose Miles' existing SGLang control calls to the socket client."""
+        from .weight_transport import HASH_KIND
+
+        receipt = self.directory / "sources.weights.json"
+        if method == "begin":
+            (identity,) = args
+            if getattr(self, "expected_weights", None) is not None:
+                raise ValueError("A native weight update is already in progress")
+            if identity["hash_kind"] != HASH_KIND:
+                raise ValueError("Unknown native weight digest protocol")
+            if self.released:
+                self.engine.resume_memory_occupation()
+                self.released = False
+            receipt.unlink(missing_ok=True)
+            self.expected_weights = dict(identity)
+            return {}
+        if method == "finish":
+            import json
+
+            (identity,) = args
+            if (
+                identity != self.expected_weights
+                or json.loads(receipt.read_text()) != identity
+            ):
+                raise ValueError("Rollout acknowledgment differs from verified tensors")
+            self.expected_weights = None
+            return dict(identity)
+        if method not in (
+            "init_weights_update_group",
+            "destroy_weights_update_group",
+            "update_weights_from_tensor",
+            "update_weights_from_distributed",
+        ):
+            raise ValueError(f"Unknown Miles weight operation {method}")
+        kwargs = dict(kwargs)
+        if kwargs.pop("selector", "all") != "all":
+            raise ValueError("Native weight transfer requires the complete policy")
+        if method == "update_weights_from_tensor":
+            from sglang.srt.managers.io_struct import UpdateWeightsFromTensorReqInput
+
+            kwargs["flush_cache"] = True
+            request = UpdateWeightsFromTensorReqInput(**kwargs)
+            result = self.engine.loop.run_until_complete(
+                self.engine.tokenizer_manager.update_weights_from_tensor(request, None)
+            )
+        else:
+            if "dtypes" in kwargs:
+                kwargs["dtypes"] = [
+                    str(t).removeprefix("torch.") for t in kwargs["dtypes"]
+                ]
+                kwargs["shapes"] = [list(shape) for shape in kwargs["shapes"]]
+            result = getattr(self.engine, method)(*args, **kwargs)
+        success, message = result
+        if not success:
+            raise RuntimeError(f"SGLang weight update failed: {message}")
+        return {"success": success, "message": message}
+
     def release(self):
         # Waits until the scheduler is idle, then empties its allocator cache;
         # without the memory saver the weights and static KV pool stay.

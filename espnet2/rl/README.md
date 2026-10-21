@@ -361,3 +361,28 @@ warmup and periodic-evaluation boundaries for steady-state comparisons, report
 full wall time/GPU allocation separately, and never add rollout subwindows to
 wait a second time. CPU tests validate contracts, not memory fit, throughput or
 quality on the target GPU.
+
+Set `profile_phases: true` for synchronized phase walls and learner allocator
+peaks. The metrics separate current/behavior/reference scoring, reference
+transfers, backward, CPU gradient copy, Adam and parameter copy. Transfer and
+optimizer subphases overlap their parent measurements; do not sum them twice.
+`weight_publication.jsonl` separately records native snapshot, HF export,
+hashing and engine acknowledgment. Failed integrity checks preserve available
+phase measurements and detached native/rollout scores for diagnosis. Profiling
+is disabled by default; compare matching instrumentation settings.
+
+For one-learner/one-engine Bagpiper SGLang profiles,
+`weight_sync_backend: miles` reuses the pinned Miles CUDA IPC helper when
+collocated and its NCCL helper when disaggregated. One disk export bootstraps
+the engine; subsequent publications transfer the complete inference policy,
+including its frozen audio frontend, without repeating HF export. An independent
+receiver digest and acknowledgment bind each active version to exact tensors.
+This option requires an unchanged reviewed Miles checkout. Periodic evaluation
+can require another disk export and transport reconnection.
+
+`weight_sync_backend: miles_shm` uses the same Miles helper with CPU shared
+memory for a collocated synchronous profile that cannot afford a full CUDA
+staging bucket. It needs `/dev/shm` space for the complete inference payload
+and still performs device transfers. Both fast options require their own GPU
+acceptance; `disk` remains available for a matched comparison. These adapters
+do not enable every Miles model-backend optimization.

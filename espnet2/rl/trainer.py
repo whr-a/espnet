@@ -732,17 +732,21 @@ class NativeGRPOTrainer:
         payload = [None]
         if self.rank == 0:
             try:
-                metrics = (
-                    prepare(scores)
-                    if prepare is not None
-                    else self.prepare_batch(batch, native_scores=(scores[0], scores[2]))
-                )
-                batch.save_to_disk(
-                    Path(self.config.output_dir, f"rollout-{rollout_id:06d}.pkl")
-                )
+                with profile_phase(self, "reward_advantage"):
+                    metrics = (
+                        prepare(scores)
+                        if prepare is not None
+                        else self.prepare_batch(
+                            batch, native_scores=(scores[0], scores[2])
+                        )
+                    )
+                with profile_phase(self, "batch_save"):
+                    batch.save_to_disk(
+                        Path(self.config.output_dir, f"rollout-{rollout_id:06d}.pkl")
+                    )
                 payload[0] = {"batch": batch, "metrics": metrics, "error": None}
             except Exception as error:
-                self.record_rollout_error(rollout_id)
+                self.record_rollout_error(rollout_id, scores=scores, batch=batch)
                 payload[0] = {"error": f"{type(error).__name__}: {error}"}
         del scores
         if self.world_size > 1:
@@ -755,7 +759,8 @@ class NativeGRPOTrainer:
                 on_prepare_error(prepared["error"])
             raise RuntimeError(prepared["error"])
         if snapshot is not None:
-            snapshot.take(self.completed_updates)
+            with profile_phase(self, "behavior_snapshot"):
+                snapshot.take(self.completed_updates)
         metrics = prepared["metrics"]
         metrics.update(self.update_actor(prepared["batch"]))
         if self.profiler.enabled:
@@ -777,14 +782,30 @@ class NativeGRPOTrainer:
             metrics["perf/profile_rank_max"] = True
         return metrics
 
-    def record_rollout_error(self, rollout_id):
+    def record_rollout_error(self, rollout_id, *, scores=None, batch=None):
         """Preserve the original failure even if its logging path is unwritable."""
         try:
             suffix = "" if self.rank == 0 else f".rank-{self.rank}"
             Path(
                 self.config.output_dir, f"rollout-{rollout_id:06d}{suffix}.error.txt"
             ).write_text(traceback.format_exc())
-        except OSError:
+            if self.profiler.enabled:
+                base = Path(
+                    self.config.output_dir, f"rollout-{rollout_id:06d}{suffix}.failed"
+                )
+                base.with_suffix(".failed.json").write_text(
+                    json.dumps(self.profiler.result(), indent=2) + "\n"
+                )
+                if scores is not None:
+                    torch.save(
+                        {
+                            "native_scores": scores,
+                            "rollout_log_probs": batch.batch["rollout_log_probs"],
+                            "response_mask": batch.batch["response_mask"],
+                        },
+                        base.with_suffix(".failed.pt"),
+                    )
+        except Exception:
             pass
 
     def record_metrics(

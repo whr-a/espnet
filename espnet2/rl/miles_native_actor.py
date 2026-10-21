@@ -143,6 +143,7 @@ class ESPnetTrainRayActor(TrainRayActor):
         self.exporter = CheckpointRollout(config) if self._rank == 0 else None
         # Rank zero's record of each exported version's native sha256.
         self.exported = {}
+        self.exported_hash_kinds = {}
         self.last_end = None
         self.last_metrics = None
         return self.version
@@ -216,6 +217,16 @@ class ESPnetTrainRayActor(TrainRayActor):
                     if digest != self.exported.get(version):
                         raise ValueError(
                             "Behavior checkpoint differs from this learner's export"
+                        )
+                    kind = getattr(self, "exported_hash_kinds", {}).get(
+                        version, "native-file/v1"
+                    )
+                    if data.get("behavior_hash_kind", "native-file/v1") != kind or any(
+                        generation.get("behavior_hash_kind", "native-file/v1") != kind
+                        for generation in batch.non_tensor_batch["generation"]
+                    ):
+                        raise ValueError(
+                            "Behavior digest protocol differs from publication"
                         )
                     if version != self.version and (
                         self.snapshot is None or self.snapshot.version != version
@@ -327,14 +338,44 @@ class ESPnetTrainRayActor(TrainRayActor):
     def export_async_snapshot(self):
         if self._rank != 0:
             return None
+        # A periodic evaluator can replace the rollout process; recreate its
+        # NCCL group at the following in-memory publication.
+        self.close_weight_publisher()
+        self.exporter.publisher = None
         # Export only: the rollout actors load it onto the rollout GPUs.
         metadata = self.exporter.export(self.trainer.policy, self.version)
         self.exported[self.version] = metadata["native_sha256"]
+        self.exported_hash_kinds[self.version] = "native-file/v1"
         return {**metadata, "path": str(self.exporter.version.resolve())}
 
+    def publish_async_weights(self, actors):
+        if self._rank != 0:
+            return None
+        from .weight_transport import EngineClient, MilesWeightPublisher
+
+        if self.exporter.publisher is None:
+            self.exporter.publisher = MilesWeightPublisher(
+                [EngineClient(actor, remote=True) for actor in actors],
+                collocated=False,
+                sglang_source=self.config.sglang_source,
+            )
+        metadata = self.exporter.publisher.publish(self.trainer.policy, self.version)
+        self.exported[self.version] = metadata["native_sha256"]
+        self.exported_hash_kinds[self.version] = metadata["hash_kind"]
+        return {**metadata, "path": str(self.exporter.version.resolve())}
+
+    def close_weight_publisher(self):
+        if self._rank == 0 and self.exporter.publisher is not None:
+            self.exporter.publisher.close()
+
     def update_weights(self, info):
-        raise ValueError("This ESPnet profile uses immutable checkpoint publication")
+        raise ValueError(
+            "Native publication uses export_async_snapshot or publish_async_weights"
+        )
 
     def dispose(self):
-        if dist.is_initialized():
-            dist.destroy_process_group()
+        try:
+            self.close_weight_publisher()
+        finally:
+            if dist.is_initialized():
+                dist.destroy_process_group()

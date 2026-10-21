@@ -20,6 +20,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -199,6 +200,17 @@ class RolloutProcess:
         self._call(op="load", model=str(Path(model).resolve()), version=version)
         self.version = version
 
+    def weight_update(self, method, args, kwargs):
+        if method == "abort":
+            self.close()
+            return {}
+        result = self._call(op="weight_update", method=method, args=args, kwargs=kwargs)
+        if method == "begin":
+            self.version = None
+        elif method == "finish":
+            self.version = result["step"]
+        return result
+
     def generate(self, sources, rollout_id):
         requests = self.directory / f"requests-{rollout_id:06d}.json"
         responses = self.directory / f"responses-{rollout_id:06d}.json"
@@ -255,6 +267,13 @@ def prune_exports(directory, keep):
         shutil.rmtree(export)
 
 
+def record_publication(config, metadata):
+    """Opt-in publication phases, outside the learner's update clock."""
+    if config.profile_phases:
+        with Path(config.output_dir, "weight_publication.jsonl").open("a") as stream:
+            stream.write(json.dumps(metadata, allow_nan=False) + "\n")
+
+
 def merge_generations(sources, shards, group_size):
     """Restore the source order of complete prompt groups from every shard."""
     grouped = {}
@@ -275,10 +294,9 @@ def merge_generations(sources, shards, group_size):
 class CheckpointRollout:
     """Rank zero's rollout: one persistent engine process per rollout GPU.
 
-    Each update exports the exact actor version and loads that export into
-    every process in place. Keeping inference in its own interpreter avoids
-    forcing native ESPnet to use the inference fork's torch/transformers ABI.
-    No serving group is touched.
+    Disk publication exports each version; the optional Miles path reuses one
+    bootstrap export and transfers complete policies in memory. Keeping engines
+    in their own interpreters preserves their torch/transformers environments.
     """
 
     def __init__(self, config):
@@ -287,8 +305,10 @@ class CheckpointRollout:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.version = None
         self.processes = []
+        self.publisher = None
 
     def export(self, policy, step):
+        start = time.monotonic()
         directory = self.directory / f"policy-{step:06d}"
         staging = self.directory / f".policy-{step:06d}.tmp"
         if directory.exists() or staging.exists():
@@ -304,6 +324,7 @@ class CheckpointRollout:
             },
             native,
         )
+        snapshot_end = time.monotonic()
         args = [
             self.config.rollout_python,
             "-m",
@@ -323,7 +344,13 @@ class CheckpointRollout:
                 stderr=subprocess.STDOUT,
                 check=True,
             )
-        metadata = {"step": step, "native_sha256": sha256(native), "hf_files": {}}
+        export_end = time.monotonic()
+        metadata = {
+            "step": step,
+            "native_sha256": sha256(native),
+            "hash_kind": "native-file/v1",
+            "hf_files": {},
+        }
         for path in sorted((staging / "hf").rglob("*")):
             if path.is_file():
                 metadata["hf_files"][str(path.relative_to(staging / "hf"))] = sha256(
@@ -331,14 +358,41 @@ class CheckpointRollout:
                 )
         if not metadata["hf_files"]:
             raise RuntimeError("The ESPnet exporter produced no model files")
+        if self.config.profile_phases:
+            metadata.update(
+                {
+                    "perf/native_snapshot_time": snapshot_end - start,
+                    "perf/hf_export_time": export_end - snapshot_end,
+                    "perf/weight_hash_time": time.monotonic() - export_end,
+                }
+            )
         (staging / "sync.json").write_text(json.dumps(metadata, indent=2) + "\n")
         staging.rename(directory)
         self.version = directory
         return metadata
 
     def sync_weights(self, policy, step):
+        if self.config.weight_sync_backend != "disk" and self.processes:
+            from .weight_transport import EngineClient, MilesWeightPublisher
+
+            if self.publisher is None:
+                self.publisher = MilesWeightPublisher(
+                    [EngineClient(process) for process in self.processes],
+                    collocated=self.config.collocated,
+                    sglang_source=self.config.sglang_source,
+                    shared_memory=self.config.weight_sync_backend == "miles_shm",
+                )
+            metadata = self.publisher.publish(policy, step)
+            path = self.directory / f"weight-sync-{step:06d}.json"
+            path.write_text(json.dumps(metadata, indent=2) + "\n")
+            record_publication(self.config, metadata)
+            return metadata
         metadata = self.export(policy, step)
+        start = time.monotonic()
         self.load(self.version, step)
+        if self.config.profile_phases:
+            metadata["perf/weight_load_ack_time"] = time.monotonic() - start
+        record_publication(self.config, metadata)
         prune_exports(self.directory, self.config.keep_exports)
         return metadata
 
@@ -375,9 +429,14 @@ class CheckpointRollout:
             return list(executor.map(call, self.processes))
 
     def close(self):
-        if self.processes:
-            self._each(RolloutProcess.close)
-        self.processes = []
+        try:
+            if self.publisher is not None:
+                self.publisher.close()
+        finally:
+            if self.processes:
+                self._each(RolloutProcess.close)
+            self.processes = []
+            self.publisher = None
 
     def _environment(self):
         return subprocess_environment(self.config, self.config.rollout_gpus)

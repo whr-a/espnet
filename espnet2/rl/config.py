@@ -32,7 +32,7 @@ class ESPnetRLConfig:
     family: str = "owsm"
     execution_mode: str = "sync"
     rollout_backend: str = "sglang"
-    # Disk is the portable fallback; Miles transfers require native Bagpiper.
+    # Miles selects CUDA IPC/NCCL; miles_shm uses collocated CPU shared memory.
     weight_sync_backend: str = "disk"
     profile_phases: bool = False
     sglang_source: str = ""
@@ -173,9 +173,9 @@ class ESPnetRLConfig:
     def validate(self):
         if type(self.profile_phases) is not bool:
             raise ValueError("profile_phases must be a boolean")
-        if self.weight_sync_backend not in ("disk", "miles"):
-            raise ValueError("weight_sync_backend must be disk or miles")
-        if self.weight_sync_backend == "miles" and (
+        if self.weight_sync_backend not in ("disk", "miles", "miles_shm"):
+            raise ValueError("weight_sync_backend must be disk, miles or miles_shm")
+        if self.weight_sync_backend != "disk" and (
             self.family != "bagpiper"
             or self.rollout_backend != "sglang"
             or self.train_ranks != 1
@@ -185,6 +185,10 @@ class ESPnetRLConfig:
                 "Miles weight transfer requires Bagpiper SGLang with one training "
                 "rank and one rollout replica"
             )
+        if self.weight_sync_backend == "miles_shm" and (
+            self.execution_mode != "sync" or not self.collocated
+        ):
+            raise ValueError("miles_shm requires collocated synchronous training")
         if self.execution_mode not in ("sync", "disagg_sync", "disagg_async"):
             raise ValueError("execution_mode must be sync, disagg_sync or disagg_async")
         if (
