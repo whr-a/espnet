@@ -143,7 +143,17 @@ def run_ray(config, args, sources, admission):
         )
     for source in sources:
         source["reward_config"] = str(output / "frozen_config.json")
-    ray.init(address=args.ray_address)
+    # Match Miles' trainer default and SGLang's pre-initialization override.
+    # Both ranks must use the same NCCL allocation mode for weight transfer.
+    nccl_cumem = (
+        "1"
+        if config.sglang_engine_kwargs.get("enable_symm_mem", False)
+        else os.environ.get("NCCL_CUMEM_ENABLE", "0")
+    )
+    ray.init(
+        address=args.ray_address,
+        runtime_env={"env_vars": {"NCCL_CUMEM_ENABLE": nccl_cumem}},
+    )
     try:
         first, second = resolve_nodes(
             ray.nodes(),
