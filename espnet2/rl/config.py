@@ -32,6 +32,9 @@ class ESPnetRLConfig:
     family: str = "owsm"
     execution_mode: str = "sync"
     rollout_backend: str = "sglang"
+    # Disk is the portable fallback; Miles transfers require native Bagpiper.
+    weight_sync_backend: str = "disk"
+    profile_phases: bool = False
     sglang_source: str = ""
     sglang_engine_kwargs: dict[str, Any] = field(default_factory=dict)
     # module:Class of the architecture's espnet2.rl.engine.RolloutEngine.
@@ -168,6 +171,20 @@ class ESPnetRLConfig:
         return len(self.rollout_device_ids)
 
     def validate(self):
+        if type(self.profile_phases) is not bool:
+            raise ValueError("profile_phases must be a boolean")
+        if self.weight_sync_backend not in ("disk", "miles"):
+            raise ValueError("weight_sync_backend must be disk or miles")
+        if self.weight_sync_backend == "miles" and (
+            self.family != "bagpiper"
+            or self.rollout_backend != "sglang"
+            or self.train_ranks != 1
+            or self.rollout_replicas != 1
+        ):
+            raise ValueError(
+                "Miles weight transfer requires Bagpiper SGLang with one training "
+                "rank and one rollout replica"
+            )
         if self.execution_mode not in ("sync", "disagg_sync", "disagg_async"):
             raise ValueError("execution_mode must be sync, disagg_sync or disagg_async")
         if (

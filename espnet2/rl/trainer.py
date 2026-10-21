@@ -44,7 +44,7 @@ from .rewards import outcome_rewards, word_error_reward
 from .rollout import CheckpointRollout, save_checkpoint
 from .rollout_worker import engine_class
 from .scoring import score_native_batch
-from .timing import learner_timing
+from .timing import PhaseProfiler, learner_timing, profile_phase
 from .training_objectives import (
     build_lr_scheduler,
     select_training_sources,
@@ -163,6 +163,36 @@ class NativeGRPOTrainer:
             ),
         )
         self.scheduler = build_lr_scheduler(self.optimizer, config)
+        self.profiler = PhaseProfiler(
+            self.device, getattr(config, "profile_phases", False)
+        )
+        self.optimizer.profiler = self.profiler
+        if self.profiler.enabled:
+            path = Path(config.output_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            budget = {
+                "policy_trainable_bytes": sum(
+                    p.numel() * p.element_size()
+                    for p in policy.parameters()
+                    if p.requires_grad
+                ),
+                "policy_frozen_bytes": sum(
+                    p.numel() * p.element_size()
+                    for p in policy.parameters()
+                    if not p.requires_grad
+                ),
+                "reference_parameter_bytes": sum(
+                    p.numel() * p.element_size() for p in self.reference.parameters()
+                ),
+                "reference_scoring_device": str(self.reference_scoring_device),
+                "cpu_optimizer_master_bytes": sum(
+                    p.numel() * p.element_size()
+                    for p in getattr(self.optimizer, "_shadow", [])
+                ),
+            }
+            (path / f"memory-rank-{self.rank}.json").write_text(
+                json.dumps(budget, indent=2) + "\n"
+            )
         self.completed_updates = 0
         self.rollout = rollout
         # Set by every distributed scoring pass (espnet2.rl.scoring).
@@ -226,12 +256,14 @@ class NativeGRPOTrainer:
             self.config, "reference_cpu_offload", False
         ):
             try:
-                policy.to(self.reference_scoring_device)
+                with profile_phase(self, "reference_h2d", memory=False):
+                    policy.to(self.reference_scoring_device)
                 return self._score_chunks_on_device(policy, batch, score_raw=score_raw)
             finally:
                 # Detached scores already live on CPU. Offload even if transfer
                 # or scoring failed; the next pass alone brings weights back.
-                policy.to("cpu")
+                with profile_phase(self, "reference_d2h", memory=False):
+                    policy.to("cpu")
         return self._score_chunks_on_device(policy, batch, score_raw=score_raw)
 
     def _score_chunks_on_device(self, policy, batch, *, score_raw=False):
@@ -454,6 +486,8 @@ class NativeGRPOTrainer:
         metrics = {"actor/loss": 0.0, "actor/kl_loss": 0.0, "actor/entropy": 0.0}
         for _ in range(self.config.ppo_epochs):
             self.optimizer.zero_grad(set_to_none=True)
+            # Includes actor forward/loss, backward, gradient reduction and clipping.
+            self.profiler.start("backward")
             parts = self._micro_batches(local)
             for number, indices in enumerate(parts):
                 part = local.select_idxs(indices)
@@ -549,7 +583,9 @@ class NativeGRPOTrainer:
                     "Nonfinite gradient norm; optimizer was not stepped"
                 )
             learning_rate = self.optimizer.param_groups[0]["lr"]
-            self.optimizer.step()
+            self.profiler.stop("backward")
+            with profile_phase(self, "optimizer"):
+                self.optimizer.step()
             self.scheduler.step()
             # Release the gradients here rather than at the next update: on a
             # collocated device they would otherwise hold a full copy of the
@@ -687,6 +723,7 @@ class NativeGRPOTrainer:
         Transport-specific identity checks and clean-state preservation stay with
         the caller, while scoring, persistence and update ordering live here.
         """
+        self.profiler.reset()
         try:
             scores = (scorer or score_native_batch)(self, batch, behavior)
         except Exception:
@@ -721,6 +758,23 @@ class NativeGRPOTrainer:
             snapshot.take(self.completed_updates)
         metrics = prepared["metrics"]
         metrics.update(self.update_actor(prepared["batch"]))
+        if self.profiler.enabled:
+            profiles = [None] * self.world_size
+            local_profile = self.profiler.result()
+            if self.world_size > 1:
+                distributed.all_gather_object(
+                    profiles, local_profile, group=self._object_collective_group()
+                )
+            else:
+                profiles[0] = local_profile
+            # Report phase walls/residency maxima, including owner-only CPU work.
+            metrics.update(
+                {
+                    key: max(part.get(key, 0) for part in profiles)
+                    for key in set().union(*profiles)
+                }
+            )
+            metrics["perf/profile_rank_max"] = True
         return metrics
 
     def record_rollout_error(self, rollout_id):

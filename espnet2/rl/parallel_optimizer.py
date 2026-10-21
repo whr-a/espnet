@@ -11,6 +11,8 @@ backward. This is data parallel training, not parameter or gradient sharding.
 import torch
 import torch.distributed as distributed
 
+from .timing import profile_phase
+
 
 class CPUOffloadedAdamW(torch.optim.Optimizer):
     """Keep one auditable CPU Adam state without moving DDP parameters.
@@ -91,24 +93,28 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
                 ):
                     for key in ("lr", "weight_decay", "betas", "eps"):
                         cpu_group[key] = group[key]
-                for native, shadow in zip(self._native, self._shadow, strict=True):
-                    shadow.grad = (
-                        None
-                        if native.grad is None
-                        else native.grad.detach().to("cpu", torch.float32, copy=True)
-                    )
-                    if (
-                        shadow.grad is not None
-                        and not torch.isfinite(shadow.grad).all()
-                    ):
-                        raise FloatingPointError("Nonfinite CPU Adam gradient")
-                self._cpu_optimizer.step()
-                for native, shadow in zip(self._native, self._shadow, strict=True):
-                    # copy_ preserves native Parameter identity, device, dtype
-                    # and storage; a low-precision actor gets the rounded master.
-                    native.copy_(shadow)
-                    if shadow in self._cpu_optimizer.state:
-                        self.state[native] = self._cpu_optimizer.state[shadow]
+                with profile_phase(self, "optimizer_d2h", memory=False):
+                    for native, shadow in zip(self._native, self._shadow, strict=True):
+                        shadow.grad = (
+                            None
+                            if native.grad is None
+                            else native.grad.detach().to(
+                                "cpu", torch.float32, copy=True
+                            )
+                        )
+                        if (
+                            shadow.grad is not None
+                            and not torch.isfinite(shadow.grad).all()
+                        ):
+                            raise FloatingPointError("Nonfinite CPU Adam gradient")
+                with profile_phase(self, "optimizer_cpu", memory=False):
+                    self._cpu_optimizer.step()
+                with profile_phase(self, "optimizer_h2d", memory=False):
+                    for native, shadow in zip(self._native, self._shadow, strict=True):
+                        # Preserve Parameter identity/storage and rounded masters.
+                        native.copy_(shadow)
+                        if shadow in self._cpu_optimizer.state:
+                            self.state[native] = self._cpu_optimizer.state[shadow]
             except Exception as failure:
                 error[0] = f"{type(failure).__name__}: {failure}"
             finally:

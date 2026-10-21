@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.distributed as distributed
 
+from .timing import profile_phase
 from .types import support_mismatch_rate, validate_binary_mask
 
 
@@ -150,12 +151,14 @@ def score_native_batch(trainer, batch, behavior_policy=None):
         local = batch.select_idxs(indices)
         supports = payload["supports"] = {}
         with torch.no_grad():
-            old = trainer._score_chunks(trainer.policy, local)
+            with profile_phase(trainer, "current_score"):
+                old = trainer._score_chunks(trainer.policy, local)
             supports["current"] = trainer.support_pass
             if behavior_policy is None or behavior_policy is trainer.policy:
                 behavior = old
             else:
-                behavior = trainer._score_chunks(behavior_policy, local)
+                with profile_phase(trainer, "behavior_score"):
+                    behavior = trainer._score_chunks(behavior_policy, local)
                 supports["behavior"] = trainer.support_pass
             if (
                 getattr(trainer.config, "training_objective", "miles_ppo")
@@ -164,11 +167,13 @@ def score_native_batch(trainer, batch, behavior_policy=None):
                 # WEST's reference KL uses the raw model distribution. Current
                 # and behavior passes above audit only rollout integrity; their
                 # tempered, pre-top-k probabilities never enter the WEST loss.
-                reference = trainer._score_chunks(
-                    trainer.reference, local, score_raw=True
-                )
+                with profile_phase(trainer, "reference_score"):
+                    reference = trainer._score_chunks(
+                        trainer.reference, local, score_raw=True
+                    )
             else:
-                reference = trainer._score_chunks(trainer.reference, local)
+                with profile_phase(trainer, "reference_score"):
+                    reference = trainer._score_chunks(trainer.reference, local)
             supports["reference"] = trainer.support_pass
         for scores in (old, behavior, reference):
             if scores.shape != local.batch["response_mask"].shape:
