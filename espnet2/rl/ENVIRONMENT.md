@@ -102,25 +102,44 @@ The RL installer does not prepare a checkpoint or download task datasets.
 ## Resource planning
 
 A one-GPU configuration is a placement target, not proof that a smaller GPU or
-any chosen prompt length fits. OWSM base has accepted one-/two-H100 training
-runs. Bagpiper's small-GPU profiles need their own GPU validation; advanced
-four-GPU experiments do not establish that acceptance.
+any chosen prompt length fits. The reviewed Bagpiper QA profiles passed
+five-update engineering checks on one and two H100s, CPU checkpoint audits and
+matched bounded greedy evaluations of 32 items per checkpoint. Token-limit
+truncations remain in the full denominator; these checks do not establish a
+quality gain, full MMAU results or long-run stability. OWSM and Bagpiper TTS GPU
+regression on this refactor remains pending.
 
-CPU offload saves GPU memory at the cost of host memory and transfers. For
-8,268,432,384 trainable elements, FP32 master weights plus two Adam moments
-alone require 92.41 GiB on the optimizer owner. References, native parameters,
-gradients, offloaded activations, file cache and temporary state add to this.
-Multiple learners retain their own model/reference; the owner optimizer is not
-replicated. A universal 128/192 GB host minimum is not validated.
+CPU offload saves GPU memory at the cost of host memory and transfers. For the
+reviewed Bagpiper model's 8,268,432,384 trainable elements, full FP32 native
+weights occupy about 33.8 GiB and trainable gradients add 30.8 GiB, before
+activations and workspaces. This backend's CPU AdamW stores an FP32 shadow plus
+two FP32 moments, requiring 92.41 GiB on its CPU optimizer owner.
+
+`reference_device: cuda:0` with `reference_cpu_offload: true` computes reference
+scores on the learner GPU and returns its weights to CPU storage before actor
+backward. Budget for that reference, asynchronous behavior snapshots, transfer
+buffers, file cache and temporary state. Multiple learners retain their own
+model/reference; the owner optimizer is not replicated. Keep the original SFT
+checkpoint and assets available to rebuild the fixed reference on resume.
+
+The one-GPU `miles_shm` profile needs about 33.2 GiB of free `/dev/shm` for this
+model's complete FP32 inference payload, including frozen audio weights and
+excluding the reward-only codec and loss-weight buffer. CPU staging and
+flattening also need host RAM. The two-GPU profile uses NCCL and a separate
+8-GiB Ray object store; it does not stage the full policy in CPU shared memory.
+Allow for other shared-memory users in either layout. A universal 128/192-GB
+host minimum is not validated.
 
 Plan storage for model/data assets, environments, immutable rollout exports and
-full milestones. One observed Bagpiper native/full-checkpoint pair was 135.60 GB;
+full milestones. One historical BF16 Bagpiper native/full-checkpoint pair was
+135.60 GB. The accepted two-GPU FP32 step-5 pair occupies 171,975,011,467 bytes
+(171.98 GB); it includes both the full optimizer state and native sidecar.
 `keep_exports` prunes rollout exports, not all full checkpoints. Measure the
 actual workload before promising a resource budget or throughput.
 
-Installation verifies software identity and imports. Full acceptance additionally
-needs actual generation, complete 32 × 8 batches, finite native gradients,
-probability/support checks, weight publication, checkpoint/optimizer evidence
-and an independent held-out evaluation. Private cluster policy/admission,
-experiment protection registries and observer scripts remain external; the
-public training framework does not bundle them.
+Installation verifies software identity and imports. Acceptance for a new model
+or configuration additionally needs actual generation, complete 32 × 8 batches,
+finite native gradients, probability/support checks, weight publication,
+checkpoint/optimizer evidence and an independent held-out evaluation. Private
+cluster policy/admission, experiment protection registries and observer scripts
+remain external; the public training framework does not bundle them.

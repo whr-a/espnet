@@ -67,12 +67,35 @@ with at most one version of policy lag. Persistent engines load each published
 policy in place. Neither mode creates a cluster allocation or serving group.
 
 Earlier frozen OWSM revisions have complete one-/two-H100 200-update evidence.
-This refactor needs a separate GPU regression before inheriting that acceptance.
-Bagpiper's one-/two-H100
-configurations are templates requiring their own memory, numerical and full-loop
-GPU acceptance; four-GPU results do not validate these layouts. No established
-held-out quality gain is claimed. Large models also need substantial host RAM
-for CPU reference and optimizer state; see [resource planning](ENVIRONMENT.md#resource-planning).
+OWSM and Bagpiper TTS GPU regression on this refactor remains pending. Bagpiper
+QA passed five-update engineering acceptance on one and two H100s, including
+strict probability/support checks, weight-publication acknowledgments, clean
+exit and CPU checkpoint audits. Matched bounded greedy evaluations completed
+32 items each for SFT and both final native checkpoints. The two-GPU final had
+one token-limit truncation, retained in the full 32-item denominator. These
+short checks do not establish long-run stability, a quality gain or full MMAU
+results. Large models also need substantial host RAM; see
+[resource planning](ENVIRONMENT.md#resource-planning).
+
+The Bagpiper QA templates use FP32 native SDPA and SGLang Triton
+attention with IEEE FP32 arithmetic, CPU Adam and GPU reference scoring with
+CPU storage between passes. They use at most two candidates and 2,048 padded
+tokens per microbatch, preserving the complete 32 × 8 update. One GPU uses
+`miles_shm`; two GPUs use Miles NCCL.
+
+Observed means across the four non-warmup update intervals were:
+
+| Measured time (s/update) | One H100, synchronous | Two H100s, asynchronous |
+| --- | ---: | ---: |
+| Native learner | 377.540 | 426.046 |
+| Outside native | 413.158 | 70.406 |
+| Update cadence | 790.699 | 496.452 |
+
+These intervals exclude startup and final checkpoint/publication/cleanup.
+Table cells are rounded independently. Outside-native time already includes
+its rollout/publication waits. Layouts differ in overlap and behavior auditing;
+these measurements do not isolate a transport speedup or demonstrate linear
+GPU scaling.
 
 OpusLM remains supported through `egs2/libritts/speechlm1` and its
 [task guide](../../egs2/libritts/speechlm1/README_RL_OPUSLM.md). Plain OpusLM's
@@ -131,7 +154,8 @@ sampled waveform audits remain attached to their candidates.
 Resolve the model, codec/tokenizer/audio assets and the original native training
 YAML first. Preserve its modality order, geometry and activation checkpointing.
 Set `miles_source`, `sglang_source` and `rollout_python` to the reviewed sources
-and interpreter. Low-precision actors require CPU FP32 optimizer master weights.
+and interpreter. This native backend's low-precision mode uses
+`optimizer_device: cpu` to retain FP32 master weights and Adam moments.
 
 The same command validates and runs either layout; `--validate-only` performs
 configuration/input checks without starting models or checking live Ray placement:
@@ -147,13 +171,13 @@ Remove `--validate-only` to train. Public QA receipts can additionally be bound
 with `--data-admission /path/to/admission.json`. Prepare a fresh output directory
 for each run; model-only rollout exports do not contain optimizer state.
 
-For two-GPU asynchronous training, activate the reviewed environment on each
-host, expose Miles on `PYTHONPATH`, and start a dedicated Ray cluster. On one
-host with two available GPUs:
+For two-GPU asynchronous training, use one host with two available GPUs,
+activate the reviewed environment, expose Miles on `PYTHONPATH`, and start a
+dedicated local Ray cluster. This example bounds its object store at 8 GiB:
 
 ```bash
 export PYTHONPATH=/absolute/path/to/miles
-ray start --head --num-gpus=2 --port=6379
+ray start --head --num-gpus=2 --port=6379 --object-store-memory=8589934592
 python -m espnet2.bin.rl_train --config /path/to/two-gpu.yaml \
   --manifest /path/to/train.jsonl --eval-manifest /path/to/dev.jsonl \
   --checkpoint /path/to/native.pth --train-config /path/to/native.yaml \
@@ -161,10 +185,20 @@ python -m espnet2.bin.rl_train --config /path/to/two-gpu.yaml \
   --train-node RAY_NODE_IP --rollout-node RAY_NODE_IP --validate-only
 ```
 
-For two one-GPU hosts, join both to the dedicated cluster and select their
-actual Ray node IDs/IPs separately. Live execution verifies placement. These
-commands use existing GPU resources; platform submission and site admission
-remain outside the library.
+Remove `--validate-only` to train. Both node selectors name the same local Ray
+node. Ray assigns physical GPUs to roles; `train_gpus`/`rollout_gpus` declare
+role counts and disjointness, not fixed physical indices. Check
+`train-device-rank-*.json`, `train_census.json` and the rollout identities in
+`weight_ack.jsonl` for actual placement.
+
+The Ray entry sets a common `NCCL_CUMEM_ENABLE` before either actor initializes
+NCCL, following Miles' default of `0`. An explicit caller environment value is
+preserved; `enable_symm_mem: true` selects `1` on both sides to match SGLang.
+Learner and rollout must use the same mode for weight transfer.
+
+Two one-GPU hosts are an advanced layout: join both to the dedicated cluster
+and select their actual Ray node IDs/IPs separately. Live execution verifies
+placement. Platform submission and site admission remain outside the library.
 
 The existing recipe stages call this entry: OWSM stage 18, Bagpiper QA stage 6,
 Bagpiper TTS stage 4 and OpusLM stage 10. Recipe `rl.sh` wrappers retain their
@@ -184,9 +218,11 @@ by the RL installer. Use fresh output paths throughout this example.
 ```bash
 . "$ESPNET_RL_ENV/bin/activate"
 export PYTHONPATH="$ESPNET_MILES_SOURCE"
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+unset PYTORCH_CUDA_ALLOC_CONF
 cd "$ESPNET_RL_SOURCE"
 export QA_WORK=/absolute/path/to/new-bagpiper-qa-pilot
-export QA_CHECKPOINT=/absolute/path/to/bagpiper-sft/model.pt
+export QA_CHECKPOINT=/absolute/path/to/bagpiper-sft/bagpiper.native.pth
 export QA_NATIVE_YAML=/absolute/path/to/matching/released-train.yaml
 export QA_PARQUET=/absolute/path/to/avqa/train.parquet
 export QA_DATASET_REVISION=ACTUAL_DATASET_COMMIT
@@ -208,10 +244,12 @@ python -m espnet2.rl.qa_data --input "$QA_PARQUET" \
 ```
 
 The preparer needs enough eligible distinct audio/IDs for both partitions.
-It creates `data/train.jsonl`, **`data/dev.jsonl`**, audio and `admission.json`;
-use that dev filename rather than the template's `heldout.jsonl`. The default
-prompt matches the main template's `qa_v1_reward`; native-answer/WEST-training
-profiles have different explicit prompt/reward contracts.
+It creates `data/train.jsonl`, `data/dev.jsonl`, audio and `admission.json` under
+`QA_WORK`. The default prompt matches the main template's `qa_v1_reward`;
+native-answer/WEST-training profiles have different explicit prompt/reward
+contracts. The learner's allocator setting above stays out of the memory-saver
+inference subprocess; the one-GPU profile needs the separate shared-memory
+budget described in [resource planning](ENVIRONMENT.md#resource-planning).
 
 Create a personal YAML outside the source checkout. Merge the asset receipt's
 paths into the template's existing adapter options, retaining its memory
@@ -275,6 +313,9 @@ yet. Never train from an evaluator's frozen config: evaluation sets one sample
 per prompt. Greedy evaluation intentionally omits `--verify-native`; training's
 sampled-action probability checks are separate. Final evaluation uses
 `*.native.pth`, not the combined optimizer `*.pt` checkpoint.
+The evaluator's 2,048 response tokens extend this training profile's engine
+context from 2,048 to 2,560 and reduce concurrent requests from eight to six;
+verify evaluation memory independently of training.
 
 Each evaluation retains `responses.json`, `items.jsonl`, `protocol.json`,
 `summary.json` and `completion.json`. Require success and the same ordered 32 dev
@@ -287,8 +328,9 @@ Training retains `run/metrics.jsonl`, rollout evidence, `frozen_config.json`,
 `step-000005.pt` (full state) and `step-000005.native.pth`. Five updates and 32
 local-dev items are an engineering pilot, not full MMAU or quality-improvement
 acceptance. File/PCM exclusions do not prove component/SFT independence. This
-one-H100 Bagpiper profile still needs actual memory, numerical and full-loop GPU
-validation; CPU tests and successful metadata/config preparation do not supply it.
+one-H100 profile has five-update GPU-loop evidence with the reviewed assets;
+its CPU checkpoint audit and bounded greedy evaluation also passed. The
+corresponding two-H100 profile passed the same engineering checks.
 
 ## Numerical contracts and advanced modes
 
@@ -349,10 +391,14 @@ batches do not establish held-out improvement.
 Runs retain actual actions, masks/support, behavior/current/reference logprobs,
 policy versions, gradients, timing and native/full optimizer checkpoints. A
 full checkpoint includes optimizer masters/moments, schedule, rank RNG and
-absolute data cursor. Recovery requires compatible full state; checkpoint
-structure checks alone do not prove a crash/restart GPU test. Failure
-preservation is bounded: publication failures, process death, broken collectives
-and partial optimizer updates are not universally recoverable.
+absolute data cursor. On resume, the entry rebuilds the fixed reference from
+the original SFT checkpoint before restoring the learner from
+`resume_checkpoint`. Keep the original `checkpoint`, training YAML and model
+assets available; the full milestone does not replace those reference assets.
+Recovery requires compatible full state; checkpoint structure checks alone do
+not prove a crash/restart GPU test. Failure preservation is bounded: publication
+failures, process death, broken collectives and partial optimizer updates are
+not universally recoverable.
 
 `perf/train_time` covers the learner call; `perf/train_wait_time` covers the
 interval since its preceding call, including save/export/rollout/scheduling.
@@ -368,8 +414,9 @@ transfers, backward, CPU gradient copy, Adam and parameter copy. Transfer and
 optimizer subphases overlap their parent measurements; do not sum them twice.
 `weight_publication.jsonl` separately records native snapshot, HF export,
 hashing and engine acknowledgment. Failed integrity checks preserve available
-phase measurements and detached native/rollout scores for diagnosis. Profiling
-is disabled by default; compare matching instrumentation settings.
+phase measurements and detached native/rollout scores for diagnosis. The QA
+pilot templates enable profiling; otherwise it is disabled by default. Compare
+matching instrumentation settings.
 
 For one-learner/one-engine Bagpiper SGLang profiles,
 `weight_sync_backend: miles` reuses the pinned Miles CUDA IPC helper when
@@ -389,6 +436,7 @@ TorchMemorySaver version rejects expandable segments.
 `weight_sync_backend: miles_shm` uses the same Miles helper with CPU shared
 memory for a collocated synchronous profile that cannot afford a full CUDA
 staging bucket. It needs `/dev/shm` space for the complete inference payload
-and still performs device transfers. Both fast options require their own GPU
-acceptance; `disk` remains available for a matched comparison. These adapters
-do not enable every Miles model-backend optimization.
+and still performs device transfers. Five-update QA loops exercised SHM and
+NCCL on the reviewed H100 layouts; other model/precision/layout combinations
+need separate acceptance. `disk` remains available for a matched comparison.
+These adapters do not enable every Miles model-backend optimization.
