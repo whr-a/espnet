@@ -85,6 +85,7 @@ pip install git+https://github.com/espnet/espnet  # latest master
 - **Full setup** (recipes, DNN training, Kaldi-style tooling): see the [installation guide](https://espnet.github.io/espnet/installation.html).
 - **Docker**: see [`docker/`](docker/) and the [Docker docs](https://espnet.github.io/espnet/docker.html).
 - **Task-specific tools** live in [`tools/installers`](tools/installers).
+- **Optional speech RL (feature checkout)**: [from-scratch environment setup](espnet2/rl/ENVIRONMENT.md), [RL guide](espnet2/rl/README.md), and [existing recipe stages](doc/rl_training.md).
 - **ESPnet1 is no longer supported** — use ESPnet2 (`egs2/`) or ESPnet3 (`egs3/`). See [the ESPnet1 notice](https://espnet.github.io/espnet/espnet1_tutorial.html).
 
 </details>

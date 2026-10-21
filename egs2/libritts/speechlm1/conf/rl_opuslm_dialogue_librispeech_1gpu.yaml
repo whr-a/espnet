@@ -1,0 +1,71 @@
+# One H100 80GB: the training rank and its SGLang rollout engine share GPU 0.
+# 32 prompts x 8 candidates = 256 candidates per optimizer update, all sent
+# to the engine in one call. Dialogue is 1.87e9 parameters, 6.96 GiB per FP32
+# copy. Prompts are 50 frames/s of audio plus 13 frames; the 6400-utterance
+# train-clean-100 RL manifest is at most 1012 frames, so a candidate needs at
+# most 1012 + 256 = 1268 KV tokens of 384 KiB (24 layers x 2 x 2048 x 4 B).
+#
+# Memory (GiB):
+# - Engine: SGLang keeps rollout_mem_fraction of the memory free when it
+#   starts (79.6 - trainer policy and reference - CUDA contexts = 64.0,
+#   measured): 0.45 x 64.0 = 28.8 = weights 6.96 + KV pool 21.8 (59.5k
+#   tokens). Measured: 32.6 resident between batches, 34.2 while generating.
+# - context_length 1280 (prompts of up to 1022 frames) and
+#   max_running_requests 44: 44 x 1280 = 56.3k tokens < 59.5k, so a full
+#   running batch always fits and no request is ever retracted (the engine
+#   checks it at startup).
+# - Trainer: policy 6.96 + reference 6.96 + gradients 6.96 + checkpointed
+#   activations of 8 candidates. With AdamW on this GPU as well (moments
+#   13.9 and a 6.96 foreach temporary) it measured 46.6 at its peak, 79.2
+#   of 79.6 in all, so AdamW runs on the CPU (3 x 6.96 of host memory).
+family: opuslm_dialogue
+execution_mode: sync
+rollout_backend: sglang
+train_config: /path/to/released/config.yaml
+checkpoint: /path/to/released/model.pth
+manifest: data/rl/train32.jsonl
+eval_manifest: data/rl/heldout.jsonl
+output_dir: exp/rl_opuslm_dialogue_librispeech_1gpu
+adapter_factory: espnet2.speechlm.rl.policy:factory
+exporter: espnet2.speechlm.rl.integration:exporter
+sglang_engine: espnet2.speechlm.rl.integration:OpusLMEngine
+reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
+sglang_source: /path/to/pinned/sglang
+rollout_python: /path/to/optional_rl_env/bin/python
+dtype: float32
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 8
+ppo_epochs: 1
+learning_rate: 1.0e-06
+weight_decay: 0.0
+max_grad_norm: 1.0
+clip_ratio: 0.2
+kl_coef: 0.01
+kl_type: k3
+normalize_advantage: true
+loss_agg_mode: token-mean
+# LibriSpeech transcripts are at most ~100 text tokens.
+max_tokens: 256
+temperature: 1.0
+top_p: 1.0
+top_k: -1
+score_tolerance: 0.03
+device: cuda:0
+reference_device: cuda:0
+optimizer_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_mem_fraction: 0.45
+adapter_options:
+  reference_assets: /path/to/checkpoint/hf_assets
+  native_attention: sdpa
+  inference_semantics: native
+  gradient_checkpointing: true
+sglang_engine_kwargs:
+  attention_backend: triton
+  context_length: 1280
+  max_running_requests: 44

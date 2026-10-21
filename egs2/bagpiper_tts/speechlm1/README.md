@@ -325,3 +325,44 @@ For multi-node training, export and inference run only on node rank 0.
 
 When using the foundation model, also cite the
 [Bagpiper paper](../../bagpiper/speechlm1/README.md#citation).
+
+## Optional Miles RL stage
+
+Optional stage 4 adds generated-audio WER RL through the unchanged Miles library
+and persistent SGLang Bagpiper rollout. `conf/rl.yaml` shares one H100 between
+learner and inference; `conf/rl_disagg_async.yaml` uses one learner plus one
+rollout H100. Both retain 32 prompts × 8 candidates and five default updates.
+These small-GPU templates still require actual memory/numerical/full-loop
+acceptance; historical engineering runs do not validate every layout.
+
+Follow the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md)
+and [environment setup](../../../espnet2/rl/ENVIRONMENT.md). Prepare a real
+LibriTTS train split and separate held-out split with the existing Bagpiper data
+module. `--max-words 25 --shuffle-seed 42` keeps the 1536-token generation budget
+useful for this model's text-plan-plus-audio output.
+
+```bash
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.data \
+  --dataset libritts --input /path/to/train-split --task tts_asr_wer \
+  --max-words 25 --shuffle-seed 42 --output data/rl/train.jsonl
+python -m espnet2.bin.rl_train --config conf/rl.yaml \
+  --manifest data/rl/train.jsonl --eval-manifest /path/to/dev.jsonl \
+  --checkpoint /path/to/native.pt --train-config /path/to/native.yaml \
+  --output-dir /path/to/fresh/run --validate-only
+```
+
+Keep the original model/codec/audio geometry and activation checkpointing.
+The supervised warmup's decoder freeze list is not a substitute for the intended
+RL trainable parameters. `run.sh --stage 4` and existing `rl.sh` options use the
+same training module. Combined SFT/RL runs accept separate `--rl-*` inputs.
+
+Reward decodes actual eight-stream Xcodec actions, then the pinned frozen ASR
+transcribes their waveform. The batch reward is `-min(WER, 1)`; missing or invalid
+audio gets -1 and is counted separately. Candidate codec/actions, transcripts,
+WER and sampled waveform audits are retained. References do not enter the TTS
+condition beyond the intended text to be spoken.
+
+The shared Bagpiper evaluator generates every held-out candidate, checks native
+probabilities and reports both completion-mean and corpus WER. Keep its inputs
+separate from training and report generation/failure counts. A successful
+optimizer loop does not establish improved intelligibility or held-out WER.

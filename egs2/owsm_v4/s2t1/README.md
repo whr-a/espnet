@@ -146,3 +146,35 @@ Finally, we convert the filtered data into Kaldi format using `local/convert_to_
   pdf="https://arxiv.org/pdf/2309.13876",
 }
 ```
+
+## Optional Miles RL stage
+
+Stage 18 adds native WER GRPO using the unchanged Miles library and persistent
+SGLang rollout. The main configurations are
+`conf/rl_miles_wer_1gpu.yaml` (one H100, collocated) and
+`conf/rl_miles_wer_2gpu_async.yaml` (one learner plus one rollout H100).
+Both use 32 prompts × 8 candidates and five default updates. Existing short
+configuration names remain symlinks to these profiles.
+
+Prepare independent LibriSpeech train/dev splits with the ordinary data recipe,
+then follow the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md)
+and [environment setup](../../../espnet2/rl/ENVIRONMENT.md). The canonical entry
+is `python -m espnet2.bin.rl_train`; the recipe stage forwards to it:
+
+```bash
+./run.sh --stage 18 --wav-scp /path/to/train/wav.scp --text /path/to/train/text \
+  --train-config /path/to/owsm/config.yaml --checkpoint /path/to/owsm/model.pth
+```
+
+For combined supervised/RL execution, explicitly include 18 in the stage range
+and pass separate `--rl-wav-scp`, `--rl-text`, `--rl-train-config` and
+`--rl-checkpoint` options. Ordinary supervised execution stays unchanged; if it
+fails, RL is not started. A prepared `--rl-manifest` can replace data conversion.
+The original model configuration/checkpoint is always explicit.
+
+OWSM base keeps reference/Adam/native scoring on the learner GPU. The declared
+rollout memory fraction bounds its collocated engine. The optional
+`conf/rl_miles_wer_vllm.yaml` is an advanced backend with its own source,
+interpreter and acceptance requirements. OWSM-CTC needs a separate policy.
+One-/two-H100 200-update runs establish an engineering path, without a demonstrated
+held-out WER improvement; new checkpoints/layouts need their own acceptance.

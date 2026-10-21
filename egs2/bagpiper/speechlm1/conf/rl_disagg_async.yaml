@@ -1,0 +1,60 @@
+# Two H100 80 GB on one host: Ray assigns separate learner/rollout GPUs.
+# Miles async loop; 32 prompts x 8 candidates, FP32 with CPU Adam storage.
+# Five updates, CPU checkpoint audit and greedy eval (32 items) passed.
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/avqa/train.jsonl
+output_dir: exp/rl_disagg_async_32x8
+rollout_backend: sglang
+weight_sync_backend: miles
+profile_phases: true
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_v1_reward
+device: cuda:0
+reference_device: cuda:0
+reference_cpu_offload: true
+train_gpus: '0'
+rollout_gpus: '1'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: triton
+  context_length: 2048
+  max_running_requests: 48
+  enable_memory_saver: true
+  weight_loader_disable_mmap: true
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: false
+dtype: float32
+optimizer_device: cpu
+seed: 42
+steps: 5
+save_interval: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 2
+micro_batch_tokens: 2048
+training_objective: miles_ppo
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 1536
+score_tolerance: 0.03
+execution_mode: disagg_async
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/avqa/dev.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.85

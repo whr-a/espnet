@@ -11,10 +11,51 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+# The optional RL stage follows the existing supervised/export/inference stages.
+if [[ ${1:-} == --rl ]]; then
+    shift
+    exec ./rl.sh "$@"
+fi
+for ((i=1; i<=$#; i++)); do
+    if [[ ${!i} == --stage ]]; then
+        next=$((i + 1))
+        if [[ ${!next:-} == 6 ]]; then
+            rl_args=()
+            while (($#)); do
+                case $1 in
+                    --stage|--stop-stage|--stop_stage) shift 2 ;;
+                    *) rl_args+=("$1"); shift ;;
+                esac
+            done
+            exec ./rl.sh "${rl_args[@]}"
+        fi
+    fi
+done
+
 . ../../TEMPLATE/asr1/scripts/speechlm/stage_utils.sh
 
 stage=1
 stop_stage=5
+
+# Explicit optional RL inputs, for a run spanning supervised and RL stages.
+rl_config=conf/rl.yaml
+rl_manifest=
+rl_data_input=
+rl_wav_scp=
+rl_text=
+rl_questions=
+rl_choices=
+rl_hf_revision=
+rl_qa_template=default
+rl_eval_manifest=
+rl_data_admission=
+rl_ray_address=
+rl_train_node=
+rl_rollout_node=
+rl_output_dir=
+rl_checkpoint=
+rl_train_config=
+
 
 # Launch
 ngpu=1
@@ -62,7 +103,9 @@ test_registered_specifier=
 inference_output_dir=
 num_workers=1
 
-help_message="Usage: $0 [--stage N] [--stop-stage N] [options]
+help_message="Optional stage 6: Miles RL via --rl-config, --rl-manifest and RL data options.
+
+Usage: $0 [--stage N] [--stop-stage N] [options]
 
   1  warmup       conf/train.yaml                 -> exp/warmup
   2  pretraining  conf/tuning/train_pretrain.yaml -> exp/pretrain
@@ -107,7 +150,7 @@ repo_root=$(cd ../../.. && pwd)
 . ../../TEMPLATE/asr1/scripts/speechlm/parse_options.sh
 
 [[ $# -eq 0 ]] || die "Unexpected positional arguments: $*"
-validate_stages "${stage}" "${stop_stage}" 5 "${node_rank}"
+validate_stages "${stage}" "${stop_stage}" 6 "${node_rank}"
 if [[ -n ${train_config} || -n ${output_dir} ]] && (( stage < 3 && stop_stage > stage )); then
     die "--train-config and --output-dir require selecting only one training stage"
 fi
@@ -266,4 +309,17 @@ if (( stage <= 5 && stop_stage >= 5 && node_rank == 0 )); then
         --output-dir "${inference_output_dir}" \
         --num-workers "${num_workers}"
     log "results: ${inference_output_dir}"
+fi
+
+if (( stage <= 6 && stop_stage >= 6 && node_rank == 0 )); then
+    log "Stage 6: Miles RL post-training with SGLang"
+    rl_args=(--rl-config "${rl_config}" --python "${python}")
+    if [[ -n ${rl_manifest} && -z ${rl_data_input} && -z ${rl_wav_scp} ]]; then
+        rl_args+=(--stage 2)
+    fi
+    for key in manifest data_input wav_scp text questions choices hf_revision qa_template eval_manifest data_admission ray_address train_node rollout_node output_dir checkpoint train_config; do
+        option=rl_${key}
+        [[ -z ${!option} ]] || rl_args+=(--${key//_/-} "${!option}")
+    done
+    ./rl.sh "${rl_args[@]}"
 fi

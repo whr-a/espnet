@@ -273,6 +273,8 @@ IDs depend on that order. When saving a modified configuration with PyYAML, use
 
 ## Training
 
+For post-training audio QA, see the [WEST-aligned four-GPU GRPO profile](WEST_GRPO.md) (32 × eight candidates, 1,000 updates and matched MMAU Mini checks every 100 updates).
+
 ### Curriculum and recipe defaults
 
 | Stage | Configuration | Initialization | Steps | Peak LR | LR warmup | Accumulation | Min. LR ratio |
@@ -403,3 +405,43 @@ shared output paths.
   url       = {https://openreview.net/forum?id=FuHs64E3X6}
 }
 ```
+
+## Optional Miles RL stage
+
+Optional stage 6 adds native RL through the unchanged Miles library and a
+persistent SGLang Bagpiper engine. The main templates are `conf/rl.yaml`
+(one H100, collocated) and `conf/rl_disagg_async.yaml` (two H100s, one learner
+and one rollout). Both retain 32 prompts × 8 candidates, five default updates
+and their existing `qa_v1_reward` accuracy/format semantics. Small-GPU memory,
+probability and full-loop acceptance remain required.
+
+Use the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md) and
+[environment setup](../../../espnet2/rl/ENVIRONMENT.md). Public AVQA preparation
+uses `python -m espnet2.rl.qa_data`; user audio additionally requires questions,
+choices and reference answers. Keep independent train/dev manifests and the
+original native checkpoint configuration, tokenizer, codec/audio assets and
+activation checkpointing. Reference answers supervise reward without entering
+the model prompt or selecting the extracted prediction.
+
+```bash
+python -m espnet2.bin.rl_train --config conf/rl.yaml \
+  --manifest /path/to/train.jsonl --eval-manifest /path/to/dev.jsonl \
+  --checkpoint /path/to/native.pt --train-config /path/to/native.yaml \
+  --output-dir /path/to/fresh/run --validate-only
+```
+
+Remove `--validate-only` to train. Existing `run.sh --stage 6` and `rl.sh`
+preparation/stage options forward training to the same entry. Two-GPU execution
+also takes explicit Ray/node selectors as described in the shared guide.
+
+Optional think templates and the four-H100 synchronous WEST example live under
+`conf/advanced/`. The [WEST guide](WEST_GRPO.md) distinguishes its raw-T1 loss,
+top-k sampling and native final-answer reward from the main templates. Changing
+prompt, reward or parser is an explicit experiment change. Current public
+examples do not require private admission/observer or periodic-evaluation tools.
+
+Evaluate a complete matched held-out set with
+`espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate`. Historical fuzzy QA
+accuracy, exact final-choice accuracy and format bonus are distinct; preserve
+raw answers and report the selected metric and denominator. Training reward or
+nonzero gradients alone do not demonstrate MMAU improvement.

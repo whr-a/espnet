@@ -1,0 +1,55 @@
+# One H100 80 GB: BF16 learner and persistent rollout share GPU 0.
+# 32 prompts x 8 candidates per update; reference and FP32 Adam state on CPU.
+# Low-resource template: this exact configuration still needs GPU validation.
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/train.jsonl
+output_dir: exp/rl
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:tts_asr_wer
+device: cuda:0
+reference_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 8
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  score_checkpointing: true
+  score_chunk_size: 32
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  asr_model: openai/whisper-base.en
+  asr_revision: 911407f4214e0e1d82085af863093ec0b66f9cd6
+  activation_cpu_offload: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 1
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 1536
+score_tolerance: 0.03
+execution_mode: sync
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/heldout.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.45

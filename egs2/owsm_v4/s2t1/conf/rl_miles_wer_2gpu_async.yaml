@@ -1,0 +1,52 @@
+# Two H100s on one node: GPU 0 trains while GPU 1 runs the rollout engine,
+# driven by the pinned Miles async loop. Same 32 x 8 = 256 candidates per
+# optimizer update as the one-GPU recipe, so the two can be compared
+# directly; here the next rollout overlaps the current training step.
+family: owsm
+model_version: v4
+execution_mode: disagg_async
+rollout_backend: sglang
+adapter_factory: espnet2.s2t.rl.policy:build_policy
+exporter: espnet2.s2t.rl.export:export_owsm
+sglang_engine: espnet2.s2t.rl.sglang_rollout:OWSMEngine
+reward_function: null
+dtype: float32
+train_encoder: true
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 16
+ppo_epochs: 1
+learning_rate: 1.0e-05
+weight_decay: 0.0
+max_grad_norm: 1.0
+clip_ratio: 0.2
+kl_coef: 0.01
+kl_type: k3
+normalize_advantage: true
+loss_agg_mode: token-mean
+max_tokens: 1536
+temperature: 1.0
+top_p: 1.0
+top_k: -1
+score_tolerance: 0.03
+language: <eng>
+task: <asr>
+predict_timestamps: false
+device: cuda:0
+reference_device: cuda:0
+optimizer_device: null
+distributed_timeout_minutes: 4320
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+train_gpus: '0'
+rollout_gpus: '1'
+rollout_mem_fraction: 0.6
+sglang_engine_kwargs:
+  attention_backend: torch_native
+  sampling_backend: pytorch
+  max_running_requests: 256

@@ -294,6 +294,8 @@ fairseq.done: espnet.done
 	. ./activate_python.sh && ./installers/install_fairseq.sh
 	$(call end_timer_and_touch,fairseq.done)
 
+# Native RL uses the isolated installer documented in espnet2/rl/ENVIRONMENT.md.
+
 s3prl.done: espnet.done
 	$(call start_timer,s3prl.done)
 	. ./activate_python.sh && ./installers/install_s3prl.sh
