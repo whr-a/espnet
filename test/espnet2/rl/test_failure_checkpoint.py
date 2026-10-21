@@ -162,7 +162,9 @@ def test_receipt_failure_remains_secondary(tmp_path, monkeypatch):
 
 def _install_prepare_failure(actor):
     data = {
-        "batch": object(),
+        "batch": SimpleNamespace(
+            non_tensor_batch={"generation": [{"behavior_hash_kind": "native-file/v1"}]}
+        ),
         "behavior_policy_version": 15,
         "behavior_checkpoint_sha256": "a" * 64,
     }

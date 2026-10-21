@@ -473,6 +473,6 @@ def save_checkpoint(
     temporary.replace(path)
     # Native .pth permits direct ESPnet inference and exporter reuse.
     native = path.with_name(path.stem + ".native.pth")
-    torch.save(policy.checkpoint_state_dict(), native)
+    torch.save(snapshot["model"], native)
     if config.train_config:
         shutil.copyfile(config.train_config, path.parent / "espnet_train_config.yaml")
