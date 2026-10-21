@@ -32,6 +32,7 @@ from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.model_loader.weight_utils import default_weight_loader
 from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from torch import nn
+from torch.nn import functional as F
 from transformers.models.qwen3_omni_moe.configuration_qwen3_omni_moe import (
     Qwen3OmniMoeAudioEncoderConfig,
 )
@@ -41,7 +42,6 @@ from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
 
 from espnet2.rl.types import tempered
 
-from .head import project_logits
 from .tokens import frame_supports, next_phase, support_masks
 
 # Native names of the modules Bagpiper adds to its Qwen3 backbone.
@@ -89,12 +89,6 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
         self.sources_path = Path(config.espnet_rollout_sources)
         self.batch = self.phase = self.text_audio = self.pending = None
         self.codec = False
-        self.fp32_lm_head = bool(
-            getattr(config, "espnet_bagpiper_fp32_lm_head", False)
-            or getattr(
-                getattr(self, "logits_processor", None), "use_fp32_lm_head", False
-            )
-        )
         if getattr(config, "espnet_bagpiper_match_native_bf16", False):
             from .numerics import install_native_bf16_numerics
 
@@ -276,10 +270,9 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
         ids, log_probs = [], []
         for stream in range(1, geometry["num_stream"]):
             lo = base + stream * size
-            logits = project_logits(
+            logits = F.linear(
                 hidden + self.stream_emb.weight[stream].to(hidden.dtype),
                 weight[lo : lo + size],
-                fp32=self.fp32_lm_head,
             ).float()
             if self.temperature == 0:
                 choice = logits.argmax(-1)
@@ -292,7 +285,7 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
 
     def _head(self, hidden, slots):
         weight = self.lm_head.weight[: self.vocab]
-        raw = project_logits(hidden, weight, fp32=self.fp32_lm_head)
+        raw = F.linear(hidden, weight)
         support, codec = frame_supports(
             raw, self.phase[slots], self.text_audio[slots], self.geometry
         )

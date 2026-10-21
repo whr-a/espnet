@@ -280,10 +280,6 @@ def exporter(config, native_checkpoint_path, hf_output_dir):
     # Explicit training profiles only: absent/false options preserve the
     # previous export and baseline evaluation configuration verbatim.
     if config.family == "bagpiper":
-        from .head import fp32_lm_head_enabled
-
-        if fp32_lm_head_enabled(config):
-            flat["espnet_bagpiper_fp32_lm_head"] = True
         for option in ("match_native_bf16", "stateless_sampling"):
             if config.adapter_options.get(option, False):
                 flat[f"espnet_bagpiper_{option}"] = True

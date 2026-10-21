@@ -25,11 +25,11 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 
 from espnet2.rl.types import TokenScores, tempered
 
-from .head import fp32_lm_head_enabled, project_logits
 from .tokens import SUPPORTS, frame_supports, support_masks
 
 
@@ -115,7 +115,9 @@ def move_native_model(model, device, dtype, *, preserve_decoder_rope_fp32=False)
     if preserve_decoder_rope_fp32:
         decoder = getattr(getattr(model, "corelm", model), "model", None)
         if decoder is None:
-            raise ValueError("FP32 decoder RoPE preservation requires a native decoder")
+            raise ValueError(
+                "FP32 decoder RoPE preservation requires a native decoder"
+            )
         for module in decoder.modules():
             if not hasattr(module, "inv_freq"):
                 continue
@@ -133,9 +135,7 @@ def move_native_model(model, device, dtype, *, preserve_decoder_rope_fp32=False)
                     )
                 frequencies.append((module, name, value.detach().clone()))
         if not frequencies:
-            raise ValueError(
-                "Native decoder exposes no original RoPE frequency buffers"
-            )
+            raise ValueError("Native decoder exposes no original RoPE frequency buffers")
     model = model.to(device=device, dtype=dtype)
     for module, name, original in frequencies:
         setattr(module, name, original.to(device=getattr(module, name).device))
@@ -171,7 +171,6 @@ class NativeSpeechLMPolicy(nn.Module):
         temperature=1.0,
         top_k=-1,
         west_grpo=False,
-        fp32_lm_head=False,
     ):
         super().__init__()
         self.model = model
@@ -201,9 +200,6 @@ class NativeSpeechLMPolicy(nn.Module):
         self.temperature = temperature
         self.top_k = top_k
         self.west_grpo = bool(west_grpo)
-        if type(fp32_lm_head) is not bool:
-            raise ValueError("fp32_lm_head must be a boolean")
-        self.fp32_lm_head = fp32_lm_head
         # The primary ids every support allows, [len(SUPPORTS), vocab].
         weight = core.lm_head.weight
         self.register_buffer(
@@ -510,9 +506,7 @@ class NativeSpeechLMPolicy(nn.Module):
         if len(codec_rows) or active[:, 1:].any():
             raise ValueError("Raw WEST Bagpiper scoring requires text_only QA actions")
         core = self.core
-        raw = project_logits(
-            hidden, core.lm_head.weight, core.lm_head.bias, fp32=self.fp32_lm_head
-        )
+        raw = F.linear(hidden, core.lm_head.weight, core.lm_head.bias)
         dist = raw.float().log_softmax(-1)
         sampled = active[:, 0]
         primary = torch.where(sampled, dist.gather(-1, labels[:, :1])[:, 0], 0.0)
@@ -542,7 +536,7 @@ class NativeSpeechLMPolicy(nn.Module):
         """
         cfg, core = self.bagpiper_config, self.core
         weight, bias = core.lm_head.weight, core.lm_head.bias
-        raw = project_logits(hidden, weight, bias, fp32=self.fp32_lm_head)
+        raw = F.linear(hidden, weight, bias)
         logits = tempered(
             raw.float().masked_fill(~self.allowed[support], -torch.inf),
             self.temperature,
@@ -559,11 +553,10 @@ class NativeSpeechLMPolicy(nn.Module):
             column = torch.zeros_like(columns[0])
             if len(codec_rows):
                 lo = cfg["codec_base_offset"] + stream * size
-                scores = project_logits(
+                scores = F.linear(
                     codec + core.stream_emb.weight[stream].to(codec.dtype),
                     weight[lo : lo + size],
                     None if bias is None else bias[lo : lo + size],
-                    fp32=self.fp32_lm_head,
                 )
                 scores = tempered(scores.float(), self.temperature).log_softmax(-1)
                 target = labels[codec_rows, stream : stream + 1] - lo
@@ -862,7 +855,6 @@ def factory(config, device):
         temperature=config.temperature,
         top_k=config.top_k,
         west_grpo=west_grpo,
-        fp32_lm_head=fp32_lm_head_enabled(config),
     )
 
 
