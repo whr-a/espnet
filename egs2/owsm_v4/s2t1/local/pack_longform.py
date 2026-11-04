@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack consecutive same-session utterances into the longest audio OWSM ingests.
 
-``espnet2.rl.task_data.prepare_longform_manifest`` groups by a fixed
+``espnet2.rl.tasks.longform.prepare_longform_manifest`` groups by a fixed
 ``--concatenate`` count, which cannot be made safe for a fixed-window
 frontend: OWSM v4's preprocessor declares ``speech_length: 30`` and
 ``espnet2/s2t/rl/policy.py:load_audio`` RAISES on a longer waveform instead of
@@ -25,7 +25,7 @@ import soundfile as sf
 
 
 def session_of(identity):
-    """Same rule as espnet2.rl.task_data.session_of."""
+    """Same rule as espnet2.rl.tasks.longform.session_of."""
     return identity.rsplit("-", 1)[0]
 
 

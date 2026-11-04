@@ -9,7 +9,7 @@
 # length, or raise it and lower max_running_requests to match the KV pool.
 #
 # The manifest is the concatenation of per-task manifests from
-# espnet2.rl.task_data; reward_task is already written into every record.
+# espnet2.rl.tasks; reward_task is already written into every record.
 family: opuslm_dialogue
 execution_mode: sync
 rollout_backend: sglang

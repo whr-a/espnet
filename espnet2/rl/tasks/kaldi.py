@@ -1,13 +1,16 @@
-"""Build auditable recipe manifests from Kaldi wav.scp and supervision."""
+# Copyright 2026 Individual Contributor: Haoran Wang
+# SPDX-License-Identifier: Apache-2.0
+"""Kaldi recipe inputs and auditable manifests shared by the task preparers."""
 
-import argparse
 import hashlib
 import json
 import subprocess
 from pathlib import Path
 
+from espnet2.rl.utils import sha256
 
-def _kaldi(path):
+
+def read_kaldi(path):
     rows = {}
     for number, line in enumerate(Path(path).read_text().splitlines(), 1):
         if not line.strip():
@@ -29,7 +32,7 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
     import soundfile as sf
     from scipy.signal import resample_poly
 
-    waves, references = _kaldi(wav_scp), _kaldi(text)
+    waves, references = read_kaldi(wav_scp), read_kaldi(text)
     if waves.keys() != references.keys():
         raise ValueError("wav.scp and text must contain the same utterance IDs")
     if channel not in ("mean", "first"):
@@ -57,7 +60,7 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
             if not path.is_absolute():
                 path = Path(wav_scp).resolve().parent / path
             waveform, rate = sf.read(path, dtype="float32")
-            source_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            source_hash = sha256(path)
         if waveform.ndim == 2:
             waveform = waveform.mean(-1) if channel == "mean" else waveform[:, 0]
         if waveform.ndim != 1 or not waveform.size or not np.isfinite(waveform).all():
@@ -77,7 +80,7 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
                 "sample_rate": target_rate,
                 "source_sample_rate": rate,
                 "channel_rule": channel,
-                "audio_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "audio_sha256": sha256(target),
                 "source_audio_sha256": source_hash,
                 "source_audio": source,
             }
@@ -85,54 +88,26 @@ def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel=
     return records
 
 
-def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
-    """Materialize pipe audio, normalize rate, and join references by utterance ID."""
+def audio_directory(output):
+    """Where a preparer writes the waveforms its manifest ``output`` points to."""
+    return Path(output).parent / (Path(output).stem + "_audio")
+
+
+def write_manifest(output, records, audit):
+    """Write ``records`` as JSON lines and ``audit`` beside them; never overwrite."""
     output = Path(output).resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         raise FileExistsError(f"Refusing to overwrite prepared manifest: {output}")
-    sample_rate = int(kwargs.get("sample_rate", 16000))
-    records = materialize_kaldi_audio(
-        wav_scp, text, output.parent / (output.stem + "_audio"), sample_rate
-    )
-    for record in records:
-        record["reward_task"] = task
     output.write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in records)
     )
     output.with_suffix(output.suffix + ".audit.json").write_text(
         json.dumps(
-            {
-                "rows": len(records),
-                "task": task,
-                "sample_rate": sample_rate,
-                "wav_scp": str(Path(wav_scp).resolve()),
-                "text": str(Path(text).resolve()),
-                "wav_scp_sha256": hashlib.sha256(
-                    Path(wav_scp).read_bytes()
-                ).hexdigest(),
-                "text_sha256": hashlib.sha256(Path(text).read_bytes()).hexdigest(),
-                "manifest_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
-            },
+            {**audit, "rows": len(records), "manifest_sha256": sha256(output)},
             indent=2,
+            ensure_ascii=False,
         )
         + "\n"
     )
     return records
-
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--wav-scp", required=True)
-    parser.add_argument("--text", required=True)
-    parser.add_argument("--output", required=True)
-    parser.add_argument("--task", default="asr_wer")
-    parser.add_argument("--sample-rate", type=int, default=16000)
-    args = parser.parse_args()
-    prepare_kaldi_manifest(
-        args.wav_scp, args.text, args.output, args.task, sample_rate=args.sample_rate
-    )
-
-
-if __name__ == "__main__":
-    main()

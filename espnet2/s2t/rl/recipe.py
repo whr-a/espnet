@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--miles-source")
     parser.add_argument("--language")
     args = parser.parse_args()
-    from espnet2.rl.prepare import prepare_kaldi_manifest
+    from espnet2.rl.tasks.asr import prepare_kaldi_manifest
 
     work = Path(args.work_dir).resolve()
     config = yaml.safe_load(Path(args.config).read_text())

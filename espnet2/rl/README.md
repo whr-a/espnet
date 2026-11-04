@@ -106,7 +106,7 @@ configuration aliases resolve to the same files, not additional recipes.
 `espnet2/rl/rewards/` registers the rewards below by name; a recipe's
 `reward_function` takes that name or any `module:callable`. All but the last
 score generated text, so any family whose engine emits text can train them:
-OWSM, OpusLM, OpusLM Dialogue and Bagpiper. `espnet2/rl/task_data.py`
+OWSM, OpusLM, OpusLM Dialogue and Bagpiper. `espnet2/rl/tasks/`
 prepares most of their manifests from ordinary Kaldi recipe inputs.
 
 | Task | Reward | Supervision each record carries | Recipes |
@@ -167,15 +167,15 @@ is `reward/sum_<task>` divided by `reward/share_<task>`.
 Prepare each task from its recipe's own data directory:
 
 ```bash
-python -m espnet2.rl.task_data --task speaker_id \
+python -m espnet2.rl.tasks speaker_id \
   --wav-scp data/train/wav.scp --utt2spk data/train/utt2spk \
   --speaker-choices 4 --seed 42 --output data/rl/speaker_id_train.jsonl
-python -m espnet2.rl.task_data --task longform_wer \
+python -m espnet2.rl.tasks longform_wer \
   --wav-scp data/train/wav.scp --text data/train/text \
   --train-config /path/to/model/train.yaml \
   --min-reference-words 50 --concatenate 2 \
   --output data/rl/longform_train.jsonl
-python -m espnet2.rl.task_data --task multispeaker_cpwer \
+python -m espnet2.rl.tasks multispeaker_cpwer \
   --wav-scp data/train/wav.scp --text data/train/text \
   --utt2spk data/train/utt2spk --overlap 0.3 \
   --output data/rl/cpwer_train.jsonl
@@ -214,7 +214,7 @@ hashes and the row count.
 
 A family whose prompt is a prepared token matrix rather than text — OpusLM and
 OpusLM Dialogue — needs its instruction inside that matrix.
-`espnet2.rl.task_data.derive_task_manifest` attaches a new task's supervision
+`espnet2.rl.tasks.derive.derive_task_manifest` attaches a new task's supervision
 to an already prepared manifest and appends tokenized instruction text to the
 primary stream, leaving `prompt_token_ids`' condition frames,
 `prompt_codec_mask` and `native_preparation` unchanged, so an audited codec/SSL
@@ -236,9 +236,9 @@ dev splits. ASR joins Kaldi `wav.scp` and `text` by utterance ID, materializes
 pipe commands, normalizes audio and records hashes:
 
 ```bash
-python -m espnet2.rl.prepare --wav-scp data/train/wav.scp \
+python -m espnet2.rl.tasks asr_wer --wav-scp data/train/wav.scp \
   --text data/train/text --output data/rl/train.jsonl
-python -m espnet2.rl.prepare --wav-scp data/dev/wav.scp \
+python -m espnet2.rl.tasks asr_wer --wav-scp data/dev/wav.scp \
   --text data/dev/text --output data/rl/dev.jsonl
 ```
 
@@ -246,7 +246,7 @@ For QA, obtain a local raw train parquet from a fixed revision of
 `gijs/avqa-processed`, including audio, questions, choices and reference answers:
 
 ```bash
-python -m espnet2.rl.qa_data --input /path/to/train.parquet \
+python -m espnet2.rl.tasks avqa --input /path/to/train.parquet \
   --source-dataset gijs/avqa-processed --source-revision DATASET_COMMIT \
   --source-split train --qa-template default --train-count 3200 \
   --heldout-count 32 --seed 42 --output-dir data/rl/avqa
@@ -261,7 +261,7 @@ component or historical SFT independence. Use a fresh directory and keep the
 receipt, audio and manifests together. Private protection registries and
 experiment selection/observer scripts are external to the public framework.
 
-Two recipe-local helpers cover splits `espnet2.rl.task_data` does not:
+Two recipe-local helpers cover splits `espnet2.rl.tasks` does not:
 
 ```bash
 # Closed-set speaker tasks need the same speakers on both sides, so split
@@ -384,7 +384,7 @@ settings are retained; metadata preparation does not establish model/GPU fit.
 ```bash
 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets \
   --train-config "$QA_NATIVE_YAML" --output-dir "$QA_WORK/assets"
-python -m espnet2.rl.qa_data --input "$QA_PARQUET" \
+python -m espnet2.rl.tasks avqa --input "$QA_PARQUET" \
   --source-dataset gijs/avqa-processed --source-revision "$QA_DATASET_REVISION" \
   --source-split train --qa-template default --train-count 3200 \
   --heldout-count 32 --seed 42 --output-dir "$QA_WORK/data"

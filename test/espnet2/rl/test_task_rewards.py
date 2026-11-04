@@ -646,7 +646,7 @@ def test_a_single_speaker_manifest_is_not_a_leak(tmp_path):
 def test_a_preparer_that_declares_its_draw_as_choice_draw_is_understood(tmp_path):
     """The declaration has two spellings, and both must be read.
 
-    ``choice_key`` is what espnet2.rl.task_data stamps. A preparer written
+    ``choice_key`` is what espnet2.rl.tasks.speaker stamps. A preparer written
     before that field existed records the same thing as
     ``choice_draw: {"keyed_on": ...}`` instead, and the speaker-id run on
     LibriSpeech dev-clean produced its manifests that way. Reading only

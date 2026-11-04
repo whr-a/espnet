@@ -18,7 +18,7 @@
 #
 # Prepare the manifest with (the preparer now requires the window and checks
 # every item against it, so this fails in seconds rather than on the GPU):
-#   python -m espnet2.rl.task_data --task longform_wer --wav-scp ... --text ... \
+#   python -m espnet2.rl.tasks longform_wer --wav-scp ... --text ... \
 #     --train-config /path/to/owsm/local_config.yaml \
 #     --min-reference-words 50 --concatenate 2 --output data/rl/longform.jsonl
 #

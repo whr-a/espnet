@@ -25,7 +25,7 @@
 # MANIFEST CONTRACT. Each record needs `verdict` (the true label) and
 # `verdict_choices` (exactly ["same", "different"]); the reward's
 # validate_sources rejects anything else on CPU before a GPU is allocated.
-# espnet2.rl.task_data ships no preparer for pair items, so build them with the
+# espnet2.rl.tasks ships no preparer for pair items, so build them with the
 # recipe's local/split_speakers_by_utterance.py split plus your own pair
 # builder, and close these leaks or the score means nothing:
 #   * draw both arms from ONE pool of speakers that can appear in a positive

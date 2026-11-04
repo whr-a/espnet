@@ -8,9 +8,9 @@
 # OpusLM's prepared prompt is a nine-stream token matrix, so the instruction
 # ("choose exactly one of these speakers") is appended to the primary stream
 # of an already prepared condition:
-#   python -m espnet2.rl.task_data --task speaker_id --wav-scp ... --utt2spk ...
+#   python -m espnet2.rl.tasks speaker_id --wav-scp ... --utt2spk ...
 #     --speaker-choices 4 --output data/rl/speaker_id.jsonl    # text-prompt families
-# or espnet2.rl.task_data.derive_task_manifest(..., instruction_tokens=...)
+# or espnet2.rl.tasks.derive.derive_task_manifest(..., instruction_tokens=...)
 # to reuse an audited OpusLM condition without re-encoding its audio.
 family: opuslm_dialogue
 execution_mode: sync

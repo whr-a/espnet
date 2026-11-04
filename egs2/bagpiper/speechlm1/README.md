@@ -417,7 +417,7 @@ probability and full-loop acceptance remain required.
 
 Use the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md) and
 [environment setup](../../../espnet2/rl/ENVIRONMENT.md). Public AVQA preparation
-uses `python -m espnet2.rl.qa_data`; user audio additionally requires questions,
+uses `python -m espnet2.rl.tasks avqa`; user audio additionally requires questions,
 choices and reference answers. Keep independent train/dev manifests and the
 original native checkpoint configuration, tokenizer, codec/audio assets and
 activation checkpointing. Reference answers supervise reward without entering

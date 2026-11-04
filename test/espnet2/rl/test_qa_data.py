@@ -10,7 +10,7 @@ import pytest
 import soundfile as sf
 
 from espnet2.rl.data import read_manifest, verify_data_admission
-from espnet2.rl.qa_data import prepare
+from espnet2.rl.tasks.avqa import prepare
 from espnet2.rl.utils import sha256
 
 

@@ -6,7 +6,7 @@
 # 2,048 on the think profile's geometry. Template only: no GPU acceptance.
 #
 # Prepare mixtures with:
-#   python -m espnet2.rl.task_data --task multispeaker_cpwer --wav-scp ...
+#   python -m espnet2.rl.tasks multispeaker_cpwer --wav-scp ...
 #     --text ... --utt2spk ... --overlap 0.3 --output data/rl/cpwer.jsonl
 family: bagpiper
 train_config: /path/to/released/train_config.yaml

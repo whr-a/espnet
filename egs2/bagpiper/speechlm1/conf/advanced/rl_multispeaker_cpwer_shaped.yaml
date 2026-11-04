@@ -36,7 +36,7 @@
 # think profile's 32 x 8, as the other advanced templates use.
 #
 # Prepare mixtures with the instruction this profile assumes:
-#   python -m espnet2.rl.task_data --task multispeaker_cpwer --wav-scp ... \
+#   python -m espnet2.rl.tasks multispeaker_cpwer --wav-scp ... \
 #     --text ... --utt2spk ... --overlap 0.3 \
 #     --prompt-template verbatim_tagged --output data/rl/cpwer_train.jsonl
 family: bagpiper

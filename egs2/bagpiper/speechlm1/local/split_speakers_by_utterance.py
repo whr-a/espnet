@@ -5,7 +5,7 @@ A closed-set speaker task needs the same speakers on both sides, so the split
 runs inside each speaker: every speaker appears in train and in heldout, with
 disjoint utterances. The draw is seeded per speaker, so it is reproducible.
 
-This is the split design ``espnet2.rl.task_data``'s default
+This is the split design ``espnet2.rl.tasks.speaker``'s default
 ``choice_key="utterance"`` exists for. Pair the two: a per-speaker candidate
 draw over a split like this one makes the candidate list a function of the
 label, and ``espnet2.rl.rewards.speaker._validate_speaker_id`` refuses such a

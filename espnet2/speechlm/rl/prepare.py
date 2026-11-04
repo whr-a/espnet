@@ -16,17 +16,8 @@ import numpy as np
 import torch
 import yaml
 
+from espnet2.rl.tasks.kaldi import read_kaldi
 from espnet2.rl.utils import sha256
-
-
-def read_kaldi(path):
-    data = {}
-    for line in Path(path).read_text().splitlines():
-        key, value = line.split(maxsplit=1)
-        if key in data:
-            raise ValueError(f"Duplicate utterance: {key}")
-        data[key] = value
-    return data
 
 
 class NativeAudioTokenizer:

@@ -89,27 +89,15 @@ def validate_native_qa_sources(records):
             )
 
 
-def _kaldi(path):
-    values = {}
-    for row in Path(path).read_text().splitlines():
-        if not row.strip():
-            continue
-        key, value = row.split(maxsplit=1)
-        if key in values:
-            raise ValueError(f"Duplicate utterance {key}")
-        values[key] = value
-    return values
-
-
 def prepare_kaldi(wav_scp, text, task, questions=None, choices=None, output_dir=None):
-    from espnet2.rl.prepare import materialize_kaldi_audio
+    from espnet2.rl.tasks.kaldi import materialize_kaldi_audio, read_kaldi
 
     if output_dir is None:
         raise ValueError("An output directory is required to freeze wav.scp audio")
     records = materialize_kaldi_audio(
         wav_scp, text, Path(output_dir) / "audio", channel="first"
     )
-    question = _kaldi(questions) if questions else {}
+    question = read_kaldi(questions) if questions else {}
     choice = json.loads(Path(choices).read_text()) if choices else {}
     for record in records:
         key = record["id"]

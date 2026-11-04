@@ -66,7 +66,7 @@ def speaker_id_reward(source, generation):
 def _declared_choice_key(record):
     """What draw a speaker-id record says it was built with, or None.
 
-    ``choice_key`` is what espnet2.rl.task_data stamps. ``choice_draw`` with a
+    ``choice_key`` is what espnet2.rl.tasks.speaker stamps. ``choice_draw`` with a
     ``keyed_on`` entry is what a preparer written before that field existed
     records, and "utterance_id" there means the same thing as "utterance" here,
     so both normalize to the same answer.
@@ -123,7 +123,7 @@ def _validate_speaker_id(records):
             f"Every utterance of each of the {len(repeated)} speakers is offered "
             f"the same candidate list, so the list identifies the answer and a "
             f"model can score without listening. Regenerate with "
-            f"espnet2.rl.task_data's default choice_key=\"utterance\", or, if a "
+            f"espnet2.rl.tasks.speaker's default choice_key=\"utterance\", or, if a "
             f"per-speaker draw is intended, say so by stamping "
             f"choice_key=\"speaker\" (or choice_draw={{\"keyed_on\": \"speaker\"}}) "
             f"into the records."

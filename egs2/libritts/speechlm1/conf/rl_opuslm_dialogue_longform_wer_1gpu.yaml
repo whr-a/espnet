@@ -12,7 +12,7 @@
 # learner's activation peak at the profile's measured level.
 #
 # Prepare the manifest with:
-#   python -m espnet2.rl.task_data --task longform_wer --wav-scp ... --text ...
+#   python -m espnet2.rl.tasks longform_wer --wav-scp ... --text ...
 #     --min-reference-words 200 --concatenate 8 --output data/rl/longform.jsonl
 family: opuslm_dialogue
 execution_mode: sync

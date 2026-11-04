@@ -7,25 +7,25 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from espnet2.rl import task_data
-from espnet2.rl.task_data import (
-    MULTISPEAKER_PROMPT,
-    MULTISPEAKER_PROMPTS,
-    MULTISPEAKER_VERBATIM_PROMPT,
-    append_text_instruction,
-    audio_window_seconds,
-    derive_task_manifest,
-    mix_two_speakers,
-    prepare_longform_manifest,
-    prepare_multispeaker_manifest,
-    prepare_speaker_id_manifest,
-    session_of,
-    speaker_choice_set,
-)
+from espnet2.rl import tasks
 from espnet2.rl.rewards.asr import longform_wer_reward
 from espnet2.rl.rewards.cpwer import multispeaker_cpwer_reward
 from espnet2.rl.rewards.mixed import mixed_task_reward
 from espnet2.rl.rewards.speaker import speaker_id_reward
+from espnet2.rl.tasks.derive import append_text_instruction, derive_task_manifest
+from espnet2.rl.tasks.longform import (
+    audio_window_seconds,
+    prepare_longform_manifest,
+    session_of,
+)
+from espnet2.rl.tasks.multispeaker import (
+    MULTISPEAKER_PROMPT,
+    MULTISPEAKER_PROMPTS,
+    MULTISPEAKER_VERBATIM_PROMPT,
+    mix_two_speakers,
+    prepare_multispeaker_manifest,
+)
+from espnet2.rl.tasks.speaker import prepare_speaker_id_manifest, speaker_choice_set
 
 SPEAKERS = ("spkA", "spkB", "spkC", "spkD")
 SENTENCE = "hello world this is a test of long form speech"
@@ -419,8 +419,7 @@ def test_the_cli_offers_exactly_the_named_instructions(tmp_path, monkeypatch):
         sys,
         "argv",
         [
-            "task_data",
-            "--task",
+            "tasks",
             "multispeaker_cpwer",
             "--wav-scp",
             str(wav),
@@ -434,15 +433,14 @@ def test_the_cli_offers_exactly_the_named_instructions(tmp_path, monkeypatch):
             str(tmp_path / "cli.jsonl"),
         ],
     )
-    task_data.main()
+    tasks.main()
     audit = json.loads((tmp_path / "cli.jsonl.audit.json").read_text())
     assert audit["prompt_template"] == MULTISPEAKER_VERBATIM_PROMPT
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "task_data",
-            "--task",
+            "tasks",
             "multispeaker_cpwer",
             "--wav-scp",
             str(wav),
@@ -457,7 +455,7 @@ def test_the_cli_offers_exactly_the_named_instructions(tmp_path, monkeypatch):
         ],
     )
     with pytest.raises(SystemExit):
-        task_data.main()
+        tasks.main()
 
 
 # ------------------------------------------------------- derived manifests
@@ -599,8 +597,7 @@ def test_supervision_may_name_each_records_own_task(tmp_path):
 def test_cli_prepares_each_task(tmp_path, monkeypatch, task, extra):
     wav, _, _ = corpus(tmp_path, per_speaker=2, sentences=2)
     arguments = [
-        "task_data",
-        "--task",
+        "tasks",
         task,
         "--wav-scp",
         str(wav),
@@ -610,7 +607,7 @@ def test_cli_prepares_each_task(tmp_path, monkeypatch, task, extra):
     for item in extra:
         arguments.append(str(tmp_path / item) if item in ("text", "utt2spk") else item)
     monkeypatch.setattr(sys, "argv", arguments)
-    task_data.main()
+    tasks.main()
     rows = [
         json.loads(line)
         for line in (tmp_path / f"{task}.jsonl").read_text().splitlines()
@@ -632,8 +629,7 @@ def test_cli_requires_each_task_supervision(tmp_path, monkeypatch, task, missing
         sys,
         "argv",
         [
-            "task_data",
-            "--task",
+            "tasks",
             task,
             "--wav-scp",
             str(wav),
@@ -642,7 +638,7 @@ def test_cli_requires_each_task_supervision(tmp_path, monkeypatch, task, missing
         ],
     )
     with pytest.raises(SystemExit):
-        task_data.main()
+        tasks.main()
     assert not (tmp_path / "out.jsonl").exists()
 
 
@@ -700,3 +696,16 @@ def test_the_leaky_mode_is_still_reachable_but_must_be_asked_for(tmp_path):
     assert json.loads(
         (tmp_path / "legacy.jsonl.audit.json").read_text()
     )["choice_key"] == "speaker"
+
+
+def test_every_registered_task_has_its_own_command():
+    """A task module is one file plus one TASKS line; the CLI lists it."""
+    import importlib
+
+    from espnet2.rl.tasks import TASKS
+
+    usage = tasks.parser().format_help()
+    for name, path in TASKS.items():
+        module = importlib.import_module(path)
+        assert callable(module.add_arguments) and callable(module.run), name
+        assert name in usage, name

@@ -6,7 +6,6 @@ This CPU-only entry reuses Bagpiper's raw-parquet conversion. It does not
 download data, establish semantic/component closure, or audit SFT exposure.
 """
 
-import argparse
 import hashlib
 import importlib.util
 import json
@@ -87,9 +86,11 @@ def prepare(args):
     if output.exists():
         raise FileExistsError(f"Use a fresh preparation directory: {output}")
     observed = check_split(source, args.source_split)
-    # Avoid importing model packages/training kernels for CPU data preparation.
+    # Load Bagpiper's CPU-only converter by file: importing it as a module
+    # would import espnet2.speechlm.model, whose __init__ imports training
+    # kernels that CPU data preparation does not need.
     path = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
         / "speechlm/model/speechlm/rl/bagpiper/data.py"
     )
     spec = importlib.util.spec_from_file_location("public_bagpiper_data", path)
@@ -220,8 +221,7 @@ def prepare(args):
     return admission
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def add_arguments(parser):
     for name in (
         "input",
         "output-dir",
@@ -237,9 +237,9 @@ def main():
         "--qa-template", choices=("default", "think", "bagpiper"), default="default"
     )
     parser.add_argument("--exclude-manifest", action="append", default=[])
-    args = parser.parse_args()
-    print(json.dumps(prepare(args), indent=2))
 
 
-if __name__ == "__main__":
-    main()
+def run(args):
+    admission = prepare(args)
+    print(json.dumps(admission, indent=2))
+    return admission

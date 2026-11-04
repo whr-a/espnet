@@ -158,7 +158,7 @@ def require_fields(records, task, fields):
             raise ValueError(
                 f"{task} requires {', '.join(fields)} in every manifest record; "
                 f"record {record.get('id')!r} is missing {', '.join(missing)}. "
-                f"Regenerate the manifest with the matching espnet2.rl.task_data "
+                f"Regenerate the manifest with the matching espnet2.rl.tasks "
                 f"preparer."
             )
         declared = record.get("reward_task")

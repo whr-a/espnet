@@ -84,7 +84,7 @@ def _validate_longform(records):
     frontend takes a fixed window rejects longer audio outright — OWSM's
     ``load_audio`` raises rather than truncating — so a manifest packed by
     utterance count can die on every single sample at the first read of
-    training. ``espnet2.rl.task_data.prepare_longform_manifest`` therefore
+    training. ``espnet2.rl.tasks.longform.prepare_longform_manifest`` therefore
     records the window it was built against, and this checks the audio against
     it here, where the error costs seconds instead of a GPU allocation.
 
