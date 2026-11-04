@@ -85,11 +85,14 @@ def deinterleave_codec(token_ids, metadata):
     matrix = torch.as_tensor(token_ids, dtype=torch.long)
     if matrix.ndim != 2 or matrix.shape[1] != nq:
         raise ValueError("A codec rollout must keep all nine streams")
-    # A closed block names its own length; a truncated one is as long as its
-    # slowest stream has filled in.
+    # Audio frame j is complete only once the slowest stream reached it, which
+    # is frame j+nq-1. A block closed at frame c declares c audio frames, but a
+    # block cut off mid-flush has only as many as arrived, so take the smaller
+    # of the two rather than discarding a short but real block.
     closed = (matrix[:, 0] == close).nonzero()
-    length = int(closed[0]) if len(closed) else len(matrix) - (nq - 1)
-    if length < 1 or len(matrix) < length + nq - 1:
+    reached = len(matrix) - (nq - 1)
+    length = min(int(closed[0]), reached) if len(closed) else reached
+    if length < 1:
         return None, "no_audio"
     aligned = []
     for stream in range(1, nq):
