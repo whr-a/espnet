@@ -4,13 +4,15 @@
 
 import hashlib
 import json
+import math
+import os
 import shutil
 from pathlib import Path
 
 import torch
 import yaml
 
-from espnet2.rl.engine import SGLangRolloutEngine
+from espnet2.rl.engine import SGLangRolloutEngine, engine_kwargs
 from espnet2.rl.rewards import word_error_rate
 
 # The released text tokenizer, copied into every export with config.json.
@@ -380,3 +382,302 @@ def asr_wer_reward(source, generation):
     ):
         raise ValueError("Opus ASR WER requires text output")
     return -word_error_rate(source["reference"], generation["text"])
+
+
+def tts_prompt(text_ids, metadata, task_token=None):
+    """Native plain-TTS prompt: sos, task, <text>...</text>, <audio-open>.
+
+    Mirrors prepare.py:asr_prompt in the other direction. The block the model
+    then generates is the delayed nine-stream codec; the audio-open marker is
+    the last prompt frame, so the first sampled frame is already stream 0 of
+    the audio.
+    """
+    nq = int(metadata.get("nq", 9))
+    task = int(
+        metadata["codec_ssl_plain_tts_task_token_id"]
+        if task_token is None
+        else task_token
+    )
+    primary = [
+        int(metadata["eos_token_id"]),
+        task,
+        int(metadata["text_bpe_start_end_token_id"]),
+        *[int(i) + int(metadata["text_token_start"]) for i in text_ids],
+        int(metadata["text_bpe_start_end_token_id"]),
+        int(metadata["codec_ssl_start_end_token_id"]),
+    ]
+    return [[i] + [0] * (nq - 1) for i in primary]
+
+
+def multistream_exporter(config, native_checkpoint_path, hf_output_dir):
+    """The same export, named as the nine-stream codec architecture.
+
+    Only ``architectures`` differs from ``exporter``: the weights, the key map
+    and the frozen native semantics are identical, so an export can be scored
+    by either interface.
+    """
+    exporter(config, native_checkpoint_path, hf_output_dir)
+    path = Path(hf_output_dir) / "config.json"
+    metadata = json.loads(path.read_text())
+    metadata["architectures"] = [
+        (
+            "OpusLMMultiStreamForConditionalGeneration"
+            if config.family == "opuslm"
+            else "OpusLMDialogueMultiStreamForConditionalGeneration"
+        )
+    ]
+    path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+
+class OpusLMMultiStreamEngine(SGLangRolloutEngine):
+    """OpusLM sampling real nine-stream codec inside SGLang.
+
+    The engine submits the primary stream as ``input_ids`` and writes the
+    batch's nine-stream prompts to ``directory/sources.pt``, which the model
+    reads to rebuild the native pad-cleared stream sum. The model samples
+    streams 1..nq-1 itself and reports every frame's activity, actions and log
+    probabilities through ``customized_info["espnet_opuslm"]``; SGLang samples
+    stream 0 from the support the model leaves open.
+
+    ``max_running_requests`` requests of ``context_length`` tokens must fit the
+    KV pool (checked at startup): a retracted request would be recomputed from
+    primary ids alone, without its secondary streams.
+    """
+
+    defaults = dict(
+        skip_tokenizer_init=True,
+        disable_overlap_schedule=True,
+        chunked_prefill_size=-1,
+        context_length=2048,
+        max_running_requests=8,
+        attention_backend="triton",
+    )
+    frozen = (
+        "skip_tokenizer_init",
+        "disable_cuda_graph",
+        "disable_radix_cache",
+        "chunked_prefill_size",
+        "disable_overlap_schedule",
+    )
+
+    def __init__(self, config, model_path, *, directory, replica=0):
+        # Read when SGLang's scheduler imports its sampler. The model divides
+        # the logits by the temperature itself and SGLang samples them at 1, so
+        # the reported primary log probability is the log_softmax of exactly
+        # the logits the learner scores, not the log of their softmax.
+        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
+        if config.dtype == "float32":
+            # Triton's TF32 default would put float32 attention at the gate.
+            os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
+        self.metadata = _metadata(model_path)
+        super().__init__(config, model_path, directory=directory, replica=replica)
+        self.check_kv_pool()
+        self.model_path = Path(model_path)
+        self.tokenizer_files = self.tokenizer = None
+        self._load_prompt_assets(model_path)
+        self.batches = 0
+
+    @property
+    def sources_path(self):
+        return self.directory / "sources.pt"
+
+    def settings(self, model_path):
+        settings = engine_kwargs(
+            self.config,
+            self.replica,
+            defaults=dict(self.defaults, model_path=str(model_path),
+                          dtype=self.config.dtype),
+            frozen=self.frozen,
+        )
+        if self.config.dtype == "float32" and settings["attention_backend"] not in (
+            "triton",
+            "torch_native",
+        ):
+            raise ValueError("float32 OpusLM needs triton or torch_native attention")
+        overrides = json.loads(settings.get("json_model_override_args", "{}"))
+        overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
+        settings["json_model_override_args"] = json.dumps(overrides)
+        return settings
+
+    def update(self, model_path):
+        if _metadata(model_path) != self.metadata:
+            raise ValueError("An update cannot change the exported OpusLM vocabulary")
+        super().update(model_path)
+        self.model_path = Path(model_path)
+        self._load_prompt_assets(model_path)
+
+    def _load_prompt_assets(self, model_path):
+        from transformers import AutoTokenizer
+
+        path = Path(model_path)
+        files = {
+            name: (path / name).read_bytes()
+            for name in TOKENIZER_FILES
+            if (path / name).is_file()
+        }
+        if files != self.tokenizer_files:
+            self.tokenizer = AutoTokenizer.from_pretrained(path)
+            self.tokenizer_files = files
+
+    def _prompt(self, source):
+        """The source's nine-stream prompt, or a plain-TTS one from its text."""
+        if source.get("prompt_token_ids") is not None:
+            return [list(map(int, frame)) for frame in source["prompt_token_ids"]]
+        if "audio" in source and source.get("mode") != "text_audio":
+            raise ValueError(
+                "Waveform sources must be prepared by the native codec/SSL stage"
+            )
+        text = source.get("prompt", source.get("text", source.get("reference", "")))
+        return tts_prompt(
+            self.tokenizer.encode(text, add_special_tokens=False), self.metadata
+        )
+
+    def generate(self, sources, rollout_id):
+        metadata, group = self.metadata, self.config.group_size
+        nq = int(metadata["nq"])
+        temperature = float(self.config.temperature)
+        prompts = [self._prompt(source) for source in sources]
+        for prompt in prompts:
+            if not prompt or any(len(frame) != nq for frame in prompt):
+                raise ValueError("Native Opus prompt must be nonempty [P,9]")
+        self.check_request(max(map(len, prompts)), self.config.max_tokens)
+        batch, self.batches = self.batches, self.batches + 1
+        prepared = [
+            dict(id=source["id"], prompt=torch.tensor(prompt, dtype=torch.long))
+            for source, prompt in zip(sources, prompts, strict=True)
+        ]
+        staging = self.sources_path.with_suffix(".tmp")
+        torch.save(
+            dict(
+                batch=batch,
+                rollout_id=rollout_id,
+                temperature=temperature,
+                sources=prepared,
+            ),
+            staging,
+        )
+        staging.replace(self.sources_path)
+        rids, parameters = [], []
+        for index in range(len(sources)):
+            for sample in range(group):
+                rids.append(f"{batch}:{index}:{sample}")
+                parameters.append(
+                    dict(
+                        # Model-side temperature scaling is deliberate; see
+                        # __init__ on SGLANG_RETURN_ORIGINAL_LOGPROB.
+                        temperature=1.0 if temperature else 0.0,
+                        top_p=1.0,
+                        top_k=-1,
+                        min_p=0.0,
+                        max_new_tokens=self.config.max_tokens,
+                        stop_token_ids=[int(metadata["eos_token_id"])],
+                        repetition_penalty=1.0,
+                        presence_penalty=0.0,
+                        frequency_penalty=0.0,
+                    )
+                )
+        outputs = self.engine.generate(
+            input_ids=[
+                [frame[0] for frame in prompts[index]]
+                for index in range(len(sources))
+                for _ in range(group)
+            ],
+            sampling_params=parameters,
+            rid=rids,
+            return_logprob=True,
+            logprob_start_len=-1,
+            top_logprobs_num=0,
+        )
+        if isinstance(outputs, dict):
+            outputs = [outputs]
+        if [output["meta_info"]["id"] for output in outputs] != rids:
+            raise RuntimeError("SGLang returned incomplete OpusLM prompt groups")
+        generations = []
+        for index, source in enumerate(sources):
+            native = prepared_native_metadata(
+                {**source, "mode": source.get("mode", "text_audio")}
+            )
+            for output in outputs[index * group : (index + 1) * group]:
+                generations.append(
+                    self._record(source, prompts[index], output, native, temperature)
+                )
+        return generations
+
+    def _record(self, source, prompt, output, native, temperature):
+        """One generation in the native rollout schema, plus its supports."""
+        from espnet2.speechlm.rl.multistream import (
+            codec_supports,
+            deinterleave_codec,
+        )
+
+        metadata = self.metadata
+        nq = int(metadata["nq"])
+        info = output["meta_info"]
+        tokens = list(output["output_ids"])
+        logprobs = info.get("output_token_logprobs")
+        trace = info.get("espnet_opuslm")
+        if info.get("num_retractions"):
+            raise RuntimeError("SGLang retracted an OpusLM request")
+        if (
+            not tokens
+            or logprobs is None
+            or not len(tokens) == len(logprobs) == len(trace or ())
+        ):
+            raise RuntimeError("SGLang returned an incomplete OpusLM action trace")
+        supports = codec_supports(metadata, temperature=temperature, top_k=0)
+        eos = int(metadata["eos_token_id"])
+        frames, scores, stream_scores, masks, contracts = [], [], [], [], []
+        for token, (logprob, sampled, _), row in zip(
+            tokens, logprobs, trace, strict=True
+        ):
+            active = [bool(flag) for flag in row[:nq]]
+            ids = [int(value) for value in row[nq : nq + nq - 1]]
+            codec_scores = [float(value) for value in row[nq + nq - 1 :]]
+            if sampled != token or not math.isfinite(logprob):
+                raise RuntimeError("SGLang primary action and log probability differ")
+            if len(ids) != nq - 1 or len(codec_scores) != nq - 1:
+                raise RuntimeError("SGLang OpusLM trace lost a secondary stream")
+            # Stream 0 is only an action while the block is open; during the
+            # delay flush and at EOS its support is a single forced id.
+            primary_score = logprob if active[0] else 0.0
+            frame = [int(token)] + [
+                ids[stream - 1] if active[stream] else 0 for stream in range(1, nq)
+            ]
+            per_stream = [primary_score] + [
+                codec_scores[stream - 1] if active[stream] else 0.0
+                for stream in range(1, nq)
+            ]
+            frames.append(frame)
+            scores.append(sum(per_stream))
+            stream_scores.append(per_stream)
+            masks.append(active)
+            contracts.append([dict(spec) for spec in supports])
+            if token == eos:
+                break
+        if not any(any(mask) for mask in masks):
+            raise RuntimeError("An OpusLM rollout sampled no action at all")
+        # A frame whose every stream is forced carries no action; the learner
+        # requires action_mask == stream_mask.any(-1), so drop such a tail.
+        while masks and not any(masks[-1]):
+            for sequence in (frames, scores, stream_scores, masks, contracts):
+                sequence.pop()
+        # Report now whether the reward side could decode this block, so a
+        # rollout that sampled undecodable codec is visible in the record
+        # rather than only when a TTS reward later fails on it.
+        _, status = deinterleave_codec(frames, metadata)
+        return {
+            "source_id": source["id"],
+            "token_ids": frames,
+            "log_probs": scores,
+            "stream_log_probs": stream_scores,
+            "stream_mask": masks,
+            "action_mask": [any(mask) for mask in masks],
+            "codec_frame_mask": [bool(mask[1]) for mask in masks],
+            "sampling_contracts": contracts,
+            "prompt_token_ids": prompt,
+            "text": "",
+            "finish_reason": info.get("finish_reason"),
+            "prepared_native_source": native,
+            "rollout_engine": "sglang",
+            "codec_status": status,
+        }
