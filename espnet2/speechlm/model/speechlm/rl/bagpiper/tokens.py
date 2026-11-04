@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Bagpiper frame supports, decoding phases and codec delays."""
+"""Bagpiper frame supports and decoding phases."""
 
 import torch
 
@@ -74,42 +74,3 @@ def next_phase(phase, token, text_audio, eot_token_id):
         torch.where(phase == 1, 2, torch.where((phase == 2) & eot, 3, phase)),
     )
     return torch.where(text_audio, step, phase).to(phase.dtype)
-
-
-def delay_interleave(codes, lengths, pad_ids):
-    """Interleave [B,T,Q] codes and return masks for real, sampled positions.
-
-    Stream q is delayed q frames. The prefix/suffix padding added here belongs
-    to the environment and is not an RL action, even if its ID is nonzero.
-    """
-    if codes.ndim != 3 or lengths.shape != (codes.shape[0],):
-        raise ValueError("Expected codes [B,T,Q] and lengths [B]")
-    b, t, q = codes.shape
-    if ((lengths < 0) | (lengths > t)).any():
-        raise ValueError("Invalid codec lengths")
-    pads = torch.as_tensor(pad_ids, device=codes.device, dtype=codes.dtype)
-    if pads.shape != (q,):
-        raise ValueError("One padding token per codebook is required")
-    output = pads.view(1, 1, q).expand(b, t + q - 1, q).clone()
-    mask = torch.zeros_like(output, dtype=torch.bool)
-    valid = torch.arange(t, device=codes.device)[None, :] < lengths[:, None]
-    for stream in range(q):
-        output[:, stream : stream + t, stream] = torch.where(
-            valid, codes[:, :, stream], pads[stream]
-        )
-        mask[:, stream : stream + t, stream] = valid
-    return output, mask
-
-
-def delay_deinterleave(codes, lengths):
-    if codes.ndim != 3 or codes.shape[1] < codes.shape[2] - 1:
-        raise ValueError("Invalid delayed codec shape")
-    q = codes.shape[2]
-    t = codes.shape[1] - q + 1
-    if ((lengths < 0) | (lengths > t)).any():
-        raise ValueError("Invalid original codec lengths")
-    output = torch.stack(
-        [codes[:, stream : stream + t, stream] for stream in range(q)], -1
-    )
-    valid = torch.arange(t, device=codes.device)[None, :] < lengths[:, None]
-    return output, valid
