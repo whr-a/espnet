@@ -6,6 +6,7 @@ from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.rewards import outcome_rewards
 from espnet2.rl.task_rewards import (
     BUILTIN_TASKS,
+    MAX_CPWER_SPEAKERS,
     concatenated_wer,
     longform_wer_reward,
     match_speaker,
@@ -238,6 +239,30 @@ def test_cpwer_normalizes_by_total_reference_words_not_per_speaker():
 def test_cpwer_contract_rejects_an_unscoreable_manifest(record, message):
     with pytest.raises(ValueError, match=message):
         multispeaker_cpwer_reward.validate_sources([{"id": "ms-1", **record}])
+
+
+def test_cpwer_refuses_more_speakers_than_its_search_can_afford():
+    """cpWER's cost is factorial in the speaker count, once per candidate."""
+    count = MAX_CPWER_SPEAKERS + 1
+    record = {
+        "id": "ms-many",
+        "references": [f"speaker {index}" for index in range(count)],
+        "speaker_tags": [f"<spk{index}>" for index in range(count)],
+    }
+    with pytest.raises(ValueError, match=f"accepts at most {MAX_CPWER_SPEAKERS}"):
+        multispeaker_cpwer_reward.validate_sources([record])
+    # The largest accepted mixture still validates and scores.
+    ok = {
+        "id": "ms-max",
+        "mode": "audio_text",
+        "references": [f"speaker {index}" for index in range(MAX_CPWER_SPEAKERS)],
+        "speaker_tags": [f"<spk{index}>" for index in range(MAX_CPWER_SPEAKERS)],
+    }
+    multispeaker_cpwer_reward.validate_sources([ok])
+    text = " ".join(
+        f"<spk{index}> speaker {index}" for index in range(MAX_CPWER_SPEAKERS)
+    )
+    assert multispeaker_cpwer_reward(ok, {"text": text})["cpwer"] == 0.0
 
 
 # ----------------------------------------------------------- mixed-task mix

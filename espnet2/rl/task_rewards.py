@@ -304,10 +304,24 @@ def multispeaker_cpwer_reward(source, generation):
     }
 
 
+#: cpWER searches every assignment of response streams to references, so its
+#: cost is factorial in the speaker count and it runs once per candidate. Four
+#: speakers is 24 assignments; eight would be 40,320 per candidate, which would
+#: make the reward the slowest part of an update. A larger mixture needs a
+#: different matcher, not a larger search.
+MAX_CPWER_SPEAKERS = 4
+
+
 def _validate_multispeaker(records):
     require_fields(records, "multispeaker_cpwer", ("references", "speaker_tags"))
     for record in records:
         references, tags = record["references"], record["speaker_tags"]
+        if len(references) > MAX_CPWER_SPEAKERS:
+            raise ValueError(
+                f"Record {record['id']!r} has {len(references)} speakers; cpWER "
+                f"searches every assignment, so this reward accepts at most "
+                f"{MAX_CPWER_SPEAKERS}. A larger mixture needs a different matcher."
+            )
         if len(references) != len(tags) or len(references) < 2:
             raise ValueError(
                 f"Record {record['id']!r} needs at least two speakers and one tag "
