@@ -232,3 +232,7 @@ def main(argv=None, *, worker=None):
             with (output / "data_admission.json").open("x") as stream:
                 stream.write(json.dumps(admission, indent=2) + "\n")
         run(config)
+
+
+if __name__ == "__main__":
+    main()
