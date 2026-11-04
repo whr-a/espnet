@@ -28,14 +28,14 @@ from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.engine import fit_context
 from espnet2.rl.rewards.text import ANSWER, edit_distance, words
-from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
+from espnet2.rl.rollout import read_json, subprocess_environment, write_json
 from espnet2.rl.types import (
     drift_gate,
     support_counts,
     support_mismatch_rate,
     validate_token_scores,
 )
-from espnet2.rl.utils import build_policy, resolve_callable
+from espnet2.rl.utils import build_policy, resolve_callable, sha256
 from espnet2.speechlm.rl.evaluate import validate_export_files
 
 from .qa_contract import (

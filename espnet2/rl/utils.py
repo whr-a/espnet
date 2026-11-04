@@ -1,6 +1,8 @@
 """Small native helpers; architecture implementations stay in their own folders."""
 
+import hashlib
 import importlib
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -9,6 +11,15 @@ import torch
 def resolve_callable(name):
     module, symbol = name.rsplit(":", 1)
     return getattr(importlib.import_module(module), symbol)
+
+
+def sha256(path):
+    """Hex SHA256 of a file, read in 1 MiB blocks."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def build_policy(config, device):

@@ -16,10 +16,7 @@ import numpy as np
 import torch
 import yaml
 
-
-def sha256(path):
-    with Path(path).open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
+from espnet2.rl.utils import sha256
 
 
 def read_kaldi(path):

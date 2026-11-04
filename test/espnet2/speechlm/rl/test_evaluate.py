@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from espnet2.rl.data import collate_rollouts
-from espnet2.rl.rollout import sha256
+from espnet2.rl.utils import sha256
 from espnet2.rl.types import TokenScores
 from espnet2.speechlm.rl.evaluate import (
     summarize_wer,

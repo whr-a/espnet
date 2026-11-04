@@ -24,7 +24,7 @@ import torch
 from .batch import RolloutBatch
 from .types import validate_binary_mask
 from .rewards import get_reward
-from .utils import object_array
+from .utils import object_array, sha256
 
 
 def read_manifest(path, *, config=None):
@@ -66,8 +66,6 @@ def verify_data_admission(config, path):
     referenced audio file, and requires the training and heldout media to stay
     disjoint. Recipe-specific provenance stays in the receipt itself.
     """
-    from .rollout import sha256
-
     admission = json.loads(Path(path).read_text())
     if admission.get("training_ready") is not True:
         raise ValueError("Data has not passed its preparation admission")

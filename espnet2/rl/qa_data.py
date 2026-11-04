@@ -13,13 +13,7 @@ import json
 import re
 from pathlib import Path
 
-
-def sha256(path):
-    value = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            value.update(block)
-    return value.hexdigest()
+from espnet2.rl.utils import sha256
 
 
 def json_bytes(value):

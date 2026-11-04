@@ -24,7 +24,7 @@ import espnet2.rl.miles_native_actor as actor_module
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
 from espnet2.rl.miles_native_actor import BehaviorSnapshot, ESPnetTrainRayActor
-from espnet2.rl.rollout import sha256
+from espnet2.rl.utils import sha256
 from espnet2.rl.scoring import score_native_batch
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores

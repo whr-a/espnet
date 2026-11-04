@@ -11,7 +11,7 @@ from espnet2.rl.cli import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import verify_data_admission
 from espnet2.rl.engine import engine_kwargs, fit_context
-from espnet2.rl.rollout import sha256
+from espnet2.rl.utils import sha256
 from espnet2.rl.types import tempered
 
 

@@ -13,7 +13,6 @@
 # limitations under the License.
 """Persistent inference processes and immutable checkpoint synchronization."""
 
-import hashlib
 import json
 import os
 import shutil
@@ -28,13 +27,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+from .utils import sha256
 
 
 def write_json(path, value, **options):
