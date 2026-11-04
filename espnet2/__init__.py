@@ -45,6 +45,14 @@ def _warn_if_torch_torchaudio_skewed() -> None:
         # not something this can usefully say anything about.
         return
 
+    # A distribution whose metadata carries no Version field reads back as
+    # None instead of raising, which the RL rollout and export interpreters
+    # hit: they install torch from a local build and no torchaudio at all.
+    # Without this, every subprocess that imports espnet2 with such an
+    # interpreter dies here before running any of its own code.
+    if not torch_version or not torchaudio_version:
+        return
+
     # Compare major.minor only: the local version suffix ("2.11.0+cu126") is
     # not part of the pairing.
     torch_minor = torch_version.split(".")[:2]
