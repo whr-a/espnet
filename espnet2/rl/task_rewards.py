@@ -223,6 +223,90 @@ def _validate_speaker_id(records):
 speaker_id_reward.validate_sources = _validate_speaker_id
 
 
+# ------------------------------------------------------- speaker verification
+
+#: The two verdicts a verification prompt offers.
+SPEAKER_VERDICTS = ("same", "different")
+
+
+def speaker_verification_reward(source, generation):
+    """Binary same/different-speaker accuracy plus a terminal format bonus.
+
+    One item is one binary decision over two segments of one audio.
+    ``verdict`` is the true label and ``verdict_choices`` the two labels the
+    prompt offered. The prediction is read with exactly the matching rule
+    :func:`speaker_id_reward` uses -- :func:`match_speaker` over the offered
+    labels, via the first ``<answer>`` block else the last nonempty line -- and
+    kept on the same scale, accuracy plus a 0.1 format bonus, so a
+    verification run and an N-way identification run are directly comparable.
+    Naming both labels earns nothing: a response that says "not the same,
+    these are different speakers" named no one verdict.
+
+    What a binary task adds is per-class bookkeeping. A reward that logs only
+    mean accuracy cannot tell a policy that discriminates from a policy that
+    answers one label every time, because on a label-balanced set both score
+    0.5. ``true_same``/``hit_same`` and ``true_different``/``hit_different``
+    are logged as means, so
+
+        TPR = mean(hit_same) / mean(true_same)
+        TNR = mean(hit_different) / mean(true_different)
+        balanced accuracy = (TPR + TNR) / 2
+
+    are recoverable per training step, and balanced accuracy is exactly 0.5
+    for every constant policy.
+    """
+    require_text_mode(source, "speaker_verification")
+    choices = [str(choice) for choice in source["verdict_choices"]]
+    truth, truth_path = match_speaker(source["verdict"], choices)
+    if truth is None:
+        raise ValueError(
+            f"Record {source['id']!r} verdict is not exactly one of its "
+            f"verdict_choices ({truth_path})"
+        )
+    span, path = answer_span(generation["text"])
+    predicted, status = match_speaker(span, choices)
+    accuracy = float(predicted is not None and predicted == truth)
+    answer_format = float(len(ANSWER.findall(generation["text"])) == 1)
+    positive = float(choices[truth] == "same")
+    return {
+        "reward": accuracy + 0.1 * answer_format,
+        "acc": accuracy,
+        "format": answer_format,
+        "parsed": float(status == "unique"),
+        "ambiguous": float(status == "ambiguous"),
+        # Per-class counters. Their batch means reconstruct TPR, TNR and
+        # balanced accuracy, which no constant policy can push off 0.5.
+        "true_same": positive,
+        "true_different": 1.0 - positive,
+        "hit_same": accuracy * positive,
+        "hit_different": accuracy * (1.0 - positive),
+        "said_same": float(
+            predicted is not None and status == "unique" and choices[predicted] == "same"
+        ),
+        **{f"path_{name}": float(path == name) for name in ("tag", "line", "text")},
+    }
+
+
+def _validate_speaker_verification(records):
+    """Reject a manifest that cannot supervise verification, before any GPU."""
+    require_fields(records, "speaker_verification", ("verdict", "verdict_choices"))
+    for record in records:
+        choices = [str(choice) for choice in record["verdict_choices"]]
+        if sorted(choices) != sorted(SPEAKER_VERDICTS):
+            raise ValueError(
+                f"Record {record.get('id')!r} offers {choices}, not "
+                f"{list(SPEAKER_VERDICTS)}"
+            )
+        if str(record["verdict"]) not in choices:
+            raise ValueError(
+                f"Record {record.get('id')!r} verdict {record['verdict']!r} is not "
+                f"one of its own choices"
+            )
+
+
+speaker_verification_reward.validate_sources = _validate_speaker_verification
+
+
 # ---------------------------------------------------------------- long-form
 
 

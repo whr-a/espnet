@@ -104,17 +104,35 @@ configuration aliases resolve to the same files, not additional recipes.
 
 ## More tasks: speaker, long-form and multi-speaker
 
-`espnet2/rl/task_rewards.py` adds four rewards that score generated text, so
-any family whose engine emits text can train them: OWSM, OpusLM, OpusLM
-Dialogue and Bagpiper. `espnet2/rl/task_data.py` prepares their manifests from
-ordinary Kaldi recipe inputs.
+`espnet2/rl/task_rewards.py` adds the rewards below. All but the last score
+generated text, so any family whose engine emits text can train them: OWSM,
+OpusLM, OpusLM Dialogue and Bagpiper. `espnet2/rl/task_data.py` prepares most
+of their manifests from ordinary Kaldi recipe inputs.
 
 | Task | Reward | Supervision each record carries | Recipes |
 | --- | --- | --- | --- |
 | Closed-set speaker identification | `speaker_id_reward`: correct label 1 + terminal format 0.1 | `speaker`, `speaker_choices` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_speaker_id_1gpu.yaml`, `rl_opuslm_speaker_id_2gpu_async.yaml`, `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_id.yaml` |
 | Long-form ASR | `longform_wer_reward`: `-min(WER, 1)` | `reference`, `min_reference_words` | `egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_1gpu.yaml`, `rl_miles_longform_wer_2gpu_async.yaml`, `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_longform_wer_1gpu.yaml`, `rl_opuslm_longform_wer_2gpu_async.yaml` |
 | Two-speaker ASR | `multispeaker_cpwer_reward`: `-min(cpWER, 1)` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer.yaml` |
+| Two-speaker ASR from a policy that does not yet comply | `multispeaker_cpwer_shaped_reward`: cpWER plus two terms bounded by `CPWER_SHAPING_WEIGHT` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer_shaped.yaml` |
+| Speaker verification (same/different) | `speaker_verification_reward`: correct verdict 1 + terminal format 0.1, with per-class counters | `verdict`, `verdict_choices` | `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_verification.yaml` |
 | Several tasks in one update | `mixed_task_reward` | `reward_task` per record | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_mixed_1gpu.yaml` |
+| Nine-stream codec generation | `codec_block_reward`: decodable share of the sampled block, plus 0.25 if the policy closed it | `codec_metadata` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml` |
+
+Two of these need a starting condition the table cannot show.
+`multispeaker_cpwer_reward` is flat wherever the response is worse than
+silence, which is where an audio *captioner* policy starts: every candidate of
+every group clips to the same value, the GRPO group advantage is identically
+zero, and no number of updates moves the policy. Measured on 256 mixtures at
+0.3 overlap with one unchanged Bagpiper policy and the preparer's default
+instruction: 1 distinct reward over the whole set. Use the shaped reward
+*and* `--prompt-template verbatim_tagged` (below) in that case; the same
+policy and mixtures then give 29 distinct rewards, and 200 steps took cpWER
+mean 1.6177 to 0.0626, with 249 of 256 mixtures improved and none worsened.
+`codec_block_reward` is shape-only on purpose -- it reports whether the policy
+made decodable audio and closed the block, not how the audio sounds, because a
+quality reward needs a codec decoder and a frozen ASR on a GPU and this one
+runs on CPU with every other reward.
 
 Every reward exposes `validate_sources(records)`, which `read_manifest` calls
 before any model, GPU or Ray actor starts, so a manifest that cannot supervise
@@ -242,6 +260,26 @@ exclude explicitly provided benchmark manifests with repeatable
 component or historical SFT independence. Use a fresh directory and keep the
 receipt, audio and manifests together. Private protection registries and
 experiment selection/observer scripts are external to the public framework.
+
+Two recipe-local helpers cover splits `espnet2.rl.task_data` does not:
+
+```bash
+# Closed-set speaker tasks need the same speakers on both sides, so split
+# inside each speaker rather than across speakers.
+python egs2/bagpiper/speechlm1/local/split_speakers_by_utterance.py \
+  --wav-scp data/train/wav.scp --utt2spk data/train/utt2spk \
+  --output-dir data/rl/speaker_split
+
+# Long-form items for a fixed-window frontend: group by a DURATION budget,
+# because OWSM v4 raises on audio past speech_length instead of truncating it.
+python egs2/owsm_v4/s2t1/local/pack_longform.py \
+  --source-manifest data/rl/train.jsonl --output data/rl/longform.jsonl \
+  --budget-seconds 29 --min-reference-words 200
+```
+
+The multi-speaker preparer takes `--prompt-template {default,verbatim_tagged}`.
+Keep `default` for a policy that already emits speaker tags; use
+`verbatim_tagged` for one that does not, for the reason measured above.
 
 For TTS, use a true LibriTTS train split and a separate dev split:
 

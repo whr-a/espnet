@@ -58,6 +58,21 @@ RECIPES = {
         "sync",
         "multispeaker_cpwer_reward",
     ),
+    "egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer_shaped.yaml": (
+        "bagpiper",
+        "sync",
+        "multispeaker_cpwer_shaped_reward",
+    ),
+    "egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_verification.yaml": (
+        "bagpiper",
+        "sync",
+        "speaker_verification_reward",
+    ),
+    "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml": (
+        "opuslm_dialogue",
+        "sync",
+        "codec_block_reward",
+    ),
 }
 
 

@@ -48,6 +48,30 @@ MULTISPEAKER_PROMPT = (
     "Two people speak in this audio. Transcribe each speaker separately. "
     "Write {tags} before that speaker's words, each tag exactly once."
 )
+#: The instruction a captioner-pretrained policy needs before cpWER can
+#: separate anything. Measured on 256 mixtures at 0.3 overlap with one
+#: unchanged Bagpiper policy: under MULTISPEAKER_PROMPT every candidate
+#: clipped to the same reward -- 1 distinct value over the whole set, cpWER
+#: clipped mean exactly 1.0, no mixture below cpWER 1 -- so the GRPO group
+#: advantage is identically zero and no number of updates can move the
+#: policy. Under this instruction the same policy and the same mixtures give
+#: 29 distinct rewards and put 11.7% of mixtures under cpWER 1. It asks for a
+#: transcript rather than a description and forbids the commentary a captioner
+#: adds, which is what moves 95.8 words per response out of the unattributed
+#: preamble.
+MULTISPEAKER_VERBATIM_PROMPT = (
+    "Write the verbatim transcript of this two-speaker audio, one line per "
+    "speaker, each line starting with that speaker's tag. Use {tag0} for one "
+    "speaker and {tag1} for the other. Write only the transcribed words. No "
+    "description, no commentary, no quotation marks."
+)
+#: Instruction texts ``--prompt-template`` may name. A template may use
+#: ``{tags}`` for the tags joined with "and", or ``{tag0}``/``{tag1}`` for one
+#: tag each.
+MULTISPEAKER_PROMPTS = {
+    "default": MULTISPEAKER_PROMPT,
+    "verbatim_tagged": MULTISPEAKER_VERBATIM_PROMPT,
+}
 
 
 def _digest(path):
@@ -426,7 +450,8 @@ def prepare_multispeaker_manifest(
                 "overlap": overlap,
                 "second_onset_seconds": delay,
                 "prompt": (prompt or MULTISPEAKER_PROMPT).format(
-                    tags=" and ".join(tags)
+                    tags=" and ".join(tags),
+                    **{f"tag{position}": tag for position, tag in enumerate(tags)},
                 ),
             }
         )
@@ -586,6 +611,15 @@ def main():
         "is 30 (preprocessor_conf.speech_length).",
     )
     parser.add_argument("--overlap", type=float, default=0.3)
+    parser.add_argument(
+        "--prompt-template",
+        choices=tuple(MULTISPEAKER_PROMPTS),
+        default="default",
+        help="Instruction text for multispeaker_cpwer. Use verbatim_tagged "
+        "when the starting policy is a captioner: with the default "
+        "instruction such a policy scores every candidate at the cpWER clip, "
+        "which leaves the GRPO group no advantage to learn from.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.task == "speaker_id":
@@ -624,6 +658,7 @@ def main():
             overlap=args.overlap,
             seed=args.seed,
             sample_rate=args.sample_rate,
+            prompt=MULTISPEAKER_PROMPTS[args.prompt_template],
         )
 
 

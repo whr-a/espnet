@@ -9,6 +9,9 @@ import soundfile as sf
 
 from espnet2.rl import task_data
 from espnet2.rl.task_data import (
+    MULTISPEAKER_PROMPT,
+    MULTISPEAKER_PROMPTS,
+    MULTISPEAKER_VERBATIM_PROMPT,
     append_text_instruction,
     audio_window_seconds,
     derive_task_manifest,
@@ -363,6 +366,100 @@ def test_mixing_needs_more_than_one_speaker(tmp_path):
     )
     with pytest.raises(ValueError, match="needs utterances from two speakers"):
         prepare_multispeaker_manifest(wav, text, utt2spk, tmp_path / "ms.jsonl")
+
+
+def test_the_default_instruction_is_what_a_mixture_carries_unless_asked(tmp_path):
+    wav, text, utt2spk = corpus(tmp_path, per_speaker=3)
+    records = prepare_multispeaker_manifest(wav, text, utt2spk, tmp_path / "d.jsonl")
+    audit = json.loads((tmp_path / "d.jsonl.audit.json").read_text())
+    assert audit["prompt_template"] == MULTISPEAKER_PROMPT
+    for record in records:
+        assert record["prompt"] == MULTISPEAKER_PROMPT.format(
+            tags=" and ".join(record["speaker_tags"])
+        )
+
+
+def test_the_verbatim_instruction_names_each_tag_on_its_own(tmp_path):
+    """verbatim_tagged needs per-tag fields the default template never used.
+
+    The default instruction only interpolates the tags joined with "and", so a
+    template that addresses one speaker at a time could not be rendered at all
+    before. Both spellings must keep working from the same preparer, because
+    the choice between them decides whether cpWER has any spread to learn
+    from on a captioner-pretrained policy.
+    """
+    wav, text, utt2spk = corpus(tmp_path, per_speaker=3)
+    records = prepare_multispeaker_manifest(
+        wav,
+        text,
+        utt2spk,
+        tmp_path / "vt.jsonl",
+        prompt=MULTISPEAKER_PROMPTS["verbatim_tagged"],
+    )
+    assert MULTISPEAKER_PROMPTS["verbatim_tagged"] is MULTISPEAKER_VERBATIM_PROMPT
+    audit = json.loads((tmp_path / "vt.jsonl.audit.json").read_text())
+    assert audit["prompt_template"] == MULTISPEAKER_VERBATIM_PROMPT
+    for record in records:
+        first, second = record["speaker_tags"]
+        # Each tag is placed individually, and no field is left unrendered.
+        assert f"Use {first} for one speaker and {second} for the other" in (
+            record["prompt"]
+        )
+        assert "{" not in record["prompt"]
+    # The mixtures themselves do not depend on the instruction.
+    plain = prepare_multispeaker_manifest(
+        wav, text, utt2spk, tmp_path / "plain.jsonl"
+    )
+    assert [r["audio_sha256"] for r in plain] == [
+        r["audio_sha256"] for r in records
+    ]
+
+
+def test_the_cli_offers_exactly_the_named_instructions(tmp_path, monkeypatch):
+    wav, text, utt2spk = corpus(tmp_path, per_speaker=3)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "task_data",
+            "--task",
+            "multispeaker_cpwer",
+            "--wav-scp",
+            str(wav),
+            "--text",
+            str(text),
+            "--utt2spk",
+            str(utt2spk),
+            "--prompt-template",
+            "verbatim_tagged",
+            "--output",
+            str(tmp_path / "cli.jsonl"),
+        ],
+    )
+    task_data.main()
+    audit = json.loads((tmp_path / "cli.jsonl.audit.json").read_text())
+    assert audit["prompt_template"] == MULTISPEAKER_VERBATIM_PROMPT
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "task_data",
+            "--task",
+            "multispeaker_cpwer",
+            "--wav-scp",
+            str(wav),
+            "--text",
+            str(text),
+            "--utt2spk",
+            str(utt2spk),
+            "--prompt-template",
+            "no_such_template",
+            "--output",
+            str(tmp_path / "never.jsonl"),
+        ],
+    )
+    with pytest.raises(SystemExit):
+        task_data.main()
 
 
 # ------------------------------------------------------- derived manifests

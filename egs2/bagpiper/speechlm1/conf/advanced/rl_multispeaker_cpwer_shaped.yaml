@@ -1,0 +1,90 @@
+# Advanced: the same two-speaker cpWER task as rl_multispeaker_cpwer.yaml, but
+# with the shaped reward and the instruction a captioner-pretrained policy
+# needs. Use this profile, not the plain one, whenever the starting policy does
+# not already emit speaker tags.
+#
+# WHY THE PLAIN REWARD CANNOT START HERE. multispeaker_cpwer_reward returns
+# -min(cpWER, 1), which is flat everywhere the response is worse than silence.
+# The base Bagpiper policy is an audio captioner: it describes the recording
+# instead of transcribing it, so every candidate of every group clips to
+# exactly -1. west_group_advantages subtracts the group mean and divides by the
+# group standard deviation, so the policy gradient is identically zero and no
+# number of updates can move the policy. Measured on 256 held-out mixtures at
+# 0.3 overlap with the preparer's default instruction: 1 distinct reward value
+# across the whole set, cpWER clipped mean 1.0, no mixture below cpWER 1.
+#
+# TWO CHANGES FIX IT, AND BOTH ARE NEEDED.
+#   1. The instruction. --prompt-template verbatim_tagged asks for a verbatim
+#      transcript, one tagged line per speaker, and nothing else. On the same
+#      mixtures and the same unchanged policy that raises the spread from 1 to
+#      29 distinct rewards and puts 11.7% of mixtures under cpWER 1, so the
+#      reward has something to rank.
+#   2. The reward. multispeaker_cpwer_shaped_reward keeps cpWER as the
+#      objective and adds two bounded terms that still rank a group of
+#      uniformly bad answers: tag_format, and a brevity term against words no
+#      speaker was credited with. Both are capped by CPWER_SHAPING_WEIGHT
+#      (0.25) so tagging an unchanged caption can never outrank a genuine
+#      transcription gain, and both are reported as separate columns so
+#      "learned to tag without transcribing better" stays visible.
+#
+# ACCEPTED on one H100 80GB, learner and engine collocated, 200 steps of the
+# geometry below scaled down to prompts_per_step 8 x group_size 8 and
+# max_tokens 384: cpWER mean 1.6177 at step 0 -> 0.0626 at step 200, with the
+# paired sign test over the same 256 mixtures at step 200 reading 249 improved
+# / 0 worsened / 7 unchanged, p = 2.8e-15; tag_format rate 0.266 -> 1.000;
+# unassigned words per response 98.1 -> 3.0. The geometry shipped here is the
+# think profile's 32 x 8, as the other advanced templates use.
+#
+# Prepare mixtures with the instruction this profile assumes:
+#   python -m espnet2.rl.task_data --task multispeaker_cpwer --wav-scp ... \
+#     --text ... --utt2spk ... --overlap 0.3 \
+#     --prompt-template verbatim_tagged --output data/rl/cpwer_train.jsonl
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/cpwer_train.jsonl
+output_dir: exp/rl_bagpiper_multispeaker_cpwer_shaped
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.rl.task_rewards:multispeaker_cpwer_shaped_reward
+device: cuda:0
+reference_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 8
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 200
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 1
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 2048
+score_tolerance: 0.03
+execution_mode: sync
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/cpwer_dev.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.45

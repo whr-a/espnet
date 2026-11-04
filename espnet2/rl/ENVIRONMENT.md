@@ -15,7 +15,7 @@ source/dependency receipts when reproducing a result.
 | Torch/Torchaudio | 2.11.0 + CUDA 13.0 |
 | Transformers | 5.12.1 |
 | Ray | 2.58.0 |
-| Source libraries | Unchanged Miles `a22fd824`; SGLang fork `283d68c8` |
+| Source libraries | Unchanged Miles `a22fd824`; SGLang fork `cbe726c98` |
 | GPU target | H100 80 GB; one collocated or two disaggregated |
 
 Use an existing CUDA 13-compatible NVIDIA driver. GPU/kernel operation must be
@@ -47,7 +47,7 @@ git -C "$ESPNET_MILES_SOURCE" checkout --detach \
   a22fd824191c64ba7c5d6c531f125406e4ce9cc6
 git clone https://github.com/whr-a/sglang.git "$ESPNET_SGLANG_SOURCE"
 git -C "$ESPNET_SGLANG_SOURCE" checkout --detach \
-  283d68c8bff309a42476c95f7c71dad895d09da6
+  cbe726c9821df4316a84b537a2cf747af880335d
 
 bash "$ESPNET_RL_SOURCE/tools/installers/install_miles_async_env.sh" \
   --python python3.12 --venv "$ESPNET_RL_ENV" \

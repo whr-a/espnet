@@ -1,0 +1,98 @@
+# Advanced: same/different speaker verification with Bagpiper. One item is one
+# audio holding two speech segments separated by a short pause, and one binary
+# decision over them. The prompt is free-form text, so the instruction reaches
+# the model from the manifest's `prompt` field.
+#
+# WHY A BINARY TASK AND NOT THE N-WAY CLOSED SET. On the same backbone the
+# 10-way closed-set reward is barely reachable: in the first rollout of a
+# 10-way run only 11 of 256 candidates (4.3%) earned the accuracy reward at
+# all, so most groups could only separate on the format bonus and the policy
+# optimizes formatting instead of listening. The binary task puts chance at 50%
+# and the same measurement reads 127 of 256 candidates (49.6%) earning the
+# accuracy reward, which is what makes the gradient carry identity information
+# rather than punctuation. Keep that in mind before widening the label set.
+#
+# WHAT THE REWARD LOGS, AND WHY. speaker_verification_reward keeps the
+# closed-set speaker-id scale -- accuracy plus a 0.1 terminal format bonus --
+# so a verification run and an N-way identification run are directly
+# comparable. It adds per-class counters because mean accuracy alone cannot
+# tell a discriminating policy from one that answers a single label every
+# time: on a label-balanced set both read 0.5. Recover the real quantities per
+# step as TPR = reward/hit_same / reward/true_same, TNR = reward/hit_different
+# / reward/true_different, balanced accuracy = (TPR + TNR) / 2, which is
+# exactly 0.5 for every constant policy. Watch reward/said_same for collapse.
+#
+# MANIFEST CONTRACT. Each record needs `verdict` (the true label) and
+# `verdict_choices` (exactly ["same", "different"]); the reward's
+# validate_sources rejects anything else on CPU before a GPU is allocated.
+# espnet2.rl.task_data ships no preparer for pair items, so build them with the
+# recipe's local/split_speakers_by_utterance.py split plus your own pair
+# builder, and close these leaks or the score means nothing:
+#   * draw both arms from ONE pool of speakers that can appear in a positive
+#     and in a negative item, or "I recognize this voice" is a free point;
+#   * never take both segments of a positive pair from one recording session,
+#     or "did the channel change mid-file" replaces the voice comparison;
+#   * hold P(same | speaker present) equal across speakers, so the speaker set
+#     carries no differential signal;
+#   * clip every segment to one length and level-equalize the two segments, so
+#     neither duration nor recording gain predicts the label;
+#   * keep the prompt byte-identical across items.
+# Measure a no-model floor before trusting any learned number: mean+CMVN MFCC
+# cosine similarity on a 558-item held-out set reaches ROC AUC 0.890 and
+# balanced accuracy 0.814 on pairs built this way, so a policy below that is
+# not yet reading the audio.
+#
+# Template only: the numbers above are CPU-side and base-policy measurements.
+# This profile has no end-to-end GPU acceptance. The accepted-at-scale shape
+# for this task is four cards as execution_mode disagg_sync with two train and
+# two rollout GPUs; the geometry here is the one-GPU think profile's, as the
+# other advanced templates use.
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/speaker_verification_train.jsonl
+output_dir: exp/rl_bagpiper_speaker_verification
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.rl.task_rewards:speaker_verification_reward
+device: cuda:0
+reference_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 8
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 150
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 1
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 1024
+score_tolerance: 0.03
+execution_mode: sync
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/speaker_verification_dev.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.45

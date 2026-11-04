@@ -115,6 +115,19 @@ def main():
                 "OpusLMDialogueForConditionalGeneration",
                 "espnet2.speechlm.rl.sglang_model",
             ),
+            # The nine-stream codec architectures are separate entries, not
+            # replacements: espnet_opuslm.py keeps registering the text-only
+            # pair above, a recipe picks between them by the exported
+            # config.json's "architectures", and the two never share a class
+            # name. Both spellings must therefore resolve in one environment.
+            (
+                "OpusLMMultiStreamForConditionalGeneration",
+                "espnet2.speechlm.rl.sglang_multistream",
+            ),
+            (
+                "OpusLMDialogueMultiStreamForConditionalGeneration",
+                "espnet2.speechlm.rl.sglang_multistream",
+            ),
         ):
             expected = getattr(importlib.import_module(module_name), name)
             actual, architecture = ModelRegistry.resolve_model_cls([name])

@@ -1,4 +1,4 @@
-"""Speaker, long-form, multi-speaker and mixed-task rewards, and their contracts."""
+"""Speaker, verification, long-form, multi-speaker and mixed rewards and contracts."""
 
 import json
 
@@ -17,6 +17,7 @@ from espnet2.rl.task_rewards import (
     repeated_word_fraction,
     resolve_task,
     speaker_id_reward,
+    speaker_verification_reward,
     split_speaker_streams,
 )
 
@@ -41,6 +42,19 @@ def longform_source(words=250, **updates):
         "min_reference_words": 200,
         **updates,
     }
+
+
+def verification_source(verdict="same", identity="a__b__4s"):
+    return {
+        "id": identity,
+        "verdict": verdict,
+        "verdict_choices": ["same", "different"],
+        "reward_task": "speaker_verification",
+    }
+
+
+def verification_score(text, verdict="same"):
+    return speaker_verification_reward(verification_source(verdict), {"text": text})
 
 
 def multispeaker_source(**updates):
@@ -110,6 +124,119 @@ def test_speaker_manifest_without_supervision_is_rejected_before_training(tmp_pa
                 "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
             )(),
         )
+
+
+# ------------------------------------------------------- speaker verification
+
+
+def test_verification_tagged_correct_answer_earns_accuracy_and_format():
+    scores = verification_score("The voices match. <answer>same</answer>", "same")
+    assert scores["acc"] == 1.0
+    assert scores["format"] == 1.0
+    assert scores["parsed"] == 1.0
+    assert scores["reward"] == pytest.approx(1.1)
+    assert scores["path_tag"] == 1.0
+
+
+def test_verification_tagged_wrong_answer_keeps_only_the_format_bonus():
+    scores = verification_score("<answer>different</answer>", "same")
+    assert scores["acc"] == 0.0
+    assert scores["format"] == 1.0
+    assert scores["reward"] == pytest.approx(0.1)
+
+
+def test_verification_naming_both_labels_is_ambiguous_and_earns_nothing():
+    scores = verification_score(
+        "<answer>not the same, they are different</answer>", "different"
+    )
+    assert scores["ambiguous"] == 1.0
+    assert scores["parsed"] == 0.0
+    assert scores["acc"] == 0.0
+
+
+def test_verification_falls_back_to_the_last_line_without_a_tag():
+    scores = verification_score(
+        "A long caption about the recording.\nThe speakers are different.",
+        "different",
+    )
+    assert scores["path_line"] == 1.0
+    assert scores["format"] == 0.0
+    assert scores["acc"] == 1.0
+    assert scores["reward"] == pytest.approx(1.0)
+
+
+def test_verification_two_answer_blocks_lose_the_format_bonus():
+    scores = verification_score(
+        "<answer>same</answer> or maybe <answer>same</answer>", "same"
+    )
+    assert scores["format"] == 0.0
+    assert scores["acc"] == 1.0
+
+
+def test_per_class_columns_reconstruct_tpr_tnr_and_balanced_accuracy():
+    # A policy that always answers "same": accuracy 0.5 on a balanced set, but
+    # balanced accuracy exactly 0.5 -- which is the point of these columns.
+    batch = [
+        verification_score("<answer>same</answer>", verdict)
+        for verdict in ["same"] * 4 + ["different"] * 4
+    ]
+
+    def mean(name):
+        return sum(row[name] for row in batch) / len(batch)
+
+    assert mean("acc") == pytest.approx(0.5)
+    tpr = mean("hit_same") / mean("true_same")
+    tnr = mean("hit_different") / mean("true_different")
+    assert tpr == pytest.approx(1.0)
+    assert tnr == pytest.approx(0.0)
+    assert (tpr + tnr) / 2 == pytest.approx(0.5)
+    assert mean("said_same") == pytest.approx(1.0)
+
+
+def test_a_discriminating_policy_moves_balanced_accuracy_off_one_half():
+    batch = [
+        verification_score("<answer>same</answer>", "same"),
+        verification_score("<answer>same</answer>", "same"),
+        verification_score("<answer>different</answer>", "different"),
+        verification_score("<answer>same</answer>", "different"),
+    ]
+
+    def mean(name):
+        return sum(row[name] for row in batch) / len(batch)
+
+    tpr = mean("hit_same") / mean("true_same")
+    tnr = mean("hit_different") / mean("true_different")
+    assert (tpr + tnr) / 2 == pytest.approx(0.75)
+
+
+def test_verification_contract_rejects_a_manifest_without_verdicts():
+    with pytest.raises(ValueError, match="verdict"):
+        speaker_verification_reward.validate_sources([{"id": "x"}])
+
+
+def test_verification_contract_rejects_a_foreign_reward_task():
+    rows = [{**verification_source(), "reward_task": "speaker_id"}]
+    with pytest.raises(ValueError, match="declares reward_task"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_verification_contract_rejects_choices_that_are_not_the_two_labels():
+    rows = [{**verification_source(), "verdict_choices": ["yes", "no"]}]
+    with pytest.raises(ValueError, match="not"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_verification_contract_accepts_the_real_manifest_shape():
+    speaker_verification_reward.validate_sources(
+        [verification_source("same", "a__b__4s"),
+         verification_source("different", "c__d__4s")]
+    )
+
+
+def test_a_verdict_outside_its_own_choices_is_rejected_at_scoring_time():
+    bad = {**verification_source(), "verdict": "maybe"}
+    with pytest.raises(ValueError, match="not exactly one of"):
+        speaker_verification_reward(bad, {"text": "<answer>same</answer>"})
 
 
 # ---------------------------------------------------------------- long-form
