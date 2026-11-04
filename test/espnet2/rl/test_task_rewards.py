@@ -507,3 +507,97 @@ def test_a_single_speaker_manifest_is_not_a_leak(tmp_path):
         )
     )
     assert len(read_manifest(path, config=config)) == 3
+
+
+def test_a_preparer_that_declares_its_draw_as_choice_draw_is_understood(tmp_path):
+    """The declaration has two spellings, and both must be read.
+
+    ``choice_key`` is what espnet2.rl.task_data stamps. A preparer written
+    before that field existed records the same thing as
+    ``choice_draw: {"keyed_on": ...}`` instead, and the speaker-id run on
+    LibriSpeech dev-clean produced its manifests that way. Reading only
+    ``choice_key`` would let a deliberate per-speaker draw be rejected for
+    not declaring itself, while it had.
+    """
+    config = type(
+        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+    )()
+
+    def manifest(name, records):
+        path = tmp_path / name
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return path
+
+    constant = [
+        {
+            "id": f"{speaker}-c-{index:04d}",
+            "speaker": speaker,
+            "speaker_choices": ["A", "B"] if speaker == "A" else ["B", "A"],
+        }
+        for speaker in ("A", "B")
+        for index in range(3)
+    ]
+
+    # Spelled the old way, saying "speaker": a deliberate draw, let through.
+    read_manifest(
+        manifest(
+            "declared.jsonl",
+            [{**r, "choice_draw": {"keyed_on": "speaker"}} for r in constant],
+        ),
+        config=config,
+    )
+
+    # Spelled the old way, saying "utterance_id": the declaration claims the
+    # safe draw, so a per-speaker-constant list contradicts it and is the
+    # accidental case the check exists for.
+    with pytest.raises(ValueError, match="identifies the answer"):
+        read_manifest(
+            manifest(
+                "contradicts.jsonl",
+                [
+                    {**r, "choice_draw": {"keyed_on": "utterance_id", "choices": 2}}
+                    for r in constant
+                ],
+            ),
+            config=config,
+        )
+
+    # A per-utterance draw spelled the old way: lists vary within a speaker,
+    # so nothing is leaked and it passes however it is declared.
+    varied = [
+        {
+            "id": f"{speaker}-v-{index:04d}",
+            "speaker": speaker,
+            "speaker_choices": [speaker, f"other-{index}"],
+            "choice_draw": {"keyed_on": "utterance_id", "seed": 1, "choices": 2},
+        }
+        for speaker in ("A", "B")
+        for index in range(3)
+    ]
+    read_manifest(manifest("varied.jsonl", varied), config=config)
+
+
+def test_a_choice_draw_that_is_not_a_mapping_does_not_crash_the_check(tmp_path):
+    """The field is read off records this code did not write, so its shape is
+    not guaranteed. A string there must not turn a data check into a
+    TypeError at manifest-read time."""
+    config = type(
+        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+    )()
+    path = tmp_path / "weird.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"{speaker}-w-{index:04d}",
+                    "speaker": speaker,
+                    "speaker_choices": [speaker, f"other-{index}"],
+                    "choice_draw": "utterance_id",
+                }
+            )
+            + "\n"
+            for speaker in ("A", "B")
+            for index in range(3)
+        )
+    )
+    read_manifest(path, config=config)
