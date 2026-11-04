@@ -107,9 +107,18 @@ def prepare_speaker_id_manifest(
     seed=42,
     sample_rate=16000,
     prompt=None,
-    choice_key="speaker",
+    choice_key="utterance",
 ):
     """Closed-set speaker identification from Kaldi ``wav.scp`` and ``utt2spk``.
+
+    ``choice_key`` defaults to ``"utterance"`` because that is the safe choice
+    in both split designs and costs nothing. Keying on the speaker makes the
+    candidate list a per-speaker constant, which leaks the answer whenever
+    training and heldout share one speaker inventory -- measured on this
+    corpus, 2674 records collapsed to 40 distinct lists and list-to-label was
+    injective, so a model could memorize 40 prompts and never listen. That
+    mode stays reachable for reproducing an older manifest, but it has to be
+    asked for.
 
     ``choice_key`` selects what the candidate draw is keyed on: ``"speaker"``
     repeats one list for all of that speaker's utterances, ``"utterance"``
@@ -551,9 +560,12 @@ def main():
     parser.add_argument(
         "--speaker-choice-key",
         choices=("speaker", "utterance"),
-        default="speaker",
-        help="Key the candidate draw per speaker (default) or per utterance; "
-        "use utterance when train and heldout share the speaker inventory",
+        default="utterance",
+        help="Key the candidate draw per utterance (default, safe in both split "
+        "designs) or per speaker. Per speaker makes the candidate list a "
+        "per-speaker constant, which leaks the answer when train and heldout "
+        "share one speaker inventory; it is only for reproducing an older "
+        "manifest",
     )
     parser.add_argument("--min-reference-words", type=int, default=200)
     parser.add_argument("--concatenate", type=int, default=0)

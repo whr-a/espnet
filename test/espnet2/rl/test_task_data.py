@@ -549,3 +549,59 @@ def test_cli_requires_each_task_supervision(tmp_path, monkeypatch, task, missing
     with pytest.raises(SystemExit):
         task_data.main()
     assert not (tmp_path / "out.jsonl").exists()
+
+
+def test_the_default_candidate_draw_does_not_leak_the_answer(tmp_path):
+    """The candidate list must not become a function of the label.
+
+    Keying the draw per speaker gives every utterance of one speaker the same
+    list in the same order. That is harmless while training and heldout hold
+    different speakers, but a closed-set split that keeps one speaker
+    inventory and divides it by utterance then lets a model learn "this list
+    means that label" and never listen to the audio. Measured on LibriSpeech
+    dev-clean, 2674 records collapsed to 40 distinct lists with an injective
+    list-to-label map. So the default keys per utterance.
+    """
+    wav, _, utt2spk = corpus(tmp_path, per_speaker=4)
+    records = prepare_speaker_id_manifest(
+        wav, utt2spk, tmp_path / "safe.jsonl", choices=4, seed=42
+    )
+    audit = json.loads((tmp_path / "safe.jsonl.audit.json").read_text())
+    assert audit["choice_key"] == "utterance", "the safe mode must be the default"
+
+    by_speaker = {}
+    for record in records:
+        by_speaker.setdefault(record["speaker"], set()).add(
+            tuple(record["speaker_choices"])
+        )
+    # Every speaker has several utterances, and their lists must differ.
+    assert all(len(lists) > 1 for lists in by_speaker.values()), by_speaker
+    # And the list no longer determines the label.
+    label_of = {}
+    for record in records:
+        label_of.setdefault(tuple(record["speaker_choices"]), set()).add(
+            record["speaker"]
+        )
+    assert any(len(labels) > 1 for labels in label_of.values()), (
+        "at least one candidate list must be shared by two different speakers, "
+        "otherwise the list still identifies the answer"
+    )
+    speaker_id_reward.validate_sources(records)
+
+
+def test_the_leaky_mode_is_still_reachable_but_must_be_asked_for(tmp_path):
+    wav, _, utt2spk = corpus(tmp_path, per_speaker=4)
+    records = prepare_speaker_id_manifest(
+        wav, utt2spk, tmp_path / "legacy.jsonl", choices=4, seed=42,
+        choice_key="speaker",
+    )
+    by_speaker = {}
+    for record in records:
+        by_speaker.setdefault(record["speaker"], set()).add(
+            tuple(record["speaker_choices"])
+        )
+    # The old behaviour: one list per speaker, order included.
+    assert all(len(lists) == 1 for lists in by_speaker.values())
+    assert json.loads(
+        (tmp_path / "legacy.jsonl.audit.json").read_text()
+    )["choice_key"] == "speaker"
