@@ -1,0 +1,59 @@
+# Advanced: two-speaker ASR with Bagpiper, scored by concatenated
+# minimum-permutation WER. The manifest's `prompt` asks for one <spk0>/<spk1>
+# tag per speaker; the reward splits the response on those tags and takes the
+# best assignment to the references, so tag order never decides the score.
+# Two transcripts need about twice a single one's tokens, hence max_tokens
+# 2,048 on the think profile's geometry. Template only: no GPU acceptance.
+#
+# Prepare mixtures with:
+#   python -m espnet2.rl.task_data --task multispeaker_cpwer --wav-scp ...
+#     --text ... --utt2spk ... --overlap 0.3 --output data/rl/cpwer.jsonl
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/cpwer_train.jsonl
+output_dir: exp/rl_bagpiper_multispeaker_cpwer
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.rl.task_rewards:multispeaker_cpwer_reward
+device: cuda:0
+reference_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 8
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 1
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 2048
+score_tolerance: 0.03
+execution_mode: sync
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/cpwer_dev.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.45

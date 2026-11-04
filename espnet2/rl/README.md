@@ -102,6 +102,93 @@ OpusLM remains supported through `egs2/libritts/speechlm1` and its
 main template uses two GPUs; no accepted one-GPU profile is claimed. Existing
 configuration aliases resolve to the same files, not additional recipes.
 
+## More tasks: speaker, long-form and multi-speaker
+
+`espnet2/rl/task_rewards.py` adds four rewards that score generated text, so
+any family whose engine emits text can train them: OWSM, OpusLM, OpusLM
+Dialogue and Bagpiper. `espnet2/rl/task_data.py` prepares their manifests from
+ordinary Kaldi recipe inputs.
+
+| Task | Reward | Supervision each record carries | Recipes |
+| --- | --- | --- | --- |
+| Closed-set speaker identification | `speaker_id_reward`: correct label 1 + terminal format 0.1 | `speaker`, `speaker_choices` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_speaker_id_1gpu.yaml`, `rl_opuslm_speaker_id_2gpu_async.yaml`, `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_id.yaml` |
+| Long-form ASR | `longform_wer_reward`: `-min(WER, 1)` | `reference`, `min_reference_words` | `egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_1gpu.yaml`, `rl_miles_longform_wer_2gpu_async.yaml`, `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_longform_wer_1gpu.yaml`, `rl_opuslm_longform_wer_2gpu_async.yaml` |
+| Two-speaker ASR | `multispeaker_cpwer_reward`: `-min(cpWER, 1)` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer.yaml` |
+| Several tasks in one update | `mixed_task_reward` | `reward_task` per record | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_mixed_1gpu.yaml` |
+
+Every reward exposes `validate_sources(records)`, which `read_manifest` calls
+before any model, GPU or Ray actor starts, so a manifest that cannot supervise
+the configured task is rejected there rather than scored as a failure during
+training. The long-form contract also enforces the declared
+`min_reference_words`, so a short-utterance corpus cannot be trained as
+long-form by pointing a config at it.
+
+`speaker_id_reward` matches a label as whole words, so "1263" is not found
+inside "12634"; a response naming two candidates earns no accuracy, because it
+chose nobody. `longform_wer_reward` keeps WER as the reward and reports
+`length_ratio`, `truncated` and `repeat_rate` separately, which is what
+distinguishes the two long-form failures a single WER number hides: stopping
+early and looping. `multispeaker_cpwer_reward` splits the response on the
+speaker tags the prompt asked for, concatenates each speaker's turns in order
+and takes the permutation of streams to references with the fewest total word
+errors, normalizing by total reference words as CHiME's cpWER does; tag order
+therefore never decides the score, and text before the first tag is counted as
+unassigned rather than credited to the first speaker.
+
+`mixed_task_reward` trains several tasks in one update: each record declares
+its `reward_task` and is scored by that task's reward, named either as a
+built-in (`asr_wer`, `longform_wer`, `speaker_id`, `multispeaker_cpwer`) or as
+an explicit `module:callable`. Mixing reward scales is safe because GRPO
+normalizes inside a prompt group: the trainer passes the per-prompt `uid` to
+`compute_grpo_outcome_advantage`, which groups candidates by that id before
+Miles normalizes, so two tasks never share a baseline. Because
+`outcome_rewards` requires one fixed set of logged components, the mixed reward
+reports `share_<task>` and `sum_<task>` per task; one task's mean batch reward
+is `reward/sum_<task>` divided by `reward/share_<task>`.
+
+Prepare each task from its recipe's own data directory:
+
+```bash
+python -m espnet2.rl.task_data --task speaker_id \
+  --wav-scp data/train/wav.scp --utt2spk data/train/utt2spk \
+  --speaker-choices 4 --seed 42 --output data/rl/speaker_id_train.jsonl
+python -m espnet2.rl.task_data --task longform_wer \
+  --wav-scp data/train/wav.scp --text data/train/text \
+  --min-reference-words 200 --concatenate 8 \
+  --output data/rl/longform_train.jsonl
+python -m espnet2.rl.task_data --task multispeaker_cpwer \
+  --wav-scp data/train/wav.scp --text data/train/text \
+  --utt2spk data/train/utt2spk --overlap 0.3 \
+  --output data/rl/cpwer_train.jsonl
+```
+
+The speaker preparer draws a deterministic choice set per utterance from the
+corpus speaker inventory and writes the matching instruction into `prompt`,
+which Bagpiper reads directly. The long-form preparer optionally concatenates
+consecutive same-session utterances, which is how a long-form split is
+simulated from an utterance-segmented corpus; it keeps every source id and
+hash. The multi-speaker preparer pairs utterances across different speakers
+and mixes them at a declared overlap, rescaling only when the sum would clip.
+Each writes a `.audit.json` beside the manifest holding its inputs, their
+hashes and the row count.
+
+A family whose prompt is a prepared token matrix rather than text — OpusLM and
+OpusLM Dialogue — needs its instruction inside that matrix.
+`espnet2.rl.task_data.derive_task_manifest` attaches a new task's supervision
+to an already prepared manifest and appends tokenized instruction text to the
+primary stream, leaving `prompt_token_ids`' condition frames,
+`prompt_codec_mask` and `native_preparation` unchanged, so an audited codec/SSL
+preparation is reused instead of re-encoded. It records the appended tokens and
+the original frame count in `derived_prompt`, because the prompt is then no
+longer the one `native_preparation` alone describes.
+
+OWSM's prompt is its `<lang>`/`<task>`/`<notimestamps>` control symbols
+(`espnet2/s2t/rl/sglang_rollout.py`), not free-form text, so this family gets
+the long-form task and not the instruction-following speaker tasks. Bagpiper
+reads `source["prompt"]` before `source["question"]`
+(`espnet2/speechlm/model/speechlm/rl/bagpiper/integration.py`), so its
+templates take these manifests unchanged.
+
 ## Prepare independent data
 
 Use the selected recipe's ordinary data preparation to obtain real train and

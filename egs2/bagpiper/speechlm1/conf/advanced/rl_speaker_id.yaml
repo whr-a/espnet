@@ -1,0 +1,56 @@
+# Advanced: closed-set speaker identification with Bagpiper, whose prompt is
+# free-form text, so the instruction reaches the model directly from the
+# manifest's `prompt` field (integration.py reads
+# source["prompt"] before source["question"]). Geometry is the think profile's;
+# a speaker label needs far fewer tokens than a caption, so max_tokens is 256.
+# This is a template with a CPU-validated configuration and reward contract;
+# it has no GPU acceptance.
+family: bagpiper
+train_config: /path/to/released/train_config.yaml
+checkpoint: exp/sft/export/model.pt
+manifest: data/rl/speaker_id_train.jsonl
+output_dir: exp/rl_bagpiper_speaker_id
+rollout_backend: sglang
+adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
+exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
+sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
+reward_function: espnet2.rl.task_rewards:speaker_id_reward
+device: cuda:0
+reference_device: cpu
+train_gpus: '0'
+rollout_gpus: '0'
+rollout_python: python
+sglang_source: ../../../tools/sglang
+sglang_engine_kwargs:
+  attention_backend: fa3
+  context_length: 4096
+  max_running_requests: 8
+adapter_options:
+  reference_assets: exp/sft/hf_assets
+  native_attention: sdpa
+  codec_config_path: exp/sft/codec_config
+  audio_config_path: exp/sft/audio_config
+  audio_processor_path: exp/sft/audio_processor
+  tokenizer_mode: hf
+  score_chunk_size: 32
+  activation_cpu_offload: true
+dtype: bfloat16
+optimizer_device: cpu
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 1
+learning_rate: 1.0e-06
+kl_coef: 0.04
+max_tokens: 256
+score_tolerance: 0.03
+execution_mode: sync
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+eval_manifest: data/rl/speaker_id_dev.jsonl
+ppo_epochs: 1
+rollout_mem_fraction: 0.45

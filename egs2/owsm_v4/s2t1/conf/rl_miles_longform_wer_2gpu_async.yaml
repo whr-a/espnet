@@ -1,0 +1,59 @@
+# Long-form ASR on two H100s: GPU 0 trains while GPU 1 runs the rollout engine. OWSM v4 base is 102M, so the reference policy, Adam state and
+# scoring all stay on the GPU. The task differs from rl_miles_wer_1gpu in its
+# data and reward, not its geometry: references are at least 200 words, so
+# max_tokens rises from 1,536 to 3,072 and the engine runs fewer requests at
+# once. OWSM's prompt is its <lang>/<task>/<notimestamps> control symbols
+# only, which is why this family gets the long-form task and not the
+# instruction-following speaker tasks.
+#
+# Prepare the manifest with:
+#   python -m espnet2.rl.task_data --task longform_wer --wav-scp ... --text ...
+#     --min-reference-words 200 --concatenate 8 --output data/rl/longform.jsonl
+family: owsm
+model_version: v4
+execution_mode: disagg_async
+rollout_backend: sglang
+adapter_factory: espnet2.s2t.rl.policy:build_policy
+exporter: espnet2.s2t.rl.export:export_owsm
+sglang_engine: espnet2.s2t.rl.sglang_rollout:OWSMEngine
+reward_function: espnet2.rl.task_rewards:longform_wer_reward
+dtype: float32
+train_encoder: true
+seed: 42
+steps: 5
+warmup_steps: 1
+prompts_per_step: 32
+group_size: 8
+micro_batch_size: 4
+ppo_epochs: 1
+learning_rate: 1.0e-05
+weight_decay: 0.0
+max_grad_norm: 1.0
+clip_ratio: 0.2
+kl_coef: 0.01
+kl_type: k3
+normalize_advantage: true
+loss_agg_mode: token-mean
+max_tokens: 3072
+temperature: 1.0
+top_p: 1.0
+top_k: -1
+score_tolerance: 0.03
+language: <eng>
+task: <asr>
+predict_timestamps: false
+device: cuda:0
+reference_device: cuda:0
+optimizer_device: null
+distributed_timeout_minutes: 4320
+update_weights_interval: 1
+max_weight_staleness: 1
+tis_clip_low: 0.5
+tis_clip: 2.0
+train_gpus: '0'
+rollout_gpus: '1'
+rollout_mem_fraction: 0.6
+sglang_engine_kwargs:
+  attention_backend: torch_native
+  sampling_backend: pytorch
+  max_running_requests: 64
