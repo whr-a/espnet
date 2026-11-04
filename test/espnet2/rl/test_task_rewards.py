@@ -1,5 +1,7 @@
 """Speaker, long-form, multi-speaker and mixed-task rewards, and their contracts."""
 
+import json
+
 import pytest
 
 from espnet2.rl.data import collate_rollouts, read_manifest
@@ -163,6 +165,60 @@ def test_longform_contract_refuses_to_relabel_short_utterances(tmp_path):
         % " ".join(f"w{index}" for index in range(200))
     )
     assert len(read_manifest(good, config=config)) == 1
+
+
+def test_longform_contract_rejects_audio_past_its_declared_window(tmp_path):
+    """A reference-length floor alone does not make an item trainable.
+
+    OWSM's load_audio raises on audio longer than its window rather than
+    truncating, so a manifest packed by utterance count can die on every
+    sample at the first read. This catches it on CPU instead.
+    """
+    config = type(
+        "C", (), {"reward_function": "espnet2.rl.task_rewards:longform_wer_reward"}
+    )()
+    reference = " ".join(f"w{index}" for index in range(200))
+    path = tmp_path / "over.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "lf-1",
+                "reference": reference,
+                "min_reference_words": 200,
+                "audio_seconds": 114.15,
+                "max_audio_seconds": 30.0,
+            }
+        )
+        + "\n"
+    )
+    with pytest.raises(ValueError, match="exceed the audio window"):
+        read_manifest(path, config=config)
+
+    within = tmp_path / "within.jsonl"
+    within.write_text(
+        json.dumps(
+            {
+                "id": "lf-1",
+                "reference": reference,
+                "min_reference_words": 200,
+                "audio_seconds": 25.1,
+                "max_audio_seconds": 30.0,
+            }
+        )
+        + "\n"
+    )
+    assert len(read_manifest(within, config=config)) == 1
+
+    # A manifest from before the window was recorded still reads, so an
+    # in-flight run is not broken by this check; it only fails at first read.
+    legacy = tmp_path / "legacy.jsonl"
+    legacy.write_text(
+        json.dumps(
+            {"id": "lf-1", "reference": reference, "min_reference_words": 200}
+        )
+        + "\n"
+    )
+    assert len(read_manifest(legacy, config=config)) == 1
 
 
 # ------------------------------------------------------- multi-speaker cpWER

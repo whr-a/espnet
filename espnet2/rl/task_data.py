@@ -132,6 +132,24 @@ def prepare_speaker_id_manifest(
     )
 
 
+
+def audio_window_seconds(train_config):
+    """The model's audio window in seconds, from its own training YAML.
+
+    OWSM carries it as ``preprocessor_conf.speech_length``; a family that
+    declares no window returns None, and the caller must then say what the
+    limit is rather than assume there is none.
+    """
+    import yaml
+
+    recipe = yaml.safe_load(Path(train_config).read_text()) or {}
+    for section in ("preprocessor_conf", "frontend_conf"):
+        value = (recipe.get(section) or {}).get("speech_length")
+        if value is not None:
+            return float(value)
+    return None
+
+
 def session_of(identity):
     """The recording a Kaldi utterance id belongs to: everything but its index."""
     return identity.rsplit("-", 1)[0]
@@ -145,6 +163,8 @@ def prepare_longform_manifest(
     min_reference_words=200,
     concatenate=0,
     sample_rate=16000,
+    max_audio_seconds=None,
+    train_config=None,
 ):
     """Long-form ASR from Kaldi inputs, with an enforced reference-length floor.
 
@@ -154,6 +174,23 @@ def prepare_longform_manifest(
     written record declares ``min_reference_words``, and the reward's
     ``validate_sources`` rejects the manifest if any reference is shorter, so
     a short-utterance set cannot be trained as long-form by mistake.
+
+    The audio window is the second half of that contract, and this preparer
+    requires it: pass ``train_config`` (the model's own training YAML, whose
+    ``preprocessor_conf.speech_length`` is the window in seconds) or
+    ``max_audio_seconds`` outright. A default of "unknown" is what let a
+    caller build a set no model could read, so there is no such default. A reference-length floor alone does not make a
+    manifest trainable: a family whose frontend takes a fixed window rejects
+    audio longer than it outright. OWSM is one — its ``load_audio`` raises
+    ``"Audio has N samples, exceeding the OWSM window of M"``
+    (``espnet2/s2t/rl/policy.py``) rather than truncating, because long inputs
+    need explicit offline segmentation. Pass the window and this preparer
+    fails closed here, naming the longest item, instead of letting every
+    sample die one by one at the first read of training. For OWSM v4 the
+    window is ``preprocessor_conf.speech_length`` seconds from its training
+    YAML (30 s at 16 kHz), which caps a packed item at roughly 84 words, so a
+    200-word floor and a 30-second window cannot both be met: pack by
+    duration against the window and set the floor from the result.
     """
     import numpy as np
     import soundfile as sf
@@ -195,6 +232,37 @@ def prepare_longform_manifest(
                 f"No session has {concatenate} consecutive utterances to concatenate"
             )
         records = joined
+    if max_audio_seconds is None and train_config is not None:
+        max_audio_seconds = audio_window_seconds(train_config)
+    if max_audio_seconds is None:
+        raise ValueError(
+            "Long-form preparation needs the model's audio window: pass "
+            "train_config (its preprocessor_conf.speech_length) or "
+            "max_audio_seconds. A fixed-window frontend rejects longer audio "
+            "outright rather than truncating, so a manifest built without the "
+            "window can fail on every single sample at the first read of "
+            "training."
+        )
+    if max_audio_seconds <= 0:
+        raise ValueError("max_audio_seconds must be positive")
+    budget = float(max_audio_seconds)
+    over = []
+    for record in records:
+        seconds = sf.info(record["audio"]).frames / float(
+            record.get("sample_rate", sample_rate)
+        )
+        record["audio_seconds"] = seconds
+        record["max_audio_seconds"] = budget
+        if seconds > budget:
+            over.append((record["id"], round(seconds, 2)))
+    if over:
+        over.sort(key=lambda row: -row[1])
+        raise ValueError(
+            f"{len(over)} item(s) exceed the declared {budget} s audio window, "
+            f"longest first: {over[:3]}. A fixed-window frontend rejects these "
+            f"outright rather than truncating, so lower --concatenate or pack by "
+            f"duration against the window instead of by utterance count."
+        )
     short = [
         (record["id"], len(words(record["reference"])))
         for record in records
@@ -215,6 +283,7 @@ def prepare_longform_manifest(
             "task": "longform_wer",
             "min_reference_words": min_reference_words,
             "concatenate": concatenate,
+            "max_audio_seconds": max_audio_seconds,
             "sample_rate": sample_rate,
             "wav_scp": str(Path(wav_scp).resolve()),
             "text": str(Path(text).resolve()),
@@ -451,6 +520,19 @@ def main():
     parser.add_argument("--speaker-choices", type=int, default=4)
     parser.add_argument("--min-reference-words", type=int, default=200)
     parser.add_argument("--concatenate", type=int, default=0)
+    parser.add_argument(
+        "--train-config",
+        help="The model's training YAML; its preprocessor_conf.speech_length is "
+        "the audio window. Required for longform_wer unless --max-audio-seconds "
+        "is given.",
+    )
+    parser.add_argument(
+        "--max-audio-seconds",
+        type=float,
+        help="The model's audio window. A fixed-window frontend rejects longer "
+        "audio outright, so declaring it fails the manifest closed here. OWSM v4 "
+        "is 30 (preprocessor_conf.speech_length).",
+    )
     parser.add_argument("--overlap", type=float, default=0.3)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -475,6 +557,8 @@ def main():
             min_reference_words=args.min_reference_words,
             concatenate=args.concatenate,
             sample_rate=args.sample_rate,
+            max_audio_seconds=args.max_audio_seconds,
+            train_config=args.train_config,
         )
     else:
         if not args.text or not args.utt2spk:

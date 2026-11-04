@@ -10,6 +10,7 @@ import soundfile as sf
 from espnet2.rl import task_data
 from espnet2.rl.task_data import (
     append_text_instruction,
+    audio_window_seconds,
     derive_task_manifest,
     mix_two_speakers,
     prepare_longform_manifest,
@@ -119,7 +120,12 @@ def test_session_id_strips_only_the_utterance_index():
 def test_concatenation_builds_long_references_and_keeps_its_sources(tmp_path):
     wav, text, _ = corpus(tmp_path, per_speaker=4, sentences=12)
     records = prepare_longform_manifest(
-        wav, text, tmp_path / "lf.jsonl", min_reference_words=200, concatenate=2
+        wav,
+        text,
+        tmp_path / "lf.jsonl",
+        min_reference_words=200,
+        concatenate=2,
+        max_audio_seconds=30.0,
     )
     # Four utterances per speaker, taken two at a time, over four speakers.
     assert len(records) == 8
@@ -141,7 +147,11 @@ def test_longform_preparation_refuses_a_short_corpus(tmp_path):
     wav, text, _ = corpus(tmp_path, sentences=1)
     with pytest.raises(ValueError, match="shorter than the declared long-form floor"):
         prepare_longform_manifest(
-            wav, text, tmp_path / "lf.jsonl", min_reference_words=200
+            wav,
+            text,
+            tmp_path / "lf.jsonl",
+            min_reference_words=200,
+            max_audio_seconds=30.0,
         )
 
 
@@ -149,8 +159,83 @@ def test_longform_preparation_reports_when_no_session_is_long_enough(tmp_path):
     wav, text, _ = corpus(tmp_path, per_speaker=2, sentences=12)
     with pytest.raises(ValueError, match="consecutive utterances to concatenate"):
         prepare_longform_manifest(
-            wav, text, tmp_path / "lf.jsonl", min_reference_words=10, concatenate=3
+            wav,
+            text,
+            tmp_path / "lf.jsonl",
+            min_reference_words=10,
+            concatenate=3,
+            max_audio_seconds=30.0,
         )
+
+
+# ------------------------------------------------- the model's audio window
+
+
+def test_the_window_is_read_from_the_models_own_training_yaml(tmp_path):
+    recipe = tmp_path / "train.yaml"
+    recipe.write_text("preprocessor_conf:\n  speech_length: 30\n  fs: 16000\n")
+    assert audio_window_seconds(recipe) == 30.0
+    # A frontend may carry it instead.
+    other = tmp_path / "frontend.yaml"
+    other.write_text("frontend_conf:\n  speech_length: 20.5\n")
+    assert audio_window_seconds(other) == 20.5
+    # A family that declares no window says so, rather than implying none.
+    silent = tmp_path / "silent.yaml"
+    silent.write_text("corelm_conf:\n  hf_model_tag: x\n")
+    assert audio_window_seconds(silent) is None
+
+
+def test_longform_preparation_refuses_to_guess_the_window(tmp_path):
+    """The hole this closes: a preparer that does not know the model's window
+    can build a set whose every sample dies at the first read of training."""
+    wav, text, _ = corpus(tmp_path, per_speaker=2, sentences=12)
+    with pytest.raises(ValueError, match="needs the model's audio window"):
+        prepare_longform_manifest(
+            wav, text, tmp_path / "lf.jsonl", min_reference_words=10
+        )
+
+
+def test_longform_preparation_rejects_audio_past_the_window(tmp_path):
+    # One second per utterance, concatenated three at a time, against a
+    # two-second window: every packed item is a second too long.
+    wav, text, _ = corpus(tmp_path, per_speaker=3, seconds=1.0, sentences=12)
+    with pytest.raises(ValueError, match="exceed the declared 2.0 s audio window"):
+        prepare_longform_manifest(
+            wav,
+            text,
+            tmp_path / "lf.jsonl",
+            min_reference_words=10,
+            concatenate=3,
+            max_audio_seconds=2.0,
+        )
+
+
+def test_longform_records_carry_the_window_they_were_built_against(tmp_path):
+    wav, text, _ = corpus(tmp_path, per_speaker=4, seconds=1.0, sentences=12)
+    records = prepare_longform_manifest(
+        wav,
+        text,
+        tmp_path / "lf.jsonl",
+        min_reference_words=10,
+        concatenate=2,
+        max_audio_seconds=30.0,
+    )
+    for record in records:
+        assert record["max_audio_seconds"] == 30.0
+        assert record["audio_seconds"] == pytest.approx(2.0, abs=0.01)
+    longform_wer_reward.validate_sources(records)
+    audit = json.loads((tmp_path / "lf.jsonl.audit.json").read_text())
+    assert audit["max_audio_seconds"] == 30.0
+
+
+def test_a_training_yaml_supplies_the_window_without_repeating_it(tmp_path):
+    recipe = tmp_path / "train.yaml"
+    recipe.write_text("preprocessor_conf:\n  speech_length: 30\n")
+    wav, text, _ = corpus(tmp_path, per_speaker=2, seconds=1.0, sentences=12)
+    records = prepare_longform_manifest(
+        wav, text, tmp_path / "lf.jsonl", min_reference_words=10, train_config=recipe
+    )
+    assert all(record["max_audio_seconds"] == 30.0 for record in records)
 
 
 # ------------------------------------------------------- multi-speaker mixing
@@ -329,7 +414,16 @@ def test_supervision_may_name_each_records_own_task(tmp_path):
         ("speaker_id", ["--utt2spk", "utt2spk", "--speaker-choices", "3"]),
         (
             "longform_wer",
-            ["--text", "text", "--min-reference-words", "20", "--concatenate", "2"],
+            [
+                "--text",
+                "text",
+                "--min-reference-words",
+                "20",
+                "--concatenate",
+                "2",
+                "--max-audio-seconds",
+                "30",
+            ],
         ),
         ("multispeaker_cpwer", ["--text", "text", "--utt2spk", "utt2spk"]),
     ],

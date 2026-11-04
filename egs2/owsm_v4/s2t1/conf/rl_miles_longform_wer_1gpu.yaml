@@ -7,9 +7,26 @@
 # only, which is why this family gets the long-form task and not the
 # instruction-following speaker tasks.
 #
-# Prepare the manifest with:
-#   python -m espnet2.rl.task_data --task longform_wer --wav-scp ... --text ...
-#     --min-reference-words 200 --concatenate 8 --output data/rl/longform.jsonl
+# CORRECTION (2026-11-04, measured): OWSM's frontend takes a FIXED 30-second
+# window -- preprocessor_conf.speech_length: 30 at fs 16000 in its training
+# YAML -- and espnet2/s2t/rl/policy.py's load_audio RAISES on longer audio
+# ("Audio has N samples, exceeding the OWSM window of 480000") instead of
+# truncating, because long inputs need explicit offline segmentation. So
+# --concatenate 8 on LibriSpeech (12.75 s/utterance measured, 114 s packed)
+# makes every sample die at the first read, and a 200-word floor is
+# unreachable: 30 seconds caps a reference at roughly 84 words. Pack by
+# DURATION against the window and set the floor from the result.
+#
+# Prepare the manifest with (the preparer now requires the window and checks
+# every item against it, so this fails in seconds rather than on the GPU):
+#   python -m espnet2.rl.task_data --task longform_wer --wav-scp ... --text ... \
+#     --train-config /path/to/owsm/local_config.yaml \
+#     --min-reference-words 50 --concatenate 2 --output data/rl/longform.jsonl
+#
+# A reference that fits a 30-second window is about 70 words, roughly 120 text
+# tokens, so max_tokens 1024 leaves generous headroom; 3072 was sized for the
+# unreachable 200-word target. True long-form RL needs a family without a
+# fixed window (Bagpiper/OpusLM) or explicit segmentation -- see the report.
 family: owsm
 model_version: v4
 execution_mode: sync
@@ -35,7 +52,7 @@ kl_coef: 0.01
 kl_type: k3
 normalize_advantage: true
 loss_agg_mode: token-mean
-max_tokens: 3072
+max_tokens: 1024
 temperature: 1.0
 top_p: 1.0
 top_k: -1

@@ -154,13 +154,35 @@ python -m espnet2.rl.task_data --task speaker_id \
   --speaker-choices 4 --seed 42 --output data/rl/speaker_id_train.jsonl
 python -m espnet2.rl.task_data --task longform_wer \
   --wav-scp data/train/wav.scp --text data/train/text \
-  --min-reference-words 200 --concatenate 8 \
+  --train-config /path/to/model/train.yaml \
+  --min-reference-words 50 --concatenate 2 \
   --output data/rl/longform_train.jsonl
 python -m espnet2.rl.task_data --task multispeaker_cpwer \
   --wav-scp data/train/wav.scp --text data/train/text \
   --utt2spk data/train/utt2spk --overlap 0.3 \
   --output data/rl/cpwer_train.jsonl
 ```
+
+Long-form preparation requires the model's audio window, and that is not a
+formality. A family whose frontend takes a fixed window rejects longer audio
+outright rather than truncating: OWSM's `load_audio`
+(`espnet2/s2t/rl/policy.py`) raises `Audio has N samples, exceeding the OWSM
+window of M`, so a set packed by utterance count can die on every single
+sample at the first read of training. Pass `--train-config` (the window is
+`preprocessor_conf.speech_length`) or `--max-audio-seconds`; the preparer
+measures every item, records the window in each record, and fails closed
+naming the longest. `longform_wer_reward.validate_sources` re-checks it when
+a record declares it, so `read_manifest` rejects such a manifest before any
+model, GPU or Ray actor starts.
+
+Measured on OWSM v4 and LibriSpeech: the window is 30 seconds, utterances
+average 12.75 s, so `--concatenate 8` produces 114-second items that cannot
+be read, and a 200-word floor is unreachable — 30 seconds caps a reference at
+roughly 84 words. Packing two or three utterances per item reaches about 70
+words, which is still 2-3x the single-utterance baseline and is enough to
+expose the early-stop and looping failures this reward separates. Genuinely
+long-form audio needs a family without a fixed window, or explicit offline
+segmentation; that is not what this reward alone buys.
 
 The speaker preparer draws a deterministic choice set per utterance from the
 corpus speaker inventory and writes the matching instruction into `prompt`,

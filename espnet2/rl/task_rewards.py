@@ -212,7 +212,22 @@ def longform_wer_reward(source, generation):
 
 
 def _validate_longform(records):
+    """Reject a long-form manifest on CPU, before any model or GPU starts.
+
+    Two things make a long-form item trainable, and a reference-length floor
+    is only one of them. The other is the model's audio window: a family whose
+    frontend takes a fixed window rejects longer audio outright — OWSM's
+    ``load_audio`` raises rather than truncating — so a manifest packed by
+    utterance count can die on every single sample at the first read of
+    training. ``espnet2.rl.task_data.prepare_longform_manifest`` therefore
+    records the window it was built against, and this checks the audio against
+    it here, where the error costs seconds instead of a GPU allocation.
+
+    A record that declares no window is still accepted, so manifests prepared
+    before that field existed keep working; those only fail at the first read.
+    """
     require_fields(records, "longform_wer", ("reference", "min_reference_words"))
+    over = []
     for record in records:
         floor = int(record["min_reference_words"])
         actual = len(words(record["reference"]))
@@ -224,6 +239,30 @@ def _validate_longform(records):
                 f"declared long-form floor {floor}. Prepare a long-form split "
                 f"rather than relabeling short utterances."
             )
+        budget = record.get("max_audio_seconds")
+        if budget is None:
+            continue
+        if float(budget) <= 0:
+            raise ValueError(
+                f"Record {record['id']!r} declares a nonpositive audio window"
+            )
+        seconds = record.get("audio_seconds")
+        if seconds is None and record.get("audio"):
+            import soundfile
+
+            seconds = soundfile.info(record["audio"]).frames / float(
+                record.get("sample_rate", 16000)
+            )
+        if seconds is not None and float(seconds) > float(budget):
+            over.append((record["id"], round(float(seconds), 2), float(budget)))
+    if over:
+        over.sort(key=lambda row: -row[1])
+        raise ValueError(
+            f"{len(over)} record(s) exceed the audio window their own manifest "
+            f"declares, longest first: {over[:3]}. A fixed-window frontend "
+            f"rejects these at the first read rather than truncating, so repack "
+            f"by duration against the window."
+        )
 
 
 longform_wer_reward.validate_sources = _validate_longform
