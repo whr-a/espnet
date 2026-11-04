@@ -73,12 +73,18 @@ def _write(output, records, audit):
     return records
 
 
-def speaker_choice_set(speaker, inventory, size, seed):
+def speaker_choice_set(speaker, inventory, size, seed, key=None):
     """The true speaker plus deterministic distractors, in a seeded order.
 
-    The draw is keyed by the utterance's own speaker and the seed, so the same
-    inventory always yields the same choices, and the answer is not biased to
-    one position.
+    ``key`` is what the draw is keyed on besides the seed, and it decides what
+    the candidate list can leak. Keyed on the speaker (the default), every
+    utterance of one speaker is offered the same list in the same order; that
+    is harmless while training and heldout hold *different* speakers, but a
+    closed-set split that keeps one speaker inventory and divides it by
+    utterance then makes the list a function of the answer, so a model can
+    learn "this list means that label" and never listen to the audio. Pass the
+    utterance id to key the draw per utterance and close that channel; the
+    shuffle uses the same generator, so the order stops leaking too.
     """
     others = sorted(set(inventory) - {speaker})
     if len(others) + 1 < size:
@@ -86,16 +92,33 @@ def speaker_choice_set(speaker, inventory, size, seed):
             f"A {size}-way speaker choice set needs {size} distinct speakers; the "
             f"inventory has {len(others) + 1}"
         )
-    generator = random.Random(f"{seed}:{speaker}")
+    generator = random.Random(f"{seed}:{speaker if key is None else key}")
     choices = [speaker, *generator.sample(others, size - 1)]
     generator.shuffle(choices)
     return choices
 
 
 def prepare_speaker_id_manifest(
-    wav_scp, utt2spk, output, *, choices=4, seed=42, sample_rate=16000, prompt=None
+    wav_scp,
+    utt2spk,
+    output,
+    *,
+    choices=4,
+    seed=42,
+    sample_rate=16000,
+    prompt=None,
+    choice_key="speaker",
 ):
-    """Closed-set speaker identification from Kaldi ``wav.scp`` and ``utt2spk``."""
+    """Closed-set speaker identification from Kaldi ``wav.scp`` and ``utt2spk``.
+
+    ``choice_key`` selects what the candidate draw is keyed on: ``"speaker"``
+    repeats one list for all of that speaker's utterances, ``"utterance"``
+    draws a fresh list per utterance. Use ``"utterance"`` whenever training and
+    heldout share the speaker inventory, or the candidate list identifies the
+    answer on its own -- see ``speaker_choice_set``.
+    """
+    if choice_key not in ("speaker", "utterance"):
+        raise ValueError("choice_key must be speaker or utterance")
     speakers = _kaldi(utt2spk)
     records = materialize_kaldi_audio(
         wav_scp, utt2spk, Path(output).parent / (Path(output).stem + "_audio"), sample_rate
@@ -104,7 +127,13 @@ def prepare_speaker_id_manifest(
     template = prompt or SPEAKER_PROMPT
     for record in records:
         speaker = speakers[record["id"]]
-        options = speaker_choice_set(speaker, inventory, choices, seed)
+        options = speaker_choice_set(
+            speaker,
+            inventory,
+            choices,
+            seed,
+            None if choice_key == "speaker" else record["id"],
+        )
         # materialize_kaldi_audio joined utt2spk as its reference column; the
         # speaker label is supervision, so name it as such and drop the alias.
         record.pop("reference")
@@ -120,6 +149,7 @@ def prepare_speaker_id_manifest(
         {
             "task": "speaker_id",
             "choices": choices,
+            "choice_key": choice_key,
             "seed": seed,
             "sample_rate": sample_rate,
             "speakers": len(inventory),
@@ -449,6 +479,13 @@ def main():
     parser.add_argument("--utt2spk")
     parser.add_argument("--sample-rate", type=int, default=16000)
     parser.add_argument("--speaker-choices", type=int, default=4)
+    parser.add_argument(
+        "--speaker-choice-key",
+        choices=("speaker", "utterance"),
+        default="speaker",
+        help="Key the candidate draw per speaker (default) or per utterance; "
+        "use utterance when train and heldout share the speaker inventory",
+    )
     parser.add_argument("--min-reference-words", type=int, default=200)
     parser.add_argument("--concatenate", type=int, default=0)
     parser.add_argument("--overlap", type=float, default=0.3)
@@ -464,6 +501,7 @@ def main():
             choices=args.speaker_choices,
             seed=args.seed,
             sample_rate=args.sample_rate,
+            choice_key=args.speaker_choice_key,
         )
     elif args.task == "longform_wer":
         if not args.text:

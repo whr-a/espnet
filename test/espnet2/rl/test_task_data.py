@@ -72,6 +72,79 @@ def test_speaker_choices_are_seeded_and_always_contain_the_true_speaker():
         speaker_choice_set("spkA", ("spkA", "spkB"), 4, 42)
 
 
+def test_speaker_choices_keyed_per_speaker_identify_the_answer_on_their_own():
+    """The default draw repeats one list per speaker, so the list leaks the label.
+
+    Harmless when train and heldout hold different speakers; fatal for a split
+    that keeps one inventory and divides it by utterance, which is why
+    choice_key exists.
+    """
+    lists = {
+        speaker: speaker_choice_set(speaker, SPEAKERS, 3, 42) for speaker in SPEAKERS
+    }
+    # One ordered list per speaker, and the map from list to label is injective.
+    assert len({tuple(value) for value in lists.values()}) == len(SPEAKERS)
+    # Two utterances of one speaker would be offered exactly the same list.
+    assert speaker_choice_set("spkA", SPEAKERS, 3, 42, None) == lists["spkA"]
+
+
+def test_speaker_choices_keyed_per_utterance_stop_leaking_the_answer():
+    first = speaker_choice_set("spkA", SPEAKERS, 3, 42, "spkA-utt-1")
+    second = speaker_choice_set("spkA", SPEAKERS, 3, 42, "spkA-utt-2")
+    for options in (first, second):
+        assert "spkA" in options and len(options) == 3
+    # Same speaker, different utterance: a different list, so the list alone no
+    # longer names the answer.
+    assert first != second
+    # Still deterministic for a given utterance.
+    assert speaker_choice_set("spkA", SPEAKERS, 3, 42, "spkA-utt-1") == first
+
+
+def test_speaker_manifest_can_key_its_choices_per_utterance(tmp_path):
+    """Contrast the two keyings on one corpus: only "speaker" repeats a list."""
+    wav, _, utt2spk = corpus(tmp_path, per_speaker=5)
+
+    def lists_per_speaker(name, **kwargs):
+        records = prepare_speaker_id_manifest(
+            wav, utt2spk, tmp_path / name, choices=3, seed=42, **kwargs
+        )
+        speaker_id_reward.validate_sources(records)
+        seen = {}
+        for record in records:
+            assert record["speaker"] in record["speaker_choices"]
+            for choice in record["speaker_choices"]:
+                assert choice in record["prompt"]
+            seen.setdefault(record["speaker"], set()).add(
+                tuple(record["speaker_choices"])
+            )
+        return seen
+
+    per_speaker = lists_per_speaker("by_speaker.jsonl", choice_key="speaker")
+    per_utterance = lists_per_speaker("by_utt.jsonl", choice_key="utterance")
+    # Keyed on the speaker, all five utterances share one ordered list, so the
+    # list names the answer by itself.
+    assert all(len(value) == 1 for value in per_speaker.values())
+    # Keyed on the utterance the lists vary within a speaker. A tiny inventory
+    # lets two draws coincide, so require variation rather than five distinct.
+    assert any(len(value) > 1 for value in per_utterance.values())
+    assert sum(len(value) for value in per_utterance.values()) > sum(
+        len(value) for value in per_speaker.values()
+    )
+    audit = json.loads((tmp_path / "by_utt.jsonl.audit.json").read_text())
+    assert audit["choice_key"] == "utterance"
+    assert json.loads((tmp_path / "by_speaker.jsonl.audit.json").read_text())[
+        "choice_key"
+    ] == "speaker"
+
+
+def test_speaker_manifest_rejects_an_unknown_choice_key(tmp_path):
+    wav, _, utt2spk = corpus(tmp_path)
+    with pytest.raises(ValueError, match="choice_key must be speaker or utterance"):
+        prepare_speaker_id_manifest(
+            wav, utt2spk, tmp_path / "spk.jsonl", choice_key="chapter"
+        )
+
+
 def test_speaker_manifest_carries_its_own_prompt_and_passes_the_reward_contract(tmp_path):
     wav, _, utt2spk = corpus(tmp_path)
     records = prepare_speaker_id_manifest(
