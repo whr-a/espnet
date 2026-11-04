@@ -549,3 +549,54 @@ def _validate_mixed(records):
 
 
 mixed_task_reward.validate_sources = _validate_mixed
+
+
+# ------------------------------------- multi-speaker cpWER, shaped for a
+# ------------------------------------- policy that does not yet comply
+
+#: How much of the reward the two shaping terms may move. cpWER spans 1.0, so
+#: 0.25 each keeps a real transcription gain worth more than any amount of
+#: tagging or brevity: a policy cannot buy a better reward by labelling an
+#: unchanged caption.
+CPWER_SHAPING_WEIGHT = 0.25
+
+
+def multispeaker_cpwer_shaped_reward(source, generation):
+    """cpWER plus the two unsaturated terms a non-compliant policy needs.
+
+    ``multispeaker_cpwer_reward`` returns ``-min(cpWER, 1)``, which is flat
+    everywhere the response is worse than silence. That is where an audio
+    *captioner* policy starts: it describes the recording instead of
+    transcribing it, so every candidate is worse than silence, every reward is
+    exactly -1, and ``west_group_advantages``
+    (:mod:`espnet2.rl.training_objectives`) subtracts the group mean and
+    divides by the group standard deviation -- the policy gradient is then
+    identically zero and no number of updates can move the policy.
+
+    This reward keeps cpWER as the objective and adds two terms that still
+    rank a group of uniformly bad answers: ``tag_format``, which is 1 only
+    when the response stated each requested tag exactly once, and a brevity
+    term against words that no speaker was credited with, measured against the
+    reference length. Both are bounded by ``CPWER_SHAPING_WEIGHT`` so neither
+    can outrank a genuine cpWER improvement. The components are reported
+    separately so "learned to tag without transcribing better" is visible
+    rather than hidden inside one scalar.
+    """
+    base = multispeaker_cpwer_reward(source, generation)
+    expected = max(1, sum(len(words(reference)) for reference in source["references"]))
+    verbosity = min(1.0, base["unassigned_words"] / expected)
+    return {
+        **base,
+        "reward": (
+            -min(base["cpwer"], 1.0)
+            + CPWER_SHAPING_WEIGHT * base["tag_format"]
+            - CPWER_SHAPING_WEIGHT * verbosity
+        ),
+        "cpwer_reward": -min(base["cpwer"], 1.0),
+        "format_term": CPWER_SHAPING_WEIGHT * base["tag_format"],
+        "verbosity_term": -CPWER_SHAPING_WEIGHT * verbosity,
+        "unassigned_word_ratio": verbosity,
+    }
+
+
+multispeaker_cpwer_shaped_reward.validate_sources = _validate_multispeaker
