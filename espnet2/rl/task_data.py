@@ -150,6 +150,9 @@ def prepare_speaker_id_manifest(
             reward_task="speaker_id",
             speaker=speaker,
             speaker_choices=options,
+            # The validator reads this to tell an acknowledged per-speaker draw
+            # from a manifest that leaks the answer by accident.
+            choice_key=choice_key,
             prompt=template.format(choices=", ".join(options)),
         )
     return _write(

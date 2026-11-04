@@ -437,3 +437,73 @@ def test_mixed_rewards_reach_the_trainer_through_outcome_rewards():
     assert token_rewards[0].tolist() == [0.0, pytest.approx(1.1)]
     assert metrics["reward/share_speaker_id"] == pytest.approx(0.5)
     assert metrics["reward/sum_longform_wer"] == pytest.approx(-0.25)
+
+
+def test_speaker_contract_rejects_a_candidate_list_that_leaks_the_label(tmp_path):
+    """The gap this closes: no reward can see how the data was built.
+
+    A per-speaker-constant candidate list makes the list a function of the
+    label whenever training and heldout share one speaker inventory, which is
+    the only closed-set split a disjoint-speaker corpus allows.
+    """
+    config = type(
+        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+    )()
+
+    def manifest(name, records):
+        path = tmp_path / name
+        path.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return path
+
+    leaky = [
+        {
+            "id": f"{speaker}-c-{index:04d}",
+            "speaker": speaker,
+            # same list, same order, for every utterance of this speaker
+            "speaker_choices": ["A", "B"] if speaker == "A" else ["B", "A"],
+        }
+        for speaker in ("A", "B")
+        for index in range(3)
+    ]
+    with pytest.raises(ValueError, match="identifies the answer"):
+        read_manifest(manifest("leaky.jsonl", leaky), config=config)
+
+    # Declaring the per-speaker draw is an acknowledged choice, not an accident.
+    acknowledged = [{**r, "choice_key": "speaker"} for r in leaky]
+    assert len(read_manifest(manifest("ack.jsonl", acknowledged), config=config)) == 6
+
+    # Varying the list per utterance closes the channel.
+    safe = [
+        {**r, "speaker_choices": (["A", "B"] if i % 2 else ["B", "A"])}
+        for i, r in enumerate(leaky)
+    ]
+    assert len(read_manifest(manifest("safe.jsonl", safe), config=config)) == 6
+
+    # One utterance per speaker cannot leak anything, so it must still pass.
+    single = [
+        {"id": "A-c-0000", "speaker": "A", "speaker_choices": ["A", "B"]},
+        {"id": "B-c-0000", "speaker": "B", "speaker_choices": ["B", "A"]},
+    ]
+    assert len(read_manifest(manifest("single.jsonl", single), config=config)) == 2
+
+
+def test_a_single_speaker_manifest_is_not_a_leak(tmp_path):
+    """With one label there is nothing for the candidate list to distinguish."""
+    config = type(
+        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+    )()
+    path = tmp_path / "one.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"374-c-{index:04d}",
+                    "speaker": "374",
+                    "speaker_choices": ["374", "2277"],
+                }
+            )
+            + "\n"
+            for index in range(3)
+        )
+    )
+    assert len(read_manifest(path, config=config)) == 3

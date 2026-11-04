@@ -153,9 +153,52 @@ def speaker_id_reward(source, generation):
     }
 
 
-speaker_id_reward.validate_sources = lambda records: require_fields(
-    records, "speaker_id", ("speaker", "speaker_choices")
-)
+def _validate_speaker_id(records):
+    """Reject a speaker-id manifest whose candidate list leaks the answer.
+
+    The contract used to check only that the fields were present and that the
+    label was one of the choices. It missed the failure that actually voids a
+    result: if the candidate list is a per-speaker constant, then in a
+    closed-set split that keeps one speaker inventory and divides it by
+    utterance, the list becomes a function of the label and a model can learn
+    "this list means that label" without listening. Measured on LibriSpeech
+    dev-clean, 2674 records collapsed to 40 distinct lists with an injective
+    list-to-label map.
+
+    No reward function can catch this, because a reward sees the model's answer
+    and not how the data was built. So it is checked here, where
+    ``read_manifest`` runs it before any model, GPU or Ray actor starts.
+
+    A manifest that explicitly declares ``choice_key: "speaker"`` asked for
+    that draw knowingly and is allowed through; one that does not declare it
+    and still shows per-speaker-constant lists is the accidental case.
+    """
+    require_fields(records, "speaker_id", ("speaker", "speaker_choices"))
+    declared = {record.get("choice_key") for record in records}
+    if declared == {"speaker"}:
+        return
+    lists = {}
+    for record in records:
+        lists.setdefault(record["speaker"], set()).add(
+            tuple(record["speaker_choices"])
+        )
+    constant = [name for name, seen in lists.items() if len(seen) == 1]
+    repeated = [name for name in constant if sum(
+        1 for record in records if record["speaker"] == name) > 1]
+    # One speaker cannot be leaked: with a single label there is nothing for
+    # the list to distinguish.
+    if len(lists) > 1 and repeated and len(repeated) == len(lists):
+        raise ValueError(
+            f"Every utterance of each of the {len(repeated)} speakers is offered "
+            f"the same candidate list, so the list identifies the answer and a "
+            f"model can score without listening. Regenerate with "
+            f"espnet2.rl.task_data's default choice_key=\"utterance\", or, if a "
+            f"per-speaker draw is intended, say so by stamping "
+            f"choice_key=\"speaker\" into the records."
+        )
+
+
+speaker_id_reward.validate_sources = _validate_speaker_id
 
 
 # ---------------------------------------------------------------- long-form
