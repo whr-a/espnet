@@ -3,12 +3,9 @@
 import pytest
 
 from espnet2.rl.data import collate_rollouts
-from espnet2.rl.rewards import (
-    outcome_rewards,
-    word_error_rate,
-    word_error_reward,
-    words,
-)
+from espnet2.rl.rewards import outcome_rewards
+from espnet2.rl.rewards.asr import word_error_reward
+from espnet2.rl.rewards.text import word_error_rate, words
 
 
 def test_punctuation_and_case_are_not_word_errors():

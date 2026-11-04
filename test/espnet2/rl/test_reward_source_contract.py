@@ -46,10 +46,10 @@ def test_generic_optional_reward_hook_runs_only_when_configured(tmp_path, monkey
         return 0
 
     reward.validate_sources = observed.append
-    monkeypatch.setattr(data, "resolve_callable", lambda name: reward)
+    monkeypatch.setattr(data, "get_reward", lambda name: reward)
     records = data.read_manifest(path, config=SimpleNamespace(reward_function="hook"))
     assert observed == [records]
-    monkeypatch.setattr(data, "resolve_callable", forbidden)
+    monkeypatch.setattr(data, "get_reward", forbidden)
     assert data.read_manifest(path) == records
     assert (
         data.read_manifest(path, config=SimpleNamespace(reward_function=None))

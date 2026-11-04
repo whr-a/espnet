@@ -12,7 +12,7 @@ import torch
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.engine import fit_context
-from espnet2.rl.rewards import edit_distance, words
+from espnet2.rl.rewards.text import edit_distance, words
 from espnet2.rl.rollout import CheckpointRollout, sha256
 from espnet2.rl.types import drift_gate
 from espnet2.rl.utils import build_policy

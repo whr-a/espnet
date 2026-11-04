@@ -13,7 +13,6 @@ import torch
 import yaml
 
 from espnet2.rl.engine import SGLangRolloutEngine, engine_kwargs
-from espnet2.rl.rewards import word_error_rate
 
 # The released text tokenizer, copied into every export with config.json.
 TOKENIZER_FILES = (
@@ -371,17 +370,6 @@ class OpusLMEngine(SGLangRolloutEngine):
                 }
             )
         return generations
-
-
-def asr_wer_reward(source, generation):
-    """Negative WER of the sampled text, normalized as OpusLM evaluation is."""
-    if source.get("mode", "audio_text") not in (
-        "audio_text",
-        "text_text",
-        "text_dialogue",
-    ):
-        raise ValueError("Opus ASR WER requires text output")
-    return -word_error_rate(source["reference"], generation["text"])
 
 
 def tts_prompt(text_ids, metadata, task_token=None):

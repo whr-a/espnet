@@ -20,7 +20,7 @@ output_dir: exp/rl_opuslm_longform_wer_2gpu_async
 adapter_factory: espnet2.speechlm.rl.policy:factory
 exporter: espnet2.speechlm.rl.integration:exporter
 sglang_engine: espnet2.speechlm.rl.integration:OpusLMEngine
-reward_function: espnet2.rl.task_rewards:longform_wer_reward
+reward_function: longform_wer
 sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
 dtype: float32

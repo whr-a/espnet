@@ -34,7 +34,7 @@ rollout_backend: sglang
 adapter_factory: espnet2.s2t.rl.policy:build_policy
 exporter: espnet2.s2t.rl.export:export_owsm
 sglang_engine: espnet2.s2t.rl.sglang_rollout:OWSMEngine
-reward_function: espnet2.rl.task_rewards:longform_wer_reward
+reward_function: longform_wer
 dtype: float32
 train_encoder: true
 seed: 42

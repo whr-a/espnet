@@ -27,7 +27,7 @@ import torch
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts, read_manifest
 from espnet2.rl.engine import fit_context
-from espnet2.rl.rewards import edit_distance, words
+from espnet2.rl.rewards.text import ANSWER, edit_distance, words
 from espnet2.rl.rollout import read_json, sha256, subprocess_environment, write_json
 from espnet2.rl.types import (
     drift_gate,
@@ -44,7 +44,7 @@ from .qa_contract import (
     parse_native_qa_answer,
 )
 from .qa_legacy_eval import parse_prediction
-from .rewards import ANSWER, ASRWERReward, mmau_answer, mmau_match, qa_answer
+from .rewards import ASRWERReward, mmau_answer, mmau_match, qa_answer
 
 
 def validate_qa_protocol(sources, qa_protocol):

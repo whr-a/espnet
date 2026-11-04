@@ -56,7 +56,7 @@ rollout_backend: sglang
 adapter_factory: espnet2.speechlm.model.speechlm.rl.bagpiper.policy:factory
 exporter: espnet2.speechlm.model.speechlm.rl.bagpiper.integration:exporter
 sglang_engine: espnet2.speechlm.model.speechlm.rl.bagpiper.rollout:BagpiperEngine
-reward_function: espnet2.rl.task_rewards:speaker_verification_reward
+reward_function: speaker_verification
 device: cuda:0
 reference_device: cpu
 train_gpus: '0'

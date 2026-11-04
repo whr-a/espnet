@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Auditable manifests for the task rewards in :mod:`espnet2.rl.task_rewards`.
+"""Auditable manifests for the task rewards in :mod:`espnet2.rl.rewards`.
 
 Three preparers read ordinary Kaldi recipe inputs and write a manifest whose
 records carry exactly the supervision their reward declares:
@@ -37,7 +37,7 @@ import random
 from pathlib import Path
 
 from .prepare import _kaldi, materialize_kaldi_audio
-from .rewards import words
+from .rewards.text import words
 
 SPEAKER_PROMPT = (
     "Listen to the audio and identify who is speaking. "

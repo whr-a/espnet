@@ -9,13 +9,10 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
-from espnet2.rl.rewards import word_error_rate
+from espnet2.rl.rewards.asr import word_error_reward
+from espnet2.rl.rewards.text import word_error_rate
 from espnet2.speechlm.rl.evaluate import summarize_wer
-from espnet2.speechlm.rl.integration import (
-    TOKENIZER_FILES,
-    OpusLMEngine,
-    asr_wer_reward,
-)
+from espnet2.speechlm.rl.integration import TOKENIZER_FILES, OpusLMEngine
 
 NQ, VOCAB, TEXT = 9, 100, 90
 METADATA = {
@@ -279,9 +276,9 @@ def test_requests_and_running_batches_must_fit_the_kv_pool(tmp_path, monkeypatch
 
 def test_training_reward_normalizes_words_as_evaluation_does():
     source = {"id": "u", "reference": "HELLO WORLD AGAIN", "mode": "audio_text"}
-    assert asr_wer_reward(source, {"text": "Hello, world... again!"}) == 0
+    assert word_error_reward(source, {"text": "Hello, world... again!"}) == 0
     hypotheses = ["Hello, word again.", "hello"]
-    rewards = [asr_wer_reward(source, {"text": text}) for text in hypotheses]
+    rewards = [word_error_reward(source, {"text": text}) for text in hypotheses]
     assert rewards == [
         -word_error_rate(source["reference"], text) for text in hypotheses
     ]
@@ -297,5 +294,5 @@ def test_training_reward_normalizes_words_as_evaluation_does():
     ]
     records = summarize_wer([source], generations, 2)["records"]
     assert [-row["wer"] for row in records] == pytest.approx(rewards)
-    with pytest.raises(ValueError, match="text output"):
-        asr_wer_reward({**source, "mode": "audio_audio"}, {"text": ""})
+    with pytest.raises(ValueError, match="scores generated text"):
+        word_error_reward({**source, "mode": "audio_audio"}, {"text": ""})

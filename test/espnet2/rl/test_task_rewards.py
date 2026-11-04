@@ -5,20 +5,20 @@ import json
 import pytest
 
 from espnet2.rl.data import collate_rollouts, read_manifest
-from espnet2.rl.rewards import outcome_rewards
-from espnet2.rl.task_rewards import (
-    BUILTIN_TASKS,
+from espnet2.rl.rewards import REWARDS, get_reward, outcome_rewards
+from espnet2.rl.rewards.asr import longform_wer_reward, repeated_word_fraction
+from espnet2.rl.rewards.asr import word_error_reward
+from espnet2.rl.rewards.cpwer import (
     MAX_CPWER_SPEAKERS,
     concatenated_wer,
-    longform_wer_reward,
-    match_speaker,
-    mixed_task_reward,
     multispeaker_cpwer_reward,
-    repeated_word_fraction,
-    resolve_task,
+    split_speaker_streams,
+)
+from espnet2.rl.rewards.mixed import mixed_task_reward
+from espnet2.rl.rewards.speaker import (
+    match_speaker,
     speaker_id_reward,
     speaker_verification_reward,
-    split_speaker_streams,
 )
 
 CHOICES = ["1263", "374", "8842", "2277"]
@@ -121,7 +121,7 @@ def test_speaker_manifest_without_supervision_is_rejected_before_training(tmp_pa
         read_manifest(
             path,
             config=type(
-                "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+                "C", (), {"reward_function": "speaker_id"}
             )(),
         )
 
@@ -272,7 +272,7 @@ def test_repeat_rate_is_zero_for_a_response_shorter_than_its_window():
 
 def test_longform_contract_refuses_to_relabel_short_utterances(tmp_path):
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:longform_wer_reward"}
+        "C", (), {"reward_function": "longform_wer"}
     )()
     short = tmp_path / "short.jsonl"
     short.write_text(
@@ -302,7 +302,7 @@ def test_longform_contract_rejects_audio_past_its_declared_window(tmp_path):
     sample at the first read. This catches it on CPU instead.
     """
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:longform_wer_reward"}
+        "C", (), {"reward_function": "longform_wer"}
     )()
     reference = " ".join(f"w{index}" for index in range(200))
     path = tmp_path / "over.jsonl"
@@ -494,7 +494,7 @@ def test_every_record_is_scored_by_the_task_it_declares():
 
 def test_a_mixed_manifest_may_name_a_reward_outside_the_builtin_tasks():
     task = f"{__name__}:batched_component"
-    assert resolve_task(task) is batched_component
+    assert get_reward(task) is batched_component
     batched_component.calls.clear()
     rows = mixed_task_reward(
         [speaker_source(id="a", reward_task=task), speaker_source(id="b", reward_task=task)],
@@ -505,20 +505,27 @@ def test_a_mixed_manifest_may_name_a_reward_outside_the_builtin_tasks():
     assert [row["reward"] for row in rows] == [-3.0, -2.0]
 
 
-def test_resolve_task_names_the_builtin_tasks_when_it_cannot_resolve():
-    with pytest.raises(ValueError, match="asr_wer, longform_wer"):
-        resolve_task("speaker-identification")
-    assert set(BUILTIN_TASKS) == {
-        "asr_wer",
-        "longform_wer",
-        "speaker_id",
-        "multispeaker_cpwer",
-    }
+def test_an_unknown_reward_name_lists_the_registered_names():
+    with pytest.raises(ValueError, match="Unknown reward 'speaker-identification'"):
+        get_reward("speaker-identification")
+    # The task names the preparers stamp into reward_task stay registered.
+    assert {"asr_wer", "longform_wer", "speaker_id", "multispeaker_cpwer"} <= set(
+        REWARDS
+    )
+
+
+def test_every_registered_reward_resolves_and_no_name_is_the_default_wer():
+    for name in REWARDS:
+        assert callable(get_reward(name)), name
+    assert get_reward(None) is get_reward("wer") is word_error_reward
+    assert get_reward("espnet2.rl.rewards.asr:asr_wer_reward") is get_reward(
+        "asr_wer"
+    )
 
 
 def test_mixed_contract_delegates_to_each_component_before_training(tmp_path):
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:mixed_task_reward"}
+        "C", (), {"reward_function": "mixed"}
     )()
     path = tmp_path / "manifest.jsonl"
     path.write_text(
@@ -557,7 +564,7 @@ def test_mixed_rewards_reach_the_trainer_through_outcome_rewards():
     ]
     batch = collate_rollouts(sources, generations, 1)
     rewards, token_rewards, metrics = outcome_rewards(
-        batch, "espnet2.rl.task_rewards:mixed_task_reward"
+        batch, "mixed"
     )
     assert rewards.tolist() == [pytest.approx(1.1), pytest.approx(-0.5)]
     # The reward lands on each candidate's last sampled action.
@@ -574,7 +581,7 @@ def test_speaker_contract_rejects_a_candidate_list_that_leaks_the_label(tmp_path
     the only closed-set split a disjoint-speaker corpus allows.
     """
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+        "C", (), {"reward_function": "speaker_id"}
     )()
 
     def manifest(name, records):
@@ -617,7 +624,7 @@ def test_speaker_contract_rejects_a_candidate_list_that_leaks_the_label(tmp_path
 def test_a_single_speaker_manifest_is_not_a_leak(tmp_path):
     """With one label there is nothing for the candidate list to distinguish."""
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+        "C", (), {"reward_function": "speaker_id"}
     )()
     path = tmp_path / "one.jsonl"
     path.write_text(
@@ -647,7 +654,7 @@ def test_a_preparer_that_declares_its_draw_as_choice_draw_is_understood(tmp_path
     not declaring itself, while it had.
     """
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+        "C", (), {"reward_function": "speaker_id"}
     )()
 
     def manifest(name, records):
@@ -709,7 +716,7 @@ def test_a_choice_draw_that_is_not_a_mapping_does_not_crash_the_check(tmp_path):
     not guaranteed. A string there must not turn a data check into a
     TypeError at manifest-read time."""
     config = type(
-        "C", (), {"reward_function": "espnet2.rl.task_rewards:speaker_id_reward"}
+        "C", (), {"reward_function": "speaker_id"}
     )()
     path = tmp_path / "weird.jsonl"
     path.write_text(

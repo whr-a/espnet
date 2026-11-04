@@ -29,7 +29,7 @@ output_dir: exp/rl_opuslm_dialogue_librispeech_1gpu
 adapter_factory: espnet2.speechlm.rl.policy:factory
 exporter: espnet2.speechlm.rl.integration:exporter
 sglang_engine: espnet2.speechlm.rl.integration:OpusLMEngine
-reward_function: espnet2.speechlm.rl.integration:asr_wer_reward
+reward_function: wer
 sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
 dtype: float32

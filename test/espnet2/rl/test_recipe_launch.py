@@ -496,10 +496,9 @@ def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
     ids=lambda path: str(path.relative_to(ROOT / "egs2")),
 )
 def test_every_shipped_recipe_names_an_existing_engine_and_reward(path):
+    from espnet2.rl.rewards import get_reward
     from espnet2.rl.rollout_worker import engine_class
-    from espnet2.rl.utils import resolve_callable
 
     config = ESPnetRLConfig.load(path)
     engine_class(config)
-    if config.reward_function:
-        resolve_callable(config.reward_function)
+    get_reward(config.reward_function)

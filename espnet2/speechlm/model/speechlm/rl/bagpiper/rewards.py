@@ -12,12 +12,11 @@ import re
 from contextlib import contextmanager
 from pathlib import Path
 
-from espnet2.rl.rewards import word_error_rate
+from espnet2.rl.rewards.text import ANSWER, word_error_rate
 
 from .data import OPTION_LABEL, validate_native_qa_sources
 from .qa_contract import match_choice, parse_native_qa_answer
 
-ANSWER = re.compile(r"<answer>(.*?)</answer>", re.S)
 # Where Bagpiper's untagged responses state their choice, as in "the correct
 # answer is: motorcycle", "**Final Answer:** motorcycle", "the most accurate
 # choice is: by the car" or "the most correct answer from the given list is:".

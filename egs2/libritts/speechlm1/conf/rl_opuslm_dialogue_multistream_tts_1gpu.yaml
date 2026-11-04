@@ -30,7 +30,7 @@
 #
 # WHAT IS NOT VERIFIED. The sampled block decodes to a waveform with plausible
 # energy, but nothing here measures whether it sounds like speech -- that needs
-# a codec decoder and a frozen ASR, which codec_block_reward deliberately does
+# a codec decoder and a frozen ASR, which the codec_block reward deliberately does
 # not load. And a dialogue-DPO checkpoint treats plain TTS as out of
 # distribution: in the reference replay stream 0 never emitted the closing
 # marker within 400 frames, so expect reward/closed near 0 and reward/no_audio
@@ -52,7 +52,7 @@ output_dir: exp/rl_opuslm_dialogue_multistream_tts_1gpu
 adapter_factory: espnet2.speechlm.rl.policy:factory
 exporter: espnet2.speechlm.rl.integration:multistream_exporter
 sglang_engine: espnet2.speechlm.rl.integration:OpusLMMultiStreamEngine
-reward_function: espnet2.rl.task_rewards:codec_block_reward
+reward_function: codec_block
 sglang_source: /path/to/pinned/sglang
 rollout_python: /path/to/optional_rl_env/bin/python
 dtype: float32

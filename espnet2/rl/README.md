@@ -103,10 +103,11 @@ configuration aliases resolve to the same files, not additional recipes.
 
 ## More tasks: speaker, long-form and multi-speaker
 
-`espnet2/rl/task_rewards.py` adds the rewards below. All but the last score
-generated text, so any family whose engine emits text can train them: OWSM,
-OpusLM, OpusLM Dialogue and Bagpiper. `espnet2/rl/task_data.py` prepares most
-of their manifests from ordinary Kaldi recipe inputs.
+`espnet2/rl/rewards/` registers the rewards below by name; a recipe's
+`reward_function` takes that name or any `module:callable`. All but the last
+score generated text, so any family whose engine emits text can train them:
+OWSM, OpusLM, OpusLM Dialogue and Bagpiper. `espnet2/rl/task_data.py`
+prepares most of their manifests from ordinary Kaldi recipe inputs.
 
 | Task | Reward | Supervision each record carries | Recipes |
 | --- | --- | --- | --- |
@@ -153,9 +154,9 @@ therefore never decides the score, and text before the first tag is counted as
 unassigned rather than credited to the first speaker.
 
 `mixed_task_reward` trains several tasks in one update: each record declares
-its `reward_task` and is scored by that task's reward, named either as a
-built-in (`asr_wer`, `longform_wer`, `speaker_id`, `multispeaker_cpwer`) or as
-an explicit `module:callable`. Mixing reward scales is safe because GRPO
+its `reward_task` and is scored by that task's reward, named either by a
+registered name (`asr_wer`, `longform_wer`, `speaker_id`, ...) or as an
+explicit `module:callable`. Mixing reward scales is safe because GRPO
 normalizes inside a prompt group: the trainer passes the per-prompt `uid` to
 `compute_grpo_outcome_advantage`, which groups candidates by that id before
 Miles normalizes, so two tasks never share a baseline. Because

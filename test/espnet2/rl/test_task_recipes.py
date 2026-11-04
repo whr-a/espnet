@@ -6,84 +6,82 @@ import pytest
 import yaml
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.task_rewards import BUILTIN_TASKS
-from espnet2.rl.utils import resolve_callable
+from espnet2.rl.rewards import REWARDS, get_reward
 
 ROOT = Path(__file__).resolve().parents[3]
 
-# recipe -> (family, execution mode, reward symbol)
+# recipe -> (family, execution mode, reward name)
 RECIPES = {
     "egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_1gpu.yaml": (
         "owsm",
         "sync",
-        "longform_wer_reward",
+        "longform_wer",
     ),
     "egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_2gpu_async.yaml": (
         "owsm",
         "disagg_async",
-        "longform_wer_reward",
+        "longform_wer",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_speaker_id_1gpu.yaml": (
         "opuslm_dialogue",
         "sync",
-        "speaker_id_reward",
+        "speaker_id",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_longform_wer_1gpu.yaml": (
         "opuslm_dialogue",
         "sync",
-        "longform_wer_reward",
+        "longform_wer",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_mixed_1gpu.yaml": (
         "opuslm_dialogue",
         "sync",
-        "mixed_task_reward",
+        "mixed",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_longform_wer_2gpu_async.yaml": (
         "opuslm",
         "disagg_async",
-        "longform_wer_reward",
+        "longform_wer",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_speaker_id_2gpu_async.yaml": (
         "opuslm",
         "disagg_async",
-        "speaker_id_reward",
+        "speaker_id",
     ),
     "egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_id.yaml": (
         "bagpiper",
         "sync",
-        "speaker_id_reward",
+        "speaker_id",
     ),
     "egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer.yaml": (
         "bagpiper",
         "sync",
-        "multispeaker_cpwer_reward",
+        "multispeaker_cpwer",
     ),
     "egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer_shaped.yaml": (
         "bagpiper",
         "sync",
-        "multispeaker_cpwer_shaped_reward",
+        "multispeaker_cpwer_shaped",
     ),
     "egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_verification.yaml": (
         "bagpiper",
         "sync",
-        "speaker_verification_reward",
+        "speaker_verification",
     ),
     "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml": (
         "opuslm_dialogue",
         "sync",
-        "codec_block_reward",
+        "codec_block",
     ),
 }
 
 
 @pytest.mark.parametrize("recipe", sorted(RECIPES))
 def test_recipe_validates_and_names_a_resolvable_task_reward(recipe):
-    family, mode, symbol = RECIPES[recipe]
+    family, mode, name = RECIPES[recipe]
     config = ESPnetRLConfig.from_yaml(ROOT / recipe)
     assert (config.family, config.execution_mode) == (family, mode)
-    assert config.reward_function == f"espnet2.rl.task_rewards:{symbol}"
-    reward = resolve_callable(config.reward_function)
-    assert reward.__name__ == symbol
+    assert config.reward_function == name
+    reward = get_reward(config.reward_function)
     # Every task reward fails a manifest closed before models or Ray start.
     assert callable(getattr(reward, "validate_sources", None))
 
@@ -133,29 +131,24 @@ def test_task_recipes_do_not_change_the_existing_profiles():
     unchanged = {
         "egs2/owsm_v4/s2t1/conf/rl_miles_wer_1gpu.yaml": None,
         "egs2/libritts/speechlm1/conf/rl_opuslm_librispeech_2gpu_async.yaml": (
-            "espnet2.speechlm.rl.integration:asr_wer_reward"
+            "wer"
         ),
         "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_librispeech_1gpu.yaml": (
-            "espnet2.speechlm.rl.integration:asr_wer_reward"
+            "wer"
         ),
-        "egs2/bagpiper/speechlm1/conf/rl.yaml": (
-            "espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_v1_reward"
-        ),
-        "egs2/bagpiper_tts/speechlm1/conf/rl.yaml": (
-            "espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:tts_asr_wer"
-        ),
+        "egs2/bagpiper/speechlm1/conf/rl.yaml": "bagpiper_qa_v1",
+        "egs2/bagpiper_tts/speechlm1/conf/rl.yaml": "bagpiper_tts_asr_wer",
     }
     for recipe, reward in unchanged.items():
         assert yaml.safe_load((ROOT / recipe).read_text())["reward_function"] == reward
 
 
-def test_every_builtin_task_name_has_a_committed_recipe():
-    """A task a manifest may declare is a task some recipe actually trains."""
-    rewards = {symbol for _, _, symbol in RECIPES.values()}
-    for task in BUILTIN_TASKS:
-        if task == "asr_wer":
-            # The single-task ASR reward already ships per family; the mixed
-            # recipe is what makes the shared name reachable.
-            assert "mixed_task_reward" in rewards
-            continue
-        assert f"{task}_reward" in rewards or f"{task[:-1]}_reward" in rewards, task
+def test_every_registered_reward_trains_in_a_committed_recipe():
+    """A registered reward is one some committed recipe actually trains."""
+    used = {
+        yaml.safe_load(path.read_text()).get("reward_function") or "wer"
+        for path in ROOT.glob("egs2/*/*/conf/**/rl*.yaml")
+    }
+    # The mixed recipe's manifests name asr_wer per record; no recipe names it.
+    assert set(REWARDS) - {"asr_wer"} <= used
+    assert "mixed" in used

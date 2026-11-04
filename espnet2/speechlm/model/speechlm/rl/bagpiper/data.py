@@ -221,7 +221,7 @@ def select(records, max_words=None, shuffle_seed=None, limit=None):
     Prompts are taken in manifest order, so a shuffled manifest is how a run
     sees a random sample of the corpus without repeating a prompt.
     """
-    from espnet2.rl.rewards import words
+    from espnet2.rl.rewards.text import words
 
     if max_words is not None:
         records = [row for row in records if len(words(row["reference"])) <= max_words]

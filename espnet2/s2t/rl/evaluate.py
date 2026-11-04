@@ -23,7 +23,7 @@ import torch
 import yaml
 from torch.nn.utils.rnn import pad_sequence
 
-from espnet2.rl.rewards import edit_distance, words
+from espnet2.rl.rewards.text import edit_distance, words
 from espnet2.rl.types import tempered
 from espnet2.s2t.rl.policy import OWSMPolicy, load_audio
 

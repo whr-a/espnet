@@ -22,12 +22,10 @@ from espnet2.rl.task_data import (
     session_of,
     speaker_choice_set,
 )
-from espnet2.rl.task_rewards import (
-    longform_wer_reward,
-    mixed_task_reward,
-    multispeaker_cpwer_reward,
-    speaker_id_reward,
-)
+from espnet2.rl.rewards.asr import longform_wer_reward
+from espnet2.rl.rewards.cpwer import multispeaker_cpwer_reward
+from espnet2.rl.rewards.mixed import mixed_task_reward
+from espnet2.rl.rewards.speaker import speaker_id_reward
 
 SPEAKERS = ("spkA", "spkB", "spkC", "spkD")
 SENTENCE = "hello world this is a test of long form speech"
