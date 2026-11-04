@@ -56,7 +56,7 @@ def test_secondary_audio_condition_and_unsampled_heads_gradient():
     result = policy(batch)
     # All pad embeddings are removed. The secondary input changes the sampled
     # primary distribution; unsampled output heads remain absent from the loss.
-    hidden = torch.tensor([1.25, 2.5])
+    # The pad-cleared hidden state is [1.25, 2.5], which gives these logits.
     logits = torch.tensor([2.5, 3.75, -1.25])
     expected = logits[1] - logits.logsumexp(0)
     torch.testing.assert_close(result.log_probs[0, 0], expected)

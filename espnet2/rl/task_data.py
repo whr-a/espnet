@@ -261,7 +261,6 @@ def prepare_longform_manifest(
     import numpy as np
     import soundfile as sf
 
-    references = _kaldi(text)
     records = materialize_kaldi_audio(
         wav_scp, text, Path(output).parent / (Path(output).stem + "_audio"), sample_rate
     )

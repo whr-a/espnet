@@ -14,7 +14,6 @@ import pytest
 import torch
 from torch import nn
 
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import collate_rollouts
 from espnet2.speechlm.rl.multistream import (
     active_streams,

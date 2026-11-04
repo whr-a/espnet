@@ -5,7 +5,6 @@ from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import torch
 import torch.distributed as distributed
 import torch.multiprocessing as multiprocessing

@@ -14,7 +14,6 @@
 """Reuse ESPnet's frontend, encoder and teacher-forced decoder for RL."""
 
 import argparse
-import importlib
 from pathlib import Path
 from typing import Any
 
@@ -24,22 +23,9 @@ import yaml
 from torch import nn
 from torch.nn.utils.rnn import pad_sequence
 
-from .language import resolve_owsm_language_symbol
-
-
-def resolve_callable(name: str):
-    module, symbol = name.rsplit(":", 1)
-    return getattr(importlib.import_module(module), symbol)
-
-
 from espnet2.rl.types import NativeESPnetPolicy, TokenScores, tempered
 
-
-def object_array(values):
-    # np.array(list_of_equal_length_lists) creates an unwanted extra batch axis.
-    result = np.empty(len(values), dtype=object)
-    result[:] = values
-    return result
+from .language import resolve_owsm_language_symbol
 
 
 def load_audio(

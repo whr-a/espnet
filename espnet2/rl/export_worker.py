@@ -14,7 +14,6 @@
 """Export in the inference interpreter, preserving native ESPnet tensors."""
 
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 

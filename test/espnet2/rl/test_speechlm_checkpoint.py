@@ -1,7 +1,6 @@
 """Check recomputation against the ordinary native scores and gradients."""
 
 import copy
-from types import SimpleNamespace
 
 import pytest
 import torch

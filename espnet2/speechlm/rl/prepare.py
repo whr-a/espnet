@@ -135,7 +135,6 @@ def asr_prompt(frames, metadata, family):
     nq = int(metadata.get("nq", 9))
     if frames.ndim != 2 or frames.shape[1] != nq:
         raise ValueError("Opus audio frames must retain nine streams")
-    zero = [0] * nq
     # Speech task layout is checkpoint bound. Dialogue can still use its shared
     # ASR task: the published vocabulary and model support this native task.
     prefix = [

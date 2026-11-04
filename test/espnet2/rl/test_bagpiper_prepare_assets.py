@@ -1,7 +1,6 @@
 """Native text tokenization survives the metadata-only export vocabulary shift."""
 
 import json
-from pathlib import Path
 
 import pytest
 import yaml

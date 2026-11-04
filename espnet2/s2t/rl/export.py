@@ -1,6 +1,5 @@
 """Export exact native OWSM weights for the optional SGLang rollout model."""
 
-import argparse
 import hashlib
 import json
 import shutil

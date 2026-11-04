@@ -261,10 +261,7 @@ def test_memory_tag_failure_never_advertises_a_usable_policy(tmp_path, phase):
 def test_original_miles_ipc_serializer_and_storage_lifetime(
     tmp_path, monkeypatch, fail
 ):
-    from miles.backends.training_utils.weight_update.protocols import (
-        broadcast,
-        cuda_ipc,
-    )
+    from miles.backends.training_utils.weight_update.protocols import cuda_ipc
 
     events, receipt = [], tmp_path / "receipt.json"
 
