@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from espnet2.bin.rl_train_async import resolve_nodes
+from espnet2.rl.cli import resolve_nodes
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.data import verify_data_admission
 from espnet2.rl.engine import engine_kwargs, fit_context

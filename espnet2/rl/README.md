@@ -10,8 +10,7 @@ orchestration; SGLang supplies rollout scheduling and model layers. Start with
 python -m espnet2.bin.rl_train --config /absolute/path/to/recipe.yaml
 ```
 
-This is a local integration, not an already merged upstream release. The older
-`rl_launch` and `rl_train_async` module names are compatibility entries. Existing
+This is a local integration, not an already merged upstream release. Existing
 supervised recipe stages retain their behavior.
 
 ## Architecture and ESPnet2 placement

@@ -118,11 +118,10 @@ def config_for(path, mode):
 def test_cli_rejects_native_mismatch_before_engines_or_ray(
     tmp_path, monkeypatch, mode, validate_only
 ):
-    from espnet2.bin import rl_train, rl_train_async
     from espnet2.rl import cli as shared_cli
     from espnet2.rl import miles_library, rollout_worker
 
-    cli = rl_train if mode == "sync" else rl_train_async
+    worker = None if mode == "sync" else "ray"
     path = manifest(tmp_path, [{**native_source(), "qa_template": "default"}])
     config = config_for(path, mode)
     monkeypatch.setattr(shared_cli.ESPnetRLConfig, "load", lambda path: config)
@@ -143,16 +142,15 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
         argv.append("--validate-only")
     monkeypatch.setattr(sys, "argv", argv)
     with pytest.raises(ValueError, match="regenerate.*--qa-template bagpiper"):
-        cli.main()
+        shared_cli.main(worker=worker)
 
 
 @pytest.mark.parametrize("mode", ["sync", "disagg_async"])
 def test_validate_only_accepts_native_sources_without_ray(tmp_path, monkeypatch, mode):
-    from espnet2.bin import rl_train, rl_train_async
     from espnet2.rl import cli as shared_cli
     from espnet2.rl import miles_library, rollout_worker
 
-    cli = rl_train if mode == "sync" else rl_train_async
+    worker = None if mode == "sync" else "ray"
     path = manifest(tmp_path, [native_source(), {**native_source(), "id": "qa-2"}])
     config = config_for(path, mode)
     monkeypatch.setattr(shared_cli.ESPnetRLConfig, "load", lambda path: config)
@@ -170,7 +168,7 @@ def test_validate_only_accepts_native_sources_without_ray(tmp_path, monkeypatch,
             "unused",
         ]
     monkeypatch.setattr(sys, "argv", argv)
-    cli.main()
+    shared_cli.main(worker=worker)
 
 
 def test_direct_trainer_rejects_before_device_or_model_setup(tmp_path, monkeypatch):

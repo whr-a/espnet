@@ -3,7 +3,7 @@
 import asyncio
 import json
 
-from espnet2.bin.rl_launch import launch_command, parser
+from espnet2.rl.cli import launch_command, parser
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.miles_async_driver import load_async_loop, orchestration_args
 
