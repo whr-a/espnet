@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from espnet2.rl.batch import RolloutBatch
+from espnet2.rl.rollout import engine as engine_module
 from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
@@ -216,8 +217,9 @@ def test_stateless_sampling_requires_actual_engine_seed_support(tmp_path, monkey
     obj = engine(tmp_path, monkeypatch)
     obj.replica, obj.config.dtype = 0, "bfloat16"
     options = {"attention_backend": "fa3"}
+    # The base class resolves the engine settings.
     monkeypatch.setattr(
-        rollout_module, "engine_kwargs", lambda *args, **kwargs: dict(options)
+        engine_module, "engine_kwargs", lambda *args, **kwargs: dict(options)
     )
     assert obj.settings(tmp_path)["enable_deterministic_inference"] is True
     options["enable_deterministic_inference"] = False

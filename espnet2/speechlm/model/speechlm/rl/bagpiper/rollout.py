@@ -5,12 +5,11 @@
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 
 import torch
 
-from espnet2.rl.rollout.engine import SGLangRolloutEngine, engine_kwargs
+from espnet2.rl.rollout.engine import SGLangRolloutEngine
 
 from .integration import prepared_native_metadata, request_factory
 
@@ -27,16 +26,25 @@ class BagpiperEngine(SGLangRolloutEngine):
     secondary streams.
     """
 
-    defaults = dict(
-        skip_tokenizer_init=True,
-        disable_overlap_schedule=True,
-        chunked_prefill_size=-1,
-        # A QA prompt of up to 510 frames with 1,536 new tokens. 32 such
-        # requests (65.5k KV tokens) fit an FP32 engine alone on an 80 GB
-        # GPU (about 120k); recipes size both to their own pool.
-        context_length=2048,
-        max_running_requests=32,
-    )
+    sources_file = "sources.pt"
+    original_logprob = True
+    triton_fp32 = True
+
+    @property
+    def defaults(self):
+        float32 = self.config.dtype == "float32"
+        return dict(
+            skip_tokenizer_init=True,
+            disable_overlap_schedule=True,
+            chunked_prefill_size=-1,
+            # A QA prompt of up to 510 frames with 1,536 new tokens. 32 such
+            # requests (65.5k KV tokens) fit an FP32 engine alone on an 80 GB
+            # GPU (about 120k); recipes size both to their own pool.
+            context_length=2048,
+            max_running_requests=32,
+            dtype=self.config.dtype,
+            attention_backend="triton" if float32 else "fa3",
+        )
     frozen = (
         "skip_tokenizer_init",
         "disable_cuda_graph",
@@ -46,14 +54,6 @@ class BagpiperEngine(SGLangRolloutEngine):
     )
 
     def __init__(self, config, model_path, *, directory, replica=0):
-        # Read when SGLang's scheduler imports its sampler. The model divides
-        # the logits by the temperature itself and SGLang samples them at 1,
-        # so this is the primary's log_softmax of exactly those logits, as the
-        # learner computes it, rather than the log of their softmax.
-        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
-        if config.dtype == "float32":
-            # Triton's TF32 default puts float32 attention at the drift gate.
-            os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
         super().__init__(config, model_path, directory=directory, replica=replica)
         from transformers import AutoTokenizer
 
@@ -65,31 +65,8 @@ class BagpiperEngine(SGLangRolloutEngine):
         self.check_kv_pool()
         self.batches = 0
 
-    @property
-    def sources_path(self):
-        return self.directory / "sources.pt"
-
     def settings(self, model_path):
-        attention = "triton" if self.config.dtype == "float32" else "fa3"
-        settings = engine_kwargs(
-            self.config,
-            self.replica,
-            defaults=dict(
-                self.defaults,
-                model_path=str(model_path),
-                dtype=self.config.dtype,
-                attention_backend=attention,
-            ),
-            frozen=self.frozen,
-        )
-        if self.config.dtype == "float32" and settings["attention_backend"] not in (
-            "triton",
-            "torch_native",
-        ):
-            raise ValueError("float32 Bagpiper needs triton or torch_native attention")
-        overrides = json.loads(settings.get("json_model_override_args", "{}"))
-        overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
-        settings["json_model_override_args"] = json.dumps(overrides)
+        settings = super().settings(model_path)
         if self.config.adapter_options.get("stateless_sampling", False):
             if settings.get("enable_deterministic_inference") is False:
                 raise ValueError(

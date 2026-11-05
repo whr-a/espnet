@@ -3,7 +3,6 @@
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 
 from espnet2.rl.rollout.engine import SGLangRolloutEngine
@@ -77,28 +76,16 @@ class OWSMEngine(SGLangRolloutEngine):
         "disable_radix_cache",
         "chunked_prefill_size",
     )
+    sources_file = "sources.json"
+    # Each sampled token's log probability at the sampling temperature.
+    original_logprob = False
 
     def __init__(self, config, model_path, *, directory, replica=0):
-        # Read when SGLang's scheduler imports its sampler: each sampled
-        # token's log probability at the sampling temperature,
-        # log(softmax(logits / T)), not the one before it.
-        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "0"
         super().__init__(config, model_path, directory=directory, replica=replica)
         # The vocabulary and prompt symbols are the architecture's; every
         # later export of this run shares them.
         self.metadata = json.loads((Path(model_path) / "config.json").read_text())
         self.text = _detokenizer(model_path)
-
-    @property
-    def sources_path(self):
-        return self.directory / "sources.json"
-
-    def settings(self, model_path):
-        settings = super().settings(model_path)
-        overrides = json.loads(settings.get("json_model_override_args", "{}"))
-        overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
-        settings["json_model_override_args"] = json.dumps(overrides)
-        return settings
 
     def generate(self, sources, rollout_id):
         prefixes = [_prefix(self.config, source, self.metadata) for source in sources]

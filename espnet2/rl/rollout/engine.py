@@ -8,6 +8,8 @@ are the same everywhere. A family adds only what its own model needs, and a
 recipe overrides anything that is not part of that native contract.
 """
 
+import json
+import os
 from pathlib import Path
 
 from ..utils import resolve_callable
@@ -124,8 +126,28 @@ class SGLangRolloutEngine(RolloutEngine):
     # holds no policy until update() resumes them and loads the next one.
     memory_saver = released = False
     publication_kv_released = False
+    # The file, in the engine directory, from which the family's SGLang
+    # model reads each batch's prepared sources; the model finds it
+    # through json_model_override_args. None if the model reads none.
+    sources_file = None
+    # SGLANG_RETURN_ORIGINAL_LOGPROB, read when SGLang's scheduler
+    # imports its sampler. True for a model that divides the logits by
+    # the temperature itself, which SGLang then samples at 1: the reported
+    # log probability is the log_softmax of exactly the logits the learner
+    # scores. False reports log(softmax(logits / T)). None leaves it unset.
+    original_logprob = None
+    # A float32 engine on Triton kernels: Triton's TF32 default would put
+    # float32 attention at the drift gate, so it computes in IEEE float32
+    # and accepts only an attention backend that does.
+    triton_fp32 = False
 
     def __init__(self, config, model_path, *, directory, replica=0):
+        if self.original_logprob is not None:
+            os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = (
+                "1" if self.original_logprob else "0"
+            )
+        if self.triton_fp32 and config.dtype == "float32":
+            os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
         super().__init__(config, model_path, directory=directory, replica=replica)
         from sglang import Engine
 
@@ -134,13 +156,28 @@ class SGLangRolloutEngine(RolloutEngine):
         self.context_length = settings.get("context_length")
         self.engine = Engine(**settings)
 
+    @property
+    def sources_path(self):
+        return self.directory / self.sources_file
+
     def settings(self, model_path):
-        return engine_kwargs(
+        settings = engine_kwargs(
             self.config,
             self.replica,
             defaults=dict(self.defaults, model_path=str(model_path)),
             frozen=self.frozen,
         )
+        if self.triton_fp32 and self.config.dtype == "float32":
+            if settings["attention_backend"] not in ("triton", "torch_native"):
+                raise ValueError(
+                    f"float32 {type(self).__name__} needs triton or "
+                    "torch_native attention"
+                )
+        if self.sources_file is not None:
+            overrides = json.loads(settings.get("json_model_override_args", "{}"))
+            overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
+            settings["json_model_override_args"] = json.dumps(overrides)
+        return settings
 
     def check_kv_pool(self):
         """Fail unless SGLang can never retract a running request.

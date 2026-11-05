@@ -7,6 +7,7 @@ native ParallelLLM embedding. No Engine, CUDA or download.
 """
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -964,3 +965,11 @@ def test_held_out_evaluation_decodes_through_the_engine(
         policy, collate_rollouts(sources, generations, 4), config
     )
     assert len(errors) == 8 and drift["max"] < 1e-4
+
+
+def test_a_float32_engine_runs_triton_in_ieee_float32(native, tmp_path, monkeypatch):
+    # Triton's TF32 default would put float32 attention at the drift gate.
+    engine = build_engine(native, tmp_path, monkeypatch)
+    assert engine.engine.settings["dtype"] == "float32"
+    assert os.environ["TRITON_F32_DEFAULT"] == "ieee"
+    assert os.environ["NVIDIA_TF32_OVERRIDE"] == "0"

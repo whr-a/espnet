@@ -5,14 +5,13 @@
 import hashlib
 import json
 import math
-import os
 import shutil
 from pathlib import Path
 
 import torch
 import yaml
 
-from espnet2.rl.rollout.engine import SGLangRolloutEngine, engine_kwargs
+from espnet2.rl.rollout.engine import SGLangRolloutEngine
 
 # The released text tokenizer, copied into every export with config.json.
 TOKENIZER_FILES = (
@@ -432,14 +431,21 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
     primary ids alone, without its secondary streams.
     """
 
-    defaults = dict(
-        skip_tokenizer_init=True,
-        disable_overlap_schedule=True,
-        chunked_prefill_size=-1,
-        context_length=2048,
-        max_running_requests=8,
-        attention_backend="triton",
-    )
+    sources_file = "sources.pt"
+    original_logprob = True
+    triton_fp32 = True
+
+    @property
+    def defaults(self):
+        return dict(
+            skip_tokenizer_init=True,
+            disable_overlap_schedule=True,
+            chunked_prefill_size=-1,
+            context_length=2048,
+            max_running_requests=8,
+            attention_backend="triton",
+            dtype=self.config.dtype,
+        )
     frozen = (
         "skip_tokenizer_init",
         "disable_cuda_graph",
@@ -449,14 +455,6 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
     )
 
     def __init__(self, config, model_path, *, directory, replica=0):
-        # Read when SGLang's scheduler imports its sampler. The model divides
-        # the logits by the temperature itself and SGLang samples them at 1, so
-        # the reported primary log probability is the log_softmax of exactly
-        # the logits the learner scores, not the log of their softmax.
-        os.environ["SGLANG_RETURN_ORIGINAL_LOGPROB"] = "1"
-        if config.dtype == "float32":
-            # Triton's TF32 default would put float32 attention at the gate.
-            os.environ.update(TRITON_F32_DEFAULT="ieee", NVIDIA_TF32_OVERRIDE="0")
         self.metadata = _metadata(model_path)
         super().__init__(config, model_path, directory=directory, replica=replica)
         self.check_kv_pool()
@@ -464,28 +462,6 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
         self.tokenizer_files = self.tokenizer = None
         self._load_prompt_assets(model_path)
         self.batches = 0
-
-    @property
-    def sources_path(self):
-        return self.directory / "sources.pt"
-
-    def settings(self, model_path):
-        settings = engine_kwargs(
-            self.config,
-            self.replica,
-            defaults=dict(self.defaults, model_path=str(model_path),
-                          dtype=self.config.dtype),
-            frozen=self.frozen,
-        )
-        if self.config.dtype == "float32" and settings["attention_backend"] not in (
-            "triton",
-            "torch_native",
-        ):
-            raise ValueError("float32 OpusLM needs triton or torch_native attention")
-        overrides = json.loads(settings.get("json_model_override_args", "{}"))
-        overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
-        settings["json_model_override_args"] = json.dumps(overrides)
-        return settings
 
     def update(self, model_path):
         if _metadata(model_path) != self.metadata:
