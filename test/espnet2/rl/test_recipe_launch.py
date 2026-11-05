@@ -349,11 +349,11 @@ def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
     )
 
 
-def test_owsm_and_librispeech_recipe_routes_keep_template_step_budget(tmp_path):
+def test_owsm_recipe_route_keeps_template_step_budget(tmp_path):
     command_python = mock_python(tmp_path)
     config = frozen_config(tmp_path, "disagg_async")
     for index, relative in enumerate(
-        ("egs2/owsm_v4/s2t1/rl.sh", "egs2/librispeech/owsm_rl1/run.sh")
+        ("egs2/owsm_v4/s2t1/rl.sh",)
     ):
         log = tmp_path / f"route{index}.jsonl"
         env = {
@@ -492,7 +492,7 @@ def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
 
 @pytest.mark.parametrize(
     "path",
-    sorted(ROOT.glob("egs2/*/*/conf/rl*.yaml")),
+    sorted(ROOT.glob("egs2/*/*/conf/**/rl*.yaml")),
     ids=lambda path: str(path.relative_to(ROOT / "egs2")),
 )
 def test_every_shipped_recipe_names_an_existing_engine_and_reward(path):

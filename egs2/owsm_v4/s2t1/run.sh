@@ -69,7 +69,7 @@ done
 
 validate_rl_args() {
     local key option wav_scp= text= train_config= checkpoint= manifest=
-    local config=${recipe_dir}/conf/rl_miles_wer.yaml
+    local config=${recipe_dir}/conf/rl_miles_wer_1gpu.yaml
     while (($#)); do
         option=$1
         if [[ ${option} == --validate-only ]]; then shift; continue; fi

@@ -12,8 +12,8 @@ SGLang inference. Native model/scoring/export/preparation live in
 | Dialogue | `conf/rl_opuslm_dialogue_librispeech_2gpu_async.yaml` | Two, learner/rollout |
 | Plain | `conf/rl_opuslm_librispeech_2gpu_async.yaml` | Two, learner/rollout |
 
-Profiles retain 32 prompts × 8 candidates and five updates. Shorter historical
-names remain symlinks. Plain has no accepted one-GPU profile. These templates
+Profiles retain 32 prompts × 8 candidates and five updates. Plain has no
+accepted one-GPU profile. These templates
 are not a claim that every layout has completed GPU or quality acceptance.
 
 Prepare independent LibriSpeech train/dev splits with its ordinary data recipe,

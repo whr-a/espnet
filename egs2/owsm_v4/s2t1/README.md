@@ -153,8 +153,7 @@ Stage 18 adds native WER GRPO using the unchanged Miles library and persistent
 SGLang rollout. The main configurations are
 `conf/rl_miles_wer_1gpu.yaml` (one H100, collocated) and
 `conf/rl_miles_wer_2gpu_async.yaml` (one learner plus one rollout H100).
-Both use 32 prompts × 8 candidates and five default updates. Existing short
-configuration names remain symlinks to these profiles.
+Both use 32 prompts × 8 candidates and five default updates.
 
 Prepare independent LibriSpeech train/dev splits with the ordinary data recipe,
 then follow the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md)

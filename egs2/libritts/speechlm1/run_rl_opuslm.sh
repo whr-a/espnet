@@ -4,4 +4,4 @@
 set -euo pipefail
 ./speechlm.sh --stage 10 --stop_stage 10 --skip_data_prep true \
     --skip_train true --skip_eval true --task asr --tag rl_opuslm \
-    --rl_config conf/rl_opuslm_librispeech.yaml "$@"
+    --rl_config conf/rl_opuslm_librispeech_2gpu_async.yaml "$@"

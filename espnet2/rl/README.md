@@ -98,8 +98,7 @@ GPU scaling.
 
 OpusLM remains supported through `egs2/libritts/speechlm1` and its
 [task guide](../../egs2/libritts/speechlm1/README_RL_OPUSLM.md). Plain OpusLM's
-main template uses two GPUs; no accepted one-GPU profile is claimed. Existing
-configuration aliases resolve to the same files, not additional recipes.
+main template uses two GPUs; no accepted one-GPU profile is claimed.
 
 ## More tasks: speaker, long-form and multi-speaker
 

@@ -23,9 +23,9 @@ setup_venv.sh       # To generate activate_python.sh with venv of your Python
 ```sh
 # ./setup_miniforge.sh <conda-root|default="venv"> <env-name|default=root env> <python-version|default=latest python>
 # e.g.
-./setup_miniforge.sh miniconda espnet 3.12
+./setup_miniforge.sh miniconda espnet 3.10
 # If the conda-root already exists at the path, it tries to create it in the conda
-# ./setup_miniforge.sh /some/where/miniconda espnet 3.12
+# ./setup_miniforge.sh /some/where/miniconda espnet 3.10
 
 # make TH_VERSION=<torch-ver|default=latest torch>
 # e.g.
@@ -50,9 +50,8 @@ ESPnet recommends preparing a new Python environment independent of your pre-exi
 ## Optional speech RL environment
 
 For the pinned native ESPnet/Miles/SGLang profile, follow the
-[from-scratch speech training and RL guide](../espnet2/rl/ENVIRONMENT.md).
-It uses `installers/install_miles_async_env.sh` to create a new isolated
-environment and verifies source pins, dependency hashes and imports. Keep it
-separate from full supervised SpeechLM extras. The guide also supplies an
-[shared architecture and training guide](../espnet2/rl/README.md) and the current
-validation limits. This feature requires the reviewed RL checkout.
+[RL environment guide](../espnet2/rl/ENVIRONMENT.md). It uses
+`installers/install_miles_async_env.sh` to create a new isolated environment
+and verifies source pins, dependency hashes and imports. Keep it separate from
+full supervised SpeechLM extras. Training itself is described in the
+[RL guide](../espnet2/rl/README.md).
