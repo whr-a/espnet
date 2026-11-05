@@ -282,6 +282,7 @@ class FakeEngine:
     """The family engine contract: built from an export, one rollout per call."""
 
     calls = []
+    environments = []
 
     @property
     def defaults(self):
@@ -293,6 +294,10 @@ class FakeEngine:
         assert (model_path / "model.safetensors.index.json").is_file()
         assert directory.is_dir() and replica == 0
         self.config = config
+        # The engine's processes inherit this process's environment.
+        FakeEngine.environments.append(
+            (os.environ.get("CUDA_VISIBLE_DEVICES"), "WORLD_SIZE" in os.environ)
+        )
 
     def generate(self, sources, rollout_id, sampling):
         FakeEngine.calls.append(
@@ -340,10 +345,46 @@ def test_engine_defaults_are_read_for_a_config_without_an_engine(dtype, attentio
     assert (defaults["dtype"], defaults["attention_backend"]) == (dtype, attention)
 
 
+@pytest.mark.parametrize(
+    "visible,device,gpu",
+    [
+        (None, "cuda:3", "3"),
+        (None, "cuda", "0"),
+        ("4,5", "cuda:1", "5"),
+        ("6", "cuda", "6"),
+    ],
+)
+def test_engine_gpu_counts_within_the_callers_visible_devices(
+    monkeypatch, visible, device, gpu
+):
+    if visible is None:
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    else:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", visible)
+    assert evaluate.engine_gpu(device) == gpu
+
+
+def test_engine_gpu_rejects_a_device_outside_the_visible_ones(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5")
+    with pytest.raises(ValueError, match="not among CUDA_VISIBLE_DEVICES"):
+        evaluate.engine_gpu("cuda:2")
+
+
+# A CUDA --device puts the engine's processes on its physical GPU; a CPU one
+# leaves them on the caller's CUDA_VISIBLE_DEVICES or GPU 0, as before.
+@pytest.mark.parametrize(
+    "device,visible,engine",
+    [
+        ("cpu", None, "0"),
+        ("cpu", "4,5", "4,5"),
+        ("cuda:3", None, "3"),
+        ("cuda:1", "4,5", "5"),
+    ],
+)
 @pytest.mark.parametrize("temperature", [1.0, 0.7])
 @pytest.mark.parametrize("qa_protocol", ["west", "bagpiper_native"])
 def test_greedy_mmau_evaluation_through_the_rollout_engine(
-    tmp_path, monkeypatch, temperature, qa_protocol
+    tmp_path, monkeypatch, temperature, qa_protocol, device, visible, engine
 ):
     from espnet2.speechlm.model.speechlm.rl.bagpiper.qa_contract import (
         BAGPIPER_QA_SYSTEM_PROMPT,
@@ -393,10 +434,15 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
         )
     )
 
+    seen, broken = [], []
+
     def export(command, env, **kwargs):
         assert "WORLD_SIZE" not in env
+        seen.append(env["CUDA_VISIBLE_DEVICES"])
         if "-c" in command:  # the rollout interpreter's environment
             return SimpleNamespace(stdout=prefix + "\n")
+        if broken:
+            raise evaluate.subprocess.CalledProcessError(1, command)
         assert command[command.index("--checkpoint") + 1] == str(checkpoint)
         export_tensors(
             checkpoint, Path(command[command.index("--output") + 1]).parent / "hf"
@@ -417,7 +463,7 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
                 "samples": 1,
                 "audio_seconds": 1.0,
                 "batch_size": 1,
-                "device": "cpu",
+                "device": device,
                 "verify_native": False,
                 "responses": None,
                 "qa_protocol": qa_protocol,
@@ -425,11 +471,36 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
             }
         )
 
-    monkeypatch.setattr(os, "environ", {**os.environ, "WORLD_SIZE": "8"})
+    caller = {k: v for k, v in os.environ.items() if k != "CUDA_VISIBLE_DEVICES"}
+    caller["WORLD_SIZE"] = "8"
+    if visible is not None:
+        caller["CUDA_VISIBLE_DEVICES"] = visible
+    monkeypatch.setattr(os, "environ", dict(caller))
     monkeypatch.setattr(evaluate.subprocess, "run", export)
+    selected, counted = [], []
+
+    def set_device(index):
+        selected.append((index, os.environ.get("CUDA_VISIBLE_DEVICES")))
+
+    def device_count():
+        counted.append(os.environ.get("CUDA_VISIBLE_DEVICES"))
+        return 8
+
+    monkeypatch.setattr(evaluate.torch.cuda, "set_device", set_device)
+    monkeypatch.setattr(evaluate.torch.cuda, "device_count", device_count)
     FakeEngine.calls = []
+    FakeEngine.environments = []
     output = tmp_path / "evaluation"
     summary = evaluate.run(arguments("evaluation"))
+    # The interpreter check, the export worker and the engine see only the
+    # engine's GPU. This process chose --device, and let torch count GPUs, under
+    # the caller's environment, which it is back on afterwards.
+    assert seen == [engine, engine]
+    assert FakeEngine.environments == [(engine, False)]
+    cuda = device != "cpu"
+    assert selected == ([(torch.device(device).index or 0, visible)] if cuda else [])
+    assert counted == ([visible] if cuda else [])
+    assert os.environ == caller
     # One greedy candidate per prompt, one rollout per batch of prompts.
     greedy = {"temperature": 0.0, "max_new_tokens": 2048}
     assert FakeEngine.calls == [
@@ -494,6 +565,12 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
                 responses=str(tmp_path / "sampled" / "responses.json"),
             )
         )
+    # A failed export also leaves this process on the caller's environment.
+    broken.append(True)
+    with pytest.raises(evaluate.subprocess.CalledProcessError):
+        evaluate.run(arguments("broken"))
+    assert os.environ == caller
+    broken.clear()
     # The engine runs in the evaluator's own process: its environment and
     # SGLang must be the recipe's.
     prefix = "/another/environment"

@@ -264,6 +264,24 @@ def check_interpreter(config, environment):
             )
 
 
+def engine_gpu(device):
+    """The physical id of the GPU ``device`` names, for the engine's processes.
+
+    ``device`` counts within CUDA_VISIBLE_DEVICES when that is set and physical
+    GPUs when it is not, as in PyTorch; a bare ``cuda`` is the first one.
+    """
+    index = torch.device(device).index or 0
+    visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return str(index)
+    ids = [item.strip() for item in visible.split(",") if item.strip()]
+    if index >= len(ids):
+        raise ValueError(
+            f"--device {device} is not among CUDA_VISIBLE_DEVICES={visible!r}"
+        )
+    return ids[index]
+
+
 def generate(config, sources, directory, sampling, batch_size):
     """Decode every source with the family engine built from ``directory/hf``.
 
@@ -492,6 +510,8 @@ def run(args):
     (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
+    cuda = torch.device(args.device).type == "cuda"
+    caller = None
     try:
         if args.responses:
             result = read_json(args.responses)
@@ -519,10 +539,19 @@ def run(args):
             )
         else:
             # The engine runs in this process, which is never a training rank.
-            environment = subprocess_environment(
-                cfg, os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-            )
+            # Its processes and the export worker see only --device's GPU.
+            if cuda:
+                gpu = engine_gpu(args.device)
+                # Make --device current, and let torch count GPUs, before the
+                # narrowing below: --device then keeps the caller's numbering in
+                # this process, and implicit current-device work lands on it.
+                torch.cuda.set_device(torch.device(args.device).index or 0)
+                torch.cuda.device_count()
+            else:
+                gpu = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+            environment = subprocess_environment(cfg, gpu)
             check_interpreter(cfg, environment)
+            caller = dict(os.environ)
             os.environ.clear()
             os.environ.update(environment)
             with (directory / "export.log").open("w") as handle:
@@ -611,6 +640,12 @@ def run(args):
             json.dumps({"status": "Failed", "error": str(error)}) + "\n"
         )
         raise
+    finally:
+        # The engine has closed; a later evaluation in this process starts from
+        # the caller's environment, which --device counts within.
+        if caller is not None:
+            os.environ.clear()
+            os.environ.update(caller)
 
 
 def main():
@@ -657,7 +692,10 @@ def main():
         "candidates at once as the recipe's KV budget holds",
     )
     parser.add_argument(
-        "--device", default="cuda:0", help="ASR reward and native verification"
+        "--device",
+        default="cuda:0",
+        help="GPU of the engine, the ASR reward and native verification; it counts "
+        "within CUDA_VISIBLE_DEVICES when that is set, physical GPUs otherwise",
     )
     parser.add_argument(
         "--verify-native",
