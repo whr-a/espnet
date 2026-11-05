@@ -30,48 +30,17 @@ from espnet2.s2t.rl.policy import OWSMPolicy, load_audio
 
 @torch.no_grad()
 def greedy_decode(policy, sources, config, max_tokens=256, batch_size=32):
-    """Greedy native decoding of every source, ``batch_size`` utterances at once.
-
-    OWSM pads every waveform to its fixed input window, so a batch of
-    utterances runs the encoder exactly as one utterance alone does. The
-    decoder recomputes each full prefix, padded after its true length.
-    """
-    device = next(policy.parameters()).device
-    eos = policy.model.eos
-    hypotheses = []
-    for start in range(0, len(sources), batch_size):
-        chunk = sources[start : start + batch_size]
-        speech = torch.stack(
-            [
-                torch.as_tensor(
-                    load_audio(source, policy.sample_rate, policy.window_samples)
-                )
-                for source in chunk
-            ]
-        ).to(device)
-        lengths = torch.full((len(chunk),), speech.size(1), device=device)
-        memory, memory_lengths = policy._encode(speech, lengths)
-        prefixes = [policy.build_prefix(source, config) for source in chunk]
-        generated = [[] for _ in chunk]
-        active = list(range(len(chunk)))
-        for _ in range(max_tokens):
-            if not active:
-                break
-            rows = [
-                torch.tensor(prefixes[i] + generated[i], device=device) for i in active
-            ]
-            tokens = pad_sequence(rows, batch_first=True, padding_value=eos)
-            token_lengths = torch.tensor([len(row) for row in rows], device=device)
-            index = torch.tensor(active, device=device)
-            logits, _ = policy.model.decoder(
-                memory[index], memory_lengths[index], tokens, token_lengths
-            )
-            chosen = logits[torch.arange(len(active)), token_lengths - 1].argmax(-1)
-            for i, token in zip(active, chosen.tolist()):
-                generated[i].append(token)
-            active = [i for i in active if generated[i][-1] != eos]
-        hypotheses.extend(generated)
-    return hypotheses
+    """Greedy native decoding of every source, ``batch_size`` utterances at
+    once: ``sampled_decode`` at temperature 0 with one draw per source."""
+    return sampled_decode(
+        policy,
+        sources,
+        config,
+        max_tokens=max_tokens,
+        batch_size=batch_size,
+        temperature=0.0,
+        samples=1,
+    )
 
 
 def row_seed(seed, index, draw):
@@ -137,10 +106,13 @@ def sampled_decode(
 
     Returns one generation per (source, draw) pair in source-major order, so
     row ``index * samples + draw`` belongs to ``sources[index]``. One encoder
-    pass per source feeds all of its draws.
+    pass per source feeds all of its draws. OWSM pads every waveform to its
+    fixed input window, so a batch of utterances runs the encoder exactly as
+    one utterance alone does; the decoder recomputes each full prefix, padded
+    after its true length.
 
-    ``temperature`` 0 falls back to argmax and reproduces ``greedy_decode``
-    token for token.
+    ``temperature`` 0 falls back to argmax; ``greedy_decode`` is that case
+    with one draw.
     """
     if samples < 1:
         raise ValueError("Sampling needs at least one draw per prompt")
