@@ -16,14 +16,27 @@ supervised recipe stages retain their behavior.
 ## Architecture and ESPnet2 placement
 
 ```text
-egs2/<model>/<task>/             recipe stages and model/task configuration
-espnet2/bin/rl_train.py          public command: configuration, validation and
-                                 execution selection
-espnet2/rl/                      native trainer and Miles/rollout adapters
-espnet2/s2t/rl/                 OWSM policy, exporter, rollout and WER evaluation
-espnet2/speechlm/rl/            OpusLM policy, exporter and ASR evaluation
+egs2/<model>/<task>/      recipe stages and model/task configuration
+espnet2/bin/rl_train.py   the command: configuration, validation, local or Ray execution
+espnet2/rl/
+  config.py               ESPnetRLConfig and its cross-field validation
+  types.py                the policy contract: TokenScores, NativeESPnetPolicy, drift gate
+  batch.py                RolloutBatch and collate_rollouts
+  utils.py                resolve_callable, sha256 and other model-free helpers
+  rewards/                the reward registry REWARDS and the model-agnostic rewards
+  tasks/                  one manifest preparer per task (TASKS); manifest.py reads,
+                          admits and samples the training manifest
+  rollout/                engine interface, engine worker process and its client,
+                          local publication (disk export or Miles weight transfer)
+  trainer/                native learner and its single-host loop, Miles algorithm
+                          calls, CPU AdamW, distributed scoring, checkpoints, timing
+  miles/                  the Miles/Ray orchestration adapter
+espnet2/s2t/rl/           OWSM: policy, exporter, SGLang engine and model, evaluator
+espnet2/speechlm/rl/      OpusLM: policy, exporter, text and nine-stream engines,
+                          evaluator
 espnet2/speechlm/model/speechlm/rl/bagpiper/
-                               Bagpiper policy, data, QA/TTS reward and evaluation
+                          Bagpiper: policy, data, engine and model, QA/TTS rewards,
+                          evaluator
 ```
 
 ESPnet2 is the integration point because OWSM and SpeechLM already provide the
@@ -43,10 +56,38 @@ flowchart LR
     L --> O[Native checkpoint and separate held-out evaluation]
 ```
 
-The core imports the pinned Miles source, not its Megatron model backend. The
-asynchronous adapter binds the original `train_async.py` function to ESPnet
-actors; this pin exposes module globals rather than a stable plugin interface.
-The adapter and its contract tests must be reviewed when changing that pin.
+Dependencies point one way. The command sits on top; `miles/` uses `trainer/`;
+`trainer/` uses `rollout/`, `tasks/` and `rewards/`; `tasks/` uses `rewards/`;
+every package uses the root modules. The model families use the core, and the
+core never imports a family.
+
+The core imports the pinned Miles source, not its Megatron model backend.
+`miles/` binds the original `train_async.py` function to ESPnet actors through
+module globals, which this pin exposes instead of a stable plugin interface;
+it is the only code that touches them. Review that package and its contract
+tests when changing the pin. `trainer/algorithms.py` and `rollout/weights.py`
+call Miles as an ordinary function library.
+
+## Extending
+
+A **reward** is a function `reward(source, generation)` that returns a number,
+or a dict holding it as `"reward"` beside components to log. Each component is
+logged as `reward/<name>`, and every candidate must report the same ones. A
+batched reward sets `reward.batched = True` and takes `(sources, generations)`.
+An optional `reward.validate_sources(records)` rejects a manifest before any
+model, GPU or Ray actor starts. Name it in a recipe as `module:callable`, or add
+one line to `REWARDS` in `espnet2/rl/rewards/__init__.py` for a short name.
+
+A **task** is one module in `espnet2/rl/tasks/` holding its preparer, an
+`add_arguments(parser)` and a `run(args)`; one line in `TASKS` adds the
+subcommand `python -m espnet2.rl.tasks <task>`. Its records carry
+`reward_task`, the `REWARDS` name of the reward that scores them, which is how
+the `mixed` reward routes a record.
+
+A **model family** supplies four recipe fields: `adapter_factory` (builds the
+native policy, a `NativeESPnetPolicy` that returns `TokenScores`), `exporter`
+(writes the inference model), `sglang_engine` (a subclass of
+`espnet2.rl.rollout.engine.SGLangRolloutEngine`) and `reward_function`.
 
 ## Main configurations: one or two H100 GPUs
 
@@ -57,7 +98,7 @@ batch. Increase `steps` deliberately and provide enough distinct source records.
 | Task and recipe directory | One GPU, collocated | Two GPUs, asynchronous | Reward |
 | --- | --- | --- | --- |
 | OWSM ASR: `egs2/owsm_v4/s2t1` | `conf/rl_miles_wer_1gpu.yaml` | `conf/rl_miles_wer_2gpu_async.yaml` | Negative normalized WER |
-| Bagpiper QA: `egs2/bagpiper/speechlm1` | `conf/rl.yaml` | `conf/rl_disagg_async.yaml` | Existing `qa_v1_reward`: accuracy and format, equal weights |
+| Bagpiper QA: `egs2/bagpiper/speechlm1` | `conf/rl.yaml` | `conf/rl_disagg_async.yaml` | `bagpiper_qa_v1`: accuracy and format, equal weights |
 | Bagpiper TTS: `egs2/bagpiper_tts/speechlm1` | `conf/rl.yaml` | `conf/rl_disagg_async.yaml` | Generated audio → frozen ASR → negative WER |
 
 One-GPU `sync` alternates learning and rollout on the same device. Two-GPU
@@ -65,36 +106,9 @@ One-GPU `sync` alternates learning and rollout on the same device. Two-GPU
 with at most one version of policy lag. Persistent engines load each published
 policy in place. Neither mode creates a cluster allocation or serving group.
 
-Earlier frozen OWSM revisions have complete one-/two-H100 200-update evidence.
-OWSM and Bagpiper TTS GPU regression on this refactor remains pending. Bagpiper
-QA passed five-update engineering acceptance on one and two H100s, including
-strict probability/support checks, weight-publication acknowledgments, clean
-exit and CPU checkpoint audits. Matched bounded greedy evaluations completed
-32 items each for SFT and both final native checkpoints. The two-GPU final had
-one token-limit truncation, retained in the full 32-item denominator. These
-short checks do not establish long-run stability, a quality gain or full MMAU
-results. Large models also need substantial host RAM; see
+Each recipe README states how far its profiles have been validated. Large
+models also need substantial host RAM; see
 [resource planning](ENVIRONMENT.md#resource-planning).
-
-The Bagpiper QA templates use FP32 native SDPA and SGLang Triton
-attention with IEEE FP32 arithmetic, CPU Adam and GPU reference scoring with
-CPU storage between passes. They use at most two candidates and 2,048 padded
-tokens per microbatch, preserving the complete 32 × 8 update. One GPU uses
-`miles_shm`; two GPUs use Miles NCCL.
-
-Observed means across the four non-warmup update intervals were:
-
-| Measured time (s/update) | One H100, synchronous | Two H100s, asynchronous |
-| --- | ---: | ---: |
-| Native learner | 377.540 | 426.046 |
-| Outside native | 413.158 | 70.406 |
-| Update cadence | 790.699 | 496.452 |
-
-These intervals exclude startup and final checkpoint/publication/cleanup.
-Table cells are rounded independently. Outside-native time already includes
-its rollout/publication waits. Layouts differ in overlap and behavior auditing;
-these measurements do not isolate a transport speedup or demonstrate linear
-GPU scaling.
 
 OpusLM remains supported through `egs2/libritts/speechlm1` and its
 [task guide](../../egs2/libritts/speechlm1/README_RL_OPUSLM.md). Plain OpusLM's
@@ -110,25 +124,22 @@ prepares most of their manifests from ordinary Kaldi recipe inputs.
 
 | Task | Reward | Supervision each record carries | Recipes |
 | --- | --- | --- | --- |
-| Closed-set speaker identification | `speaker_id_reward`: correct label 1 + terminal format 0.1 | `speaker`, `speaker_choices` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_speaker_id_1gpu.yaml`, `rl_opuslm_speaker_id_2gpu_async.yaml`, `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_id.yaml` |
-| Long-form ASR | `longform_wer_reward`: `-min(WER, 1)` | `reference`, `min_reference_words` | `egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_1gpu.yaml`, `rl_miles_longform_wer_2gpu_async.yaml`, `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_longform_wer_1gpu.yaml`, `rl_opuslm_longform_wer_2gpu_async.yaml` |
-| Two-speaker ASR | `multispeaker_cpwer_reward`: `-min(cpWER, 1)` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer.yaml` |
-| Two-speaker ASR from a policy that does not yet comply | `multispeaker_cpwer_shaped_reward`: cpWER plus two terms bounded by `CPWER_SHAPING_WEIGHT` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer_shaped.yaml` |
-| Speaker verification (same/different) | `speaker_verification_reward`: correct verdict 1 + terminal format 0.1, with per-class counters | `verdict`, `verdict_choices` | `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_verification.yaml` |
-| Several tasks in one update | `mixed_task_reward` | `reward_task` per record | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_mixed_1gpu.yaml` |
-| Nine-stream codec generation | `codec_block_reward`: decodable share of the sampled block, plus 0.25 if the policy closed it | `codec_metadata` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml` |
+| Closed-set speaker identification | `speaker_id`: correct label 1 + terminal format 0.1 | `speaker`, `speaker_choices` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_speaker_id_1gpu.yaml`, `rl_opuslm_speaker_id_2gpu_async.yaml`, `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_id.yaml` |
+| Long-form ASR | `longform_wer`: `-min(WER, 1)` | `reference`, `min_reference_words` | `egs2/owsm_v4/s2t1/conf/rl_miles_longform_wer_1gpu.yaml`, `rl_miles_longform_wer_2gpu_async.yaml`, `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_longform_wer_1gpu.yaml`, `rl_opuslm_longform_wer_2gpu_async.yaml` |
+| Two-speaker ASR | `multispeaker_cpwer`: `-min(cpWER, 1)` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer.yaml` |
+| Two-speaker ASR from a policy that does not yet comply | `multispeaker_cpwer_shaped`: cpWER plus two terms bounded by `CPWER_SHAPING_WEIGHT` | `references`, `speaker_tags` | `egs2/bagpiper/speechlm1/conf/advanced/rl_multispeaker_cpwer_shaped.yaml` |
+| Speaker verification (same/different) | `speaker_verification`: correct verdict 1 + terminal format 0.1, with per-class counters | `verdict`, `verdict_choices` | `egs2/bagpiper/speechlm1/conf/advanced/rl_speaker_verification.yaml` |
+| Several tasks in one update | `mixed` | `reward_task` per record | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_mixed_1gpu.yaml` |
+| Nine-stream codec generation | `codec_block`: decodable share of the sampled block, plus 0.25 if the policy closed it | `codec_metadata` | `egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml` |
 
 Two of these need a starting condition the table cannot show.
-`multispeaker_cpwer_reward` is flat wherever the response is worse than
+`multispeaker_cpwer` is flat wherever the response is worse than
 silence, which is where an audio *captioner* policy starts: every candidate of
 every group clips to the same value, the GRPO group advantage is identically
-zero, and no number of updates moves the policy. Measured on 256 mixtures at
-0.3 overlap with one unchanged Bagpiper policy and the preparer's default
-instruction: 1 distinct reward over the whole set. Use the shaped reward
-*and* `--prompt-template verbatim_tagged` (below) in that case; the same
-policy and mixtures then give 29 distinct rewards, and 200 steps took cpWER
-mean 1.6177 to 0.0626, with 249 of 256 mixtures improved and none worsened.
-`codec_block_reward` is shape-only on purpose -- it reports whether the policy
+zero, and no number of updates moves the policy. Use the shaped reward *and*
+`--prompt-template verbatim_tagged` (below) in that case; the Bagpiper recipe
+README records the measurement behind this advice.
+`codec_block` is shape-only on purpose -- it reports whether the policy
 made decodable audio and closed the block, not how the audio sounds, because a
 quality reward needs a codec decoder and a frozen ASR on a GPU and this one
 runs on CPU with every other reward.
@@ -138,21 +149,26 @@ before any model, GPU or Ray actor starts, so a manifest that cannot supervise
 the configured task is rejected there rather than scored as a failure during
 training. The long-form contract also enforces the declared
 `min_reference_words`, so a short-utterance corpus cannot be trained as
-long-form by pointing a config at it.
+long-form by pointing a config at it. The speaker contracts reject data that
+leaks the answer: a speaker-id manifest that offers every utterance of a
+speaker the same candidate list (the list then names the label without the
+audio), unless the manifest declares that draw, and a verification corpus in
+which recording identity, which speakers appear, the label balance, the prompt
+text or the total duration predicts the verdict.
 
-`speaker_id_reward` matches a label as whole words, so "1263" is not found
+`speaker_id` matches a label as whole words, so "1263" is not found
 inside "12634"; a response naming two candidates earns no accuracy, because it
-chose nobody. `longform_wer_reward` keeps WER as the reward and reports
+chose nobody. `longform_wer` keeps WER as the reward and reports
 `length_ratio`, `truncated` and `repeat_rate` separately, which is what
 distinguishes the two long-form failures a single WER number hides: stopping
-early and looping. `multispeaker_cpwer_reward` splits the response on the
+early and looping. `multispeaker_cpwer` splits the response on the
 speaker tags the prompt asked for, concatenates each speaker's turns in order
 and takes the permutation of streams to references with the fewest total word
 errors, normalizing by total reference words as CHiME's cpWER does; tag order
 therefore never decides the score, and text before the first tag is counted as
 unassigned rather than credited to the first speaker.
 
-`mixed_task_reward` trains several tasks in one update: each record declares
+`mixed` trains several tasks in one update: each record declares
 its `reward_task` and is scored by that task's reward, named either by a
 registered name (`asr_wer`, `longform_wer`, `speaker_id`, ...) or as an
 explicit `module:callable`. Mixing reward scales is safe because GRPO
@@ -188,18 +204,12 @@ window of M`, so a set packed by utterance count can die on every single
 sample at the first read of training. Pass `--train-config` (the window is
 `preprocessor_conf.speech_length`) or `--max-audio-seconds`; the preparer
 measures every item, records the window in each record, and fails closed
-naming the longest. `longform_wer_reward.validate_sources` re-checks it when
+naming the longest. `longform_wer`'s `validate_sources` re-checks it when
 a record declares it, so `read_manifest` rejects such a manifest before any
 model, GPU or Ray actor starts.
 
-Measured on OWSM v4 and LibriSpeech: the window is 30 seconds, utterances
-average 12.75 s, so `--concatenate 8` produces 114-second items that cannot
-be read, and a 200-word floor is unreachable — 30 seconds caps a reference at
-roughly 84 words. Packing two or three utterances per item reaches about 70
-words, which is still 2-3x the single-utterance baseline and is enough to
-expose the early-stop and looping failures this reward separates. Genuinely
-long-form audio needs a family without a fixed window, or explicit offline
-segmentation; that is not what this reward alone buys.
+The OWSM recipe README gives the measured window and packing limits on
+LibriSpeech.
 
 The speaker preparer draws a deterministic choice set per utterance from the
 corpus speaker inventory and writes the matching instruction into `prompt`,
@@ -348,135 +358,10 @@ placement. Platform submission and site admission remain outside the library.
 
 The existing recipe stages call this entry: OWSM stage 18, Bagpiper QA stage 6,
 Bagpiper TTS stage 4 and OpusLM stage 10. Recipe `rl.sh` wrappers retain their
-preparation options; their training path is the same public module.
-
-## Worked example: Bagpiper QA on one GPU
-
-Use the reviewed environment from [ENVIRONMENT.md](ENVIRONMENT.md), with
-`ESPNET_RL_SOURCE`, `ESPNET_RL_ENV`, `ESPNET_MILES_SOURCE` and
-`ESPNET_SGLANG_SOURCE` set to its actual paths. Supply a matching native Bagpiper
-SFT checkpoint and released SpeechLM YAML, plus a local raw train parquet from
-an identified AVQA revision. A native checkpoint is a single model-state file
-(raw state or weights under `module`); export a supervised DCP first using
-`espnet2.speechlm.bin.export_checkpoint`. Model weights and AVQA are not supplied
-by the RL installer. Use fresh output paths throughout this example.
-
-```bash
-. "$ESPNET_RL_ENV/bin/activate"
-export PYTHONPATH="$ESPNET_MILES_SOURCE"
-export PYTORCH_ALLOC_CONF=expandable_segments:True
-unset PYTORCH_CUDA_ALLOC_CONF
-cd "$ESPNET_RL_SOURCE"
-export QA_WORK=/absolute/path/to/new-bagpiper-qa-pilot
-export QA_CHECKPOINT=/absolute/path/to/bagpiper-sft/bagpiper.native.pth
-export QA_NATIVE_YAML=/absolute/path/to/matching/released-train.yaml
-export QA_PARQUET=/absolute/path/to/avqa/train.parquet
-export QA_DATASET_REVISION=ACTUAL_DATASET_COMMIT
-```
-
-Build checkpoint-compatible tokenizer/codec/audio metadata on CPU. This command
-fetches only pinned public metadata, not model weights. Its optional
-`--text-assets`, `--audio-assets`, `--codec-assets` use existing local metadata.
-The released YAML's modality order, freezing and activation-checkpointing
-settings are retained; metadata preparation does not establish model/GPU fit.
-
-```bash
-python -m espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets \
-  --train-config "$QA_NATIVE_YAML" --output-dir "$QA_WORK/assets"
-python -m espnet2.rl.tasks avqa --input "$QA_PARQUET" \
-  --source-dataset gijs/avqa-processed --source-revision "$QA_DATASET_REVISION" \
-  --source-split train --qa-template default --train-count 3200 \
-  --heldout-count 32 --seed 42 --output-dir "$QA_WORK/data"
-```
-
-The preparer needs enough eligible distinct audio/IDs for both partitions.
-It creates `data/train.jsonl`, `data/dev.jsonl`, audio and `admission.json` under
-`QA_WORK`. The default prompt matches the main template's `qa_v1_reward`;
-native-answer/WEST-training profiles have different explicit prompt/reward
-contracts. The learner's allocator setting above stays out of the memory-saver
-inference subprocess; the one-GPU profile needs the separate shared-memory
-budget described in [resource planning](ENVIRONMENT.md#resource-planning).
-
-Create a personal YAML outside the source checkout. Merge the asset receipt's
-paths into the template's existing adapter options, retaining its memory
-settings. The five-step pilot writes its full milestone only at step 5.
-
-```bash
-python - <<'PY'
-import json, os, sys
-from pathlib import Path
-import yaml
-
-work = Path(os.environ["QA_WORK"]).resolve()
-source = Path(os.environ["ESPNET_RL_SOURCE"]).resolve(strict=True)
-receipt = json.loads((work / "assets/asset_manifest.json").read_text())
-cfg = yaml.safe_load(
-    (source / "egs2/bagpiper/speechlm1/conf/rl.yaml").read_text()
-)
-cfg["adapter_options"].update(receipt["adapter_options"])
-cfg.update(
-    train_config=receipt["train_config"],
-    checkpoint=str(Path(os.environ["QA_CHECKPOINT"]).resolve(strict=True)),
-    manifest=str(work / "data/train.jsonl"),
-    eval_manifest=str(work / "data/dev.jsonl"),
-    output_dir=str(work / "run"), steps=5, save_interval=5,
-    miles_source=str(Path(os.environ["ESPNET_MILES_SOURCE"]).resolve(strict=True)),
-    sglang_source=str(Path(os.environ["ESPNET_SGLANG_SOURCE"]).resolve(strict=True)),
-    rollout_python=sys.executable,
-)
-with (work / "pilot.yaml").open("x") as stream:
-    yaml.safe_dump(cfg, stream, sort_keys=False)
-PY
-python -m espnet2.bin.rl_train --config "$QA_WORK/pilot.yaml" \
-  --data-admission "$QA_WORK/data/admission.json" --validate-only
-```
-
-Validation checks configuration, sources and admission; it does not load the
-checkpoint or validate GPU memory/numerics. Run the following only on an
-available authorized H100 with adequate host RAM/disk. No Ray daemon is needed
-for this one-GPU synchronous profile. Use a dedicated GPU 0, and wait for each
-command to exit before starting the next. Evaluate the original weights first,
-train from the same pilot YAML, then evaluate the saved native weights:
-
-```bash
-CUDA_VISIBLE_DEVICES=0 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-  --config "$QA_WORK/pilot.yaml" --checkpoint "$QA_CHECKPOINT" --policy-step 0 \
-  --manifest "$QA_WORK/data/dev.jsonl" --output "$QA_WORK/before" \
-  --qa-protocol west --temperature 0 --samples 1 --max-new-tokens 2048 \
-  --audio-seconds 30 --batch-size 32 --device cuda:0
-CUDA_VISIBLE_DEVICES=0 python -m espnet2.bin.rl_train --config "$QA_WORK/pilot.yaml" \
-  --data-admission "$QA_WORK/data/admission.json"
-CUDA_VISIBLE_DEVICES=0 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
-  --config "$QA_WORK/run/frozen_config.json" \
-  --checkpoint "$QA_WORK/run/step-000005.native.pth" --policy-step 5 \
-  --manifest "$QA_WORK/data/dev.jsonl" --output "$QA_WORK/after" \
-  --qa-protocol west --temperature 0 --samples 1 --max-new-tokens 2048 \
-  --audio-seconds 30 --batch-size 32 --device cuda:0
-```
-
-Baseline evaluation uses `pilot.yaml` because the training run does not exist
-yet. Never train from an evaluator's frozen config: evaluation sets one sample
-per prompt. Greedy evaluation intentionally omits `--verify-native`; training's
-sampled-action probability checks are separate. Final evaluation uses
-`*.native.pth`, not the combined optimizer `*.pt` checkpoint.
-The evaluator's 2,048 response tokens extend this training profile's engine
-context from 2,048 to 2,560 and reduce concurrent requests from eight to six;
-verify evaluation memory independently of training.
-
-Each evaluation retains `responses.json`, `items.jsonl`, `protocol.json`,
-`summary.json` and `completion.json`. Require success and the same ordered 32 dev
-IDs/settings in both outputs. Compare **`summary.v1_accuracy`**, matching the
-main recipe's answer extractor, and also report `west_accuracy`; this evaluator
-still names `west_accuracy` its primary metric. Check `count == 32` and include
-truncations/unresolved answers in the reported denominator.
-
-Training retains `run/metrics.jsonl`, rollout evidence, `frozen_config.json`,
-`step-000005.pt` (full state) and `step-000005.native.pth`. Five updates and 32
-local-dev items are an engineering pilot, not full MMAU or quality-improvement
-acceptance. File/PCM exclusions do not prove component/SFT independence. This
-one-H100 profile has five-update GPU-loop evidence with the reviewed assets;
-its CPU checkpoint audit and bounded greedy evaluation also passed. The
-corresponding two-H100 profile passed the same engineering checks.
+preparation options; their training path is the same public module. The
+[Bagpiper recipe README](../../egs2/bagpiper/speechlm1/README.md#worked-example-one-gpu)
+walks through one GPU end to end: assets, AVQA data, validation, training and
+the evaluation before and after.
 
 ## Numerical contracts and advanced modes
 
@@ -487,8 +372,8 @@ recorded multi-stream support are checked before optimization. Other families
 and the OWSM vLLM option retain their declared temperature limitations.
 
 Bagpiper QA's optional think profiles are under `conf/advanced/`; their named
-reward and parser semantics remain distinct from the main `qa_v1_reward`.
-The native final-answer reward (`qa_bagpiper_v2_reward`) extracts a terminal
+reward and parser semantics remain distinct from the main `bagpiper_qa_v1`.
+The native final-answer reward (`bagpiper_qa_native`) extracts a terminal
 answer without consulting the reference, then applies correctness 1 + format 0.1.
 Changing reward/prompt/parser requires an explicit configuration change and a
 matched evaluation, not repointing an old recipe alias.
@@ -518,6 +403,10 @@ python -m espnet2.s2t.rl.evaluate --config /path/to/run/frozen_config.json \
   --checkpoint /path/to/run/step-000005.native.pth \
   --manifest /path/to/dev.jsonl --output /path/to/fresh/wer.json --device cuda:0
 ```
+
+It decodes greedily by default; `--temperature 1.0 --samples 4` instead scores
+samples at the training temperature, the distribution the RL reward was
+computed on.
 
 Bagpiper QA and TTS use the same task evaluator:
 

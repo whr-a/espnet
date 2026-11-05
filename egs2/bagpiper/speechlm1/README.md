@@ -412,8 +412,8 @@ Optional stage 6 adds native RL through the unchanged Miles library and a
 persistent SGLang Bagpiper engine. The main templates are `conf/rl.yaml`
 (one H100, collocated) and `conf/rl_disagg_async.yaml` (two H100s, one learner
 and one rollout). Both retain 32 prompts × 8 candidates, five default updates
-and their existing `qa_v1_reward` accuracy/format semantics. Small-GPU memory,
-probability and full-loop acceptance remain required.
+and the `bagpiper_qa_v1` reward (accuracy and format, equal weights).
+Small-GPU memory, probability and full-loop acceptance remain required.
 
 Use the shared [prepare/train/evaluate guide](../../../espnet2/rl/README.md) and
 [environment setup](../../../espnet2/rl/ENVIRONMENT.md). Public AVQA preparation
@@ -445,3 +445,175 @@ Evaluate a complete matched held-out set with
 accuracy, exact final-choice accuracy and format bonus are distinct; preserve
 raw answers and report the selected metric and denominator. Training reward or
 nonzero gradients alone do not demonstrate MMAU improvement.
+
+### QA templates and measured update times
+
+The Bagpiper QA templates use FP32 native SDPA and SGLang Triton
+attention with IEEE FP32 arithmetic, CPU Adam and GPU reference scoring with
+CPU storage between passes. They use at most two candidates and 2,048 padded
+tokens per microbatch, preserving the complete 32 × 8 update. One GPU uses
+`miles_shm`; two GPUs use Miles NCCL.
+
+Observed means across the four non-warmup update intervals were:
+
+| Measured time (s/update) | One H100, synchronous | Two H100s, asynchronous |
+| --- | ---: | ---: |
+| Native learner | 377.540 | 426.046 |
+| Outside native | 413.158 | 70.406 |
+| Update cadence | 790.699 | 496.452 |
+
+These intervals exclude startup and final checkpoint/publication/cleanup.
+Table cells are rounded independently. Outside-native time already includes
+its rollout/publication waits. Layouts differ in overlap and behavior auditing;
+these measurements do not isolate a transport speedup or demonstrate linear
+GPU scaling.
+
+Bagpiper QA passed five-update engineering acceptance on one and two H100s,
+including strict probability/support checks, weight-publication acknowledgments,
+clean exit and CPU checkpoint audits. Matched bounded greedy evaluations
+completed 32 items each for SFT and both final native checkpoints. The two-GPU
+final had one token-limit truncation, retained in the full 32-item denominator.
+These short checks do not establish long-run stability, a quality gain or full
+MMAU results.
+
+### Worked example: one GPU
+
+Use the reviewed environment from the
+[RL environment guide](../../../espnet2/rl/ENVIRONMENT.md), with
+`ESPNET_RL_SOURCE`, `ESPNET_RL_ENV`, `ESPNET_MILES_SOURCE` and
+`ESPNET_SGLANG_SOURCE` set to its actual paths. Supply a matching native Bagpiper
+SFT checkpoint and released SpeechLM YAML, plus a local raw train parquet from
+an identified AVQA revision. A native checkpoint is a single model-state file
+(raw state or weights under `module`); export a supervised DCP first using
+`espnet2.speechlm.bin.export_checkpoint`. Model weights and AVQA are not supplied
+by the RL installer. Use fresh output paths throughout this example.
+
+```bash
+. "$ESPNET_RL_ENV/bin/activate"
+export PYTHONPATH="$ESPNET_MILES_SOURCE"
+export PYTORCH_ALLOC_CONF=expandable_segments:True
+unset PYTORCH_CUDA_ALLOC_CONF
+cd "$ESPNET_RL_SOURCE"
+export QA_WORK=/absolute/path/to/new-bagpiper-qa-pilot
+export QA_CHECKPOINT=/absolute/path/to/bagpiper-sft/bagpiper.native.pth
+export QA_NATIVE_YAML=/absolute/path/to/matching/released-train.yaml
+export QA_PARQUET=/absolute/path/to/avqa/train.parquet
+export QA_DATASET_REVISION=ACTUAL_DATASET_COMMIT
+```
+
+Build checkpoint-compatible tokenizer/codec/audio metadata on CPU. This command
+fetches only pinned public metadata, not model weights. Its optional
+`--text-assets`, `--audio-assets`, `--codec-assets` use existing local metadata.
+The released YAML's modality order, freezing and activation-checkpointing
+settings are retained; metadata preparation does not establish model/GPU fit.
+
+```bash
+python -m espnet2.speechlm.model.speechlm.rl.bagpiper.prepare_assets \
+  --train-config "$QA_NATIVE_YAML" --output-dir "$QA_WORK/assets"
+python -m espnet2.rl.tasks avqa --input "$QA_PARQUET" \
+  --source-dataset gijs/avqa-processed --source-revision "$QA_DATASET_REVISION" \
+  --source-split train --qa-template default --train-count 3200 \
+  --heldout-count 32 --seed 42 --output-dir "$QA_WORK/data"
+```
+
+The preparer needs enough eligible distinct audio/IDs for both partitions.
+It creates `data/train.jsonl`, `data/dev.jsonl`, audio and `admission.json` under
+`QA_WORK`. The default prompt matches the main template's `bagpiper_qa_v1` reward;
+native-answer/WEST-training profiles have different explicit prompt/reward
+contracts. The learner's allocator setting above stays out of the memory-saver
+inference subprocess; the one-GPU profile needs the separate shared-memory
+budget described in [resource planning](../../../espnet2/rl/ENVIRONMENT.md#resource-planning).
+
+Create a personal YAML outside the source checkout. Merge the asset receipt's
+paths into the template's existing adapter options, retaining its memory
+settings. The five-step pilot writes its full milestone only at step 5.
+
+```bash
+python - <<'PY'
+import json, os, sys
+from pathlib import Path
+import yaml
+
+work = Path(os.environ["QA_WORK"]).resolve()
+source = Path(os.environ["ESPNET_RL_SOURCE"]).resolve(strict=True)
+receipt = json.loads((work / "assets/asset_manifest.json").read_text())
+cfg = yaml.safe_load(
+    (source / "egs2/bagpiper/speechlm1/conf/rl.yaml").read_text()
+)
+cfg["adapter_options"].update(receipt["adapter_options"])
+cfg.update(
+    train_config=receipt["train_config"],
+    checkpoint=str(Path(os.environ["QA_CHECKPOINT"]).resolve(strict=True)),
+    manifest=str(work / "data/train.jsonl"),
+    eval_manifest=str(work / "data/dev.jsonl"),
+    output_dir=str(work / "run"), steps=5, save_interval=5,
+    miles_source=str(Path(os.environ["ESPNET_MILES_SOURCE"]).resolve(strict=True)),
+    sglang_source=str(Path(os.environ["ESPNET_SGLANG_SOURCE"]).resolve(strict=True)),
+    rollout_python=sys.executable,
+)
+with (work / "pilot.yaml").open("x") as stream:
+    yaml.safe_dump(cfg, stream, sort_keys=False)
+PY
+python -m espnet2.bin.rl_train --config "$QA_WORK/pilot.yaml" \
+  --data-admission "$QA_WORK/data/admission.json" --validate-only
+```
+
+Validation checks configuration, sources and admission; it does not load the
+checkpoint or validate GPU memory/numerics. Run the following only on an
+available authorized H100 with adequate host RAM/disk. No Ray daemon is needed
+for this one-GPU synchronous profile. Use a dedicated GPU 0, and wait for each
+command to exit before starting the next. Evaluate the original weights first,
+train from the same pilot YAML, then evaluate the saved native weights:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+  --config "$QA_WORK/pilot.yaml" --checkpoint "$QA_CHECKPOINT" --policy-step 0 \
+  --manifest "$QA_WORK/data/dev.jsonl" --output "$QA_WORK/before" \
+  --qa-protocol west --temperature 0 --samples 1 --max-new-tokens 2048 \
+  --audio-seconds 30 --batch-size 32 --device cuda:0
+CUDA_VISIBLE_DEVICES=0 python -m espnet2.bin.rl_train --config "$QA_WORK/pilot.yaml" \
+  --data-admission "$QA_WORK/data/admission.json"
+CUDA_VISIBLE_DEVICES=0 python -m espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate \
+  --config "$QA_WORK/run/frozen_config.json" \
+  --checkpoint "$QA_WORK/run/step-000005.native.pth" --policy-step 5 \
+  --manifest "$QA_WORK/data/dev.jsonl" --output "$QA_WORK/after" \
+  --qa-protocol west --temperature 0 --samples 1 --max-new-tokens 2048 \
+  --audio-seconds 30 --batch-size 32 --device cuda:0
+```
+
+Baseline evaluation uses `pilot.yaml` because the training run does not exist
+yet. Never train from an evaluator's frozen config: evaluation sets one sample
+per prompt. Greedy evaluation intentionally omits `--verify-native`; training's
+sampled-action probability checks are separate. Final evaluation uses
+`*.native.pth`, not the combined optimizer `*.pt` checkpoint.
+The evaluator's 2,048 response tokens extend this training profile's engine
+context from 2,048 to 2,560 and reduce concurrent requests from eight to six;
+verify evaluation memory independently of training.
+
+Each evaluation retains `responses.json`, `items.jsonl`, `protocol.json`,
+`summary.json` and `completion.json`. Require success and the same ordered 32 dev
+IDs/settings in both outputs. Compare **`summary.v1_accuracy`**, matching the
+main recipe's answer extractor, and also report `west_accuracy`; this evaluator
+still names `west_accuracy` its primary metric. Check `count == 32` and include
+truncations/unresolved answers in the reported denominator.
+
+Training retains `run/metrics.jsonl`, rollout evidence, `frozen_config.json`,
+`step-000005.pt` (full state) and `step-000005.native.pth`. Five updates and 32
+local-dev items are an engineering pilot, not full MMAU or quality-improvement
+acceptance. File/PCM exclusions do not prove component/SFT independence. This
+one-H100 profile has five-update GPU-loop evidence with the reviewed assets;
+its CPU checkpoint audit and bounded greedy evaluation also passed. The
+corresponding two-H100 profile passed the same engineering checks.
+
+### Two-speaker ASR from a captioner policy
+
+`multispeaker_cpwer` is flat wherever the response is worse than silence, which
+is where an audio captioner policy starts; the
+[shared guide](../../../espnet2/rl/README.md) explains why that stops learning.
+Measured on 256 mixtures at 0.3 overlap with one unchanged Bagpiper policy and
+the preparer's default instruction, the reward took 1 distinct value over the
+whole set. With the shaped reward
+(`conf/advanced/rl_multispeaker_cpwer_shaped.yaml`) and `--prompt-template
+verbatim_tagged`, the same policy and mixtures gave 29 distinct rewards, and 200
+steps took cpWER mean 1.6177 to 0.0626, with 249 of 256 mixtures improved and
+none worsened.

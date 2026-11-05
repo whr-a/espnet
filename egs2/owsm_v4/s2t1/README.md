@@ -177,3 +177,19 @@ rollout memory fraction bounds its collocated engine. The optional
 interpreter and acceptance requirements. OWSM-CTC needs a separate policy.
 One-/two-H100 200-update runs establish an engineering path, without a demonstrated
 held-out WER improvement; new checkpoints/layouts need their own acceptance.
+Those runs used earlier frozen revisions; GPU regression on the current code
+remains pending.
+
+`conf/rl_miles_longform_wer_1gpu.yaml` and
+`conf/rl_miles_longform_wer_2gpu_async.yaml` train the `longform_wer` reward.
+OWSM v4 reads a fixed audio window and raises on longer audio instead of
+truncating it, so long-form items must fit that window. Measured on OWSM v4 and
+LibriSpeech: the window is 30 seconds, utterances average 12.75 s, so
+`--concatenate 8` produces 114-second items that cannot be read, and a 200-word
+floor is unreachable — 30 seconds caps a reference at roughly 84 words. Packing
+two or three utterances per item reaches about 70 words, which is still 2-3x the
+single-utterance baseline and is enough to expose the early-stop and looping
+failures this reward separates. Genuinely long-form audio needs a family without
+a fixed window, or explicit offline segmentation; that is not what this reward
+alone buys. `local/pack_longform.py` packs items by a duration budget; the
+[shared guide](../../../espnet2/rl/README.md) shows its use.
