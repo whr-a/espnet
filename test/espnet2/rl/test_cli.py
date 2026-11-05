@@ -105,17 +105,11 @@ def test_external_torchrun_enters_worker_without_nested_launch(tmp_path, monkeyp
     assert observed == ["0,1"]
 
 
-@pytest.mark.parametrize(
-    "device,selected",
-    [("cuda:3", [torch.device("cuda", 3)]), ("cuda", []), ("cpu", [])],
-)
-def test_single_rank_makes_its_configured_gpu_current(
-    tmp_path, monkeypatch, device, selected
-):
+def run_until_frozen_config(tmp_path, monkeypatch, device):
+    """Run the trainer up to its frozen-config check and return set_device calls."""
     from espnet2.rl.trainer import local as trainer
 
     calls = []
-    monkeypatch.delenv("WORLD_SIZE", raising=False)
     monkeypatch.setattr(trainer, "read_manifest", lambda path, config: [])
     monkeypatch.setattr(trainer, "engine_class", lambda config: None)
     monkeypatch.setattr(trainer, "verify_miles", lambda config: {})
@@ -123,8 +117,13 @@ def test_single_rank_makes_its_configured_gpu_current(
     monkeypatch.setattr(
         trainer, "get_torch_device", lambda: SimpleNamespace(set_device=calls.append)
     )
+    monkeypatch.setattr(trainer.distributed, "init_process_group", lambda *a, **k: None)
+    # run() turns off TF32 for float32 runs; keep the flags for later tests.
     monkeypatch.setattr(
         torch.backends.cudnn, "allow_tf32", torch.backends.cudnn.allow_tf32
+    )
+    monkeypatch.setattr(
+        torch.backends.cuda.matmul, "allow_tf32", torch.backends.cuda.matmul.allow_tf32
     )
     # An existing frozen config stops the run right after device selection.
     (tmp_path / "frozen_config.json").write_text("{}")
@@ -138,7 +137,27 @@ def test_single_rank_makes_its_configured_gpu_current(
     )
     with pytest.raises(FileExistsError, match="fresh output_dir"):
         trainer.run(config)
+    return calls, config
+
+
+@pytest.mark.parametrize(
+    "device,selected",
+    [("cuda:3", [torch.device("cuda", 3)]), ("cuda", []), ("cpu", [])],
+)
+def test_single_rank_makes_its_configured_gpu_current(
+    tmp_path, monkeypatch, device, selected
+):
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    calls, _ = run_until_frozen_config(tmp_path, monkeypatch, device)
     assert calls == selected
+
+
+def test_each_torchrun_rank_still_takes_its_local_rank(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("LOCAL_RANK", "1")
+    calls, config = run_until_frozen_config(tmp_path, monkeypatch, "cuda:0")
+    assert calls == [1]
+    assert config.device == "cuda:1"
 
 
 @pytest.mark.parametrize("train_gpus,world_size", [("0", "2"), ("0,1", "4")])
