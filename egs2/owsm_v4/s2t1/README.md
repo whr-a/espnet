@@ -177,8 +177,10 @@ rollout memory fraction bounds its collocated engine. The optional
 interpreter and acceptance requirements. OWSM-CTC needs a separate policy.
 One-/two-H100 200-update runs establish an engineering path, without a demonstrated
 held-out WER improvement; new checkpoints/layouts need their own acceptance.
-Those runs used earlier frozen revisions; GPU regression on the current code
-remains pending.
+Those runs used earlier frozen revisions. Three-update one- and two-GPU runs of
+the current code matched the revision before the refactor within run-to-run GPU
+nondeterminism, and the evaluator's greedy and sampled outputs were identical;
+the 200-update runs have not been repeated.
 
 `conf/rl_miles_longform_wer_1gpu.yaml` and
 `conf/rl_miles_longform_wer_2gpu_async.yaml` train the `longform_wer` reward.

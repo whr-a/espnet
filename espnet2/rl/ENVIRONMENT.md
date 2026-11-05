@@ -106,8 +106,12 @@ any chosen prompt length fits. The reviewed Bagpiper QA profiles passed
 five-update engineering checks on one and two H100s, CPU checkpoint audits and
 matched bounded greedy evaluations of 32 items per checkpoint. Token-limit
 truncations remain in the full denominator; these checks do not establish a
-quality gain, full MMAU results or long-run stability. OWSM and Bagpiper TTS GPU
-regression on this refactor remains pending.
+quality gain, full MMAU results or long-run stability. Short GPU runs of this
+refactor matched the revision before it: OWSM on one and two GPUs (three
+updates), Bagpiper QA on one GPU (two updates), OpusLM Dialogue text on one GPU
+(three updates) and its nine-stream codec sampling at a reduced batch (two
+updates). Each first update was bitwise identical, and later differences stayed
+within run-to-run GPU nondeterminism. Bagpiper TTS has not been rerun on GPU.
 
 CPU offload saves GPU memory at the cost of host memory and transfers. For the
 reviewed Bagpiper model's 8,268,432,384 trainable elements, full FP32 native
