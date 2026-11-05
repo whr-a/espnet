@@ -1,10 +1,10 @@
 """Serve the architecture's actual inference engine for a whole run.
 
-The client is ``espnet2.rl.rollout.RolloutProcess``; it talks over one end of
+The client is ``espnet2.rl.rollout.process.RolloutProcess``; it talks over one end of
 a socket pair whose other end is this process's ``--fd``. ``load`` builds the
 engine from the first export and loads every later one in place,
 ``generate`` answers one batch through JSON files in ``--directory`` (numpy
-arrays in binary sidecars, espnet2.rl.rollout.write_json) and
+arrays in binary sidecars, espnet2.rl.rollout.process.write_json) and
 ``close`` shuts the engine down. Each request is answered with
 ``{"ok": True, ...}`` or ``{"error": traceback}``.
 """
@@ -19,38 +19,9 @@ import traceback
 from multiprocessing.connection import Connection
 from pathlib import Path
 
-from .config import ESPnetRLConfig
-from .engine import RolloutEngine
-from .rollout import read_json, write_json
-from .utils import resolve_callable
-
-
-class FunctionEngine(RolloutEngine):
-    """A per-call generation function: the optional OWSM vLLM backend."""
-
-    def __init__(self, config, model_path, *, directory, replica=0):
-        super().__init__(config, model_path, directory=directory, replica=replica)
-        self.function = resolve_callable(config.vllm_generate_factory)
-        self.model_path = str(model_path)
-
-    def update(self, model_path):
-        self.model_path = str(model_path)
-
-    def generate(self, sources, rollout_id):
-        # The function reads nothing but the export directory it is given.
-        return self.function(self.config, self.model_path, sources, rollout_id)
-
-
-def engine_class(config):
-    """The recipe's RolloutEngine class. The launchers resolve it first, so a
-    wrong name fails before a policy is built or exported."""
-    if config.rollout_backend != "sglang":
-        resolve_callable(config.vllm_generate_factory)
-        return FunctionEngine
-    engine = resolve_callable(config.sglang_engine)
-    if not (isinstance(engine, type) and issubclass(engine, RolloutEngine)):
-        raise TypeError(f"{config.sglang_engine} is not a RolloutEngine")
-    return engine
+from ..config import ESPnetRLConfig
+from .engine import engine_class
+from .process import read_json, write_json
 
 
 class RolloutServer:

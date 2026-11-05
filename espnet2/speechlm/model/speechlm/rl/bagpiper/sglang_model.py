@@ -106,7 +106,7 @@ class ESPnetBagpiperForCausalLM(Qwen3ForCausalLM):
 
     def load_weights(self, weights):
         """Load one complete native policy: every parameter exactly once."""
-        from espnet2.rl.weight_transport import verify_weights
+        from espnet2.rl.rollout.weights import verify_weights
 
         weights = verify_weights(
             weights, self.sources_path.with_suffix(".weights.json")

@@ -27,9 +27,9 @@ import torch
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.tasks.manifest import read_manifest
-from espnet2.rl.engine import fit_context
+from espnet2.rl.rollout.engine import fit_context
 from espnet2.rl.rewards.text import ANSWER, edit_distance, words
-from espnet2.rl.rollout import read_json, subprocess_environment, write_json
+from espnet2.rl.rollout.process import read_json, subprocess_environment, write_json
 from espnet2.rl.types import (
     drift_gate,
     support_counts,
@@ -526,7 +526,7 @@ def run(args):
                     [
                         cfg.rollout_python,
                         "-m",
-                        "espnet2.rl.export_worker",
+                        "espnet2.rl.rollout.export_worker",
                         "--config",
                         str(directory / "frozen_config.json"),
                         "--checkpoint",

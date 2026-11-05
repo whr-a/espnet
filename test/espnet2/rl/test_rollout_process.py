@@ -18,13 +18,14 @@ import numpy as np
 import pytest
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.engine import SGLangRolloutEngine
-from espnet2.rl.rollout import CheckpointRollout, RolloutProcess, read_json
+from espnet2.rl.rollout.engine import SGLangRolloutEngine
+from espnet2.rl.rollout.local import CheckpointRollout
+from espnet2.rl.rollout.process import RolloutProcess, read_json
 
 ENGINE = """
 import json, os, time
 import numpy as np
-from espnet2.rl.engine import RolloutEngine
+from espnet2.rl.rollout.engine import RolloutEngine
 
 
 class RecordingEngine(RolloutEngine):
@@ -267,7 +268,7 @@ def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):
 CLIENT = """
 import json, sys, threading
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.rollout import RolloutProcess
+from espnet2.rl.rollout.process import RolloutProcess
 
 process = RolloutProcess(ESPnetRLConfig(**json.loads(sys.argv[1])), "0", sys.argv[2], 0)
 process.load(sys.argv[2], 0)

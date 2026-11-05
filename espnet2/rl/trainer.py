@@ -43,8 +43,9 @@ from .parallel_optimizer import CPUOffloadedAdamW
 from .process_identity import host_identity
 from .rewards import outcome_rewards
 from .rewards.asr import word_error_reward
-from .rollout import CheckpointRollout, save_checkpoint
-from .rollout_worker import engine_class
+from .rollout.local import CheckpointRollout
+from .training_state import save_checkpoint
+from .rollout.engine import engine_class
 from .scoring import score_native_batch
 from .timing import PhaseProfiler, learner_timing, profile_phase
 from .tasks.manifest import select_training_sources

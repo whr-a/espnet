@@ -136,7 +136,7 @@ def test_ray_roles_share_nccl_mode_before_actor_creation(
     import ray
 
     from espnet2.rl.miles import driver as miles_async_driver
-    from espnet2.rl.rollout import subprocess_environment
+    from espnet2.rl.rollout.process import subprocess_environment
 
     if caller_value is None:
         monkeypatch.delenv("NCCL_CUMEM_ENABLE", raising=False)

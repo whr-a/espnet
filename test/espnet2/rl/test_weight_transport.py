@@ -13,10 +13,10 @@ import pytest
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.engine import SGLangRolloutEngine
-from espnet2.rl.rollout import CheckpointRollout
-from espnet2.rl.rollout_worker import RolloutServer
-from espnet2.rl.weight_transport import (
+from espnet2.rl.rollout.engine import SGLangRolloutEngine
+from espnet2.rl.rollout.local import CheckpointRollout
+from espnet2.rl.rollout.worker import RolloutServer
+from espnet2.rl.rollout.weights import (
     CODEC,
     HASH_KIND,
     MARKER,
@@ -346,7 +346,7 @@ def test_shared_memory_policy_reaches_an_independent_interpreter(tmp_path):
 import json, sys, torch
 from sglang.srt.utils import MultiprocessingSerializer
 from sglang.srt.weight_sync.tensor_bucket import FlattenedTensorBucket
-from espnet2.rl.weight_transport import verify_weights
+from espnet2.rl.rollout.weights import verify_weights
 payload = MultiprocessingSerializer.deserialize(sys.stdin.read())
 tensors = verify_weights(FlattenedTensorBucket(**payload).reconstruct_tensors(), sys.argv[1])
 assert [name for name, _ in tensors] == ['actor', 'audio_frozen']
@@ -397,7 +397,7 @@ print(json.dumps({'verified': True}))
 def test_fast_sync_reuses_bootstrap_and_does_not_export_per_update(
     tmp_path, monkeypatch
 ):
-    import espnet2.rl.weight_transport as transport
+    import espnet2.rl.rollout.weights as transport
 
     config = ESPnetRLConfig(
         family="bagpiper", weight_sync_backend="miles", output_dir=str(tmp_path)
@@ -429,7 +429,7 @@ def test_fast_sync_reuses_bootstrap_and_does_not_export_per_update(
 def test_disk_publication_phase_clock_includes_save_export_hash_and_ack(
     tmp_path, monkeypatch
 ):
-    import espnet2.rl.rollout as module
+    import espnet2.rl.rollout.local as module
 
     config = ESPnetRLConfig(output_dir=str(tmp_path), profile_phases=True)
     rollout = CheckpointRollout(config)

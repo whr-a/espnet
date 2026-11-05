@@ -37,7 +37,7 @@ class ESPnetRLConfig:
     profile_phases: bool = False
     sglang_source: str = ""
     sglang_engine_kwargs: dict[str, Any] = field(default_factory=dict)
-    # module:Class of the architecture's espnet2.rl.engine.RolloutEngine.
+    # module:Class of the architecture's espnet2.rl.rollout.engine.RolloutEngine.
     sglang_engine: str | None = None
     miles_source: str = ""
     miles_commit: str = "a22fd824191c64ba7c5d6c531f125406e4ce9cc6"
@@ -387,7 +387,7 @@ class ESPnetRLConfig:
         if "sglang_generate_factory" in values:
             raise ValueError(
                 "sglang_generate_factory was replaced by sglang_engine, the "
-                "module:Class of the family's espnet2.rl.engine.RolloutEngine"
+                "module:Class of the family's espnet2.rl.rollout.engine.RolloutEngine"
             )
         return cls(**values)
 

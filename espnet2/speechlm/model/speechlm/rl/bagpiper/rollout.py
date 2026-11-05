@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from espnet2.rl.engine import SGLangRolloutEngine, engine_kwargs
+from espnet2.rl.rollout.engine import SGLangRolloutEngine, engine_kwargs
 
 from .integration import prepared_native_metadata, request_factory
 

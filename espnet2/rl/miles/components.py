@@ -13,12 +13,8 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from ..batch import collate_rollouts
 from .actor import ESPnetTrainRayActor
-from ..rollout import (
-    RolloutProcess,
-    merge_generations,
-    prune_exports,
-    record_publication,
-)
+from ..rollout.local import merge_generations, prune_exports, record_publication
+from ..rollout.process import RolloutProcess
 from ..utils import resolve_callable
 
 

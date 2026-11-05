@@ -12,7 +12,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from espnet2.rl.engine import SGLangRolloutEngine, engine_kwargs
+from espnet2.rl.rollout.engine import SGLangRolloutEngine, engine_kwargs
 
 # The released text tokenizer, copied into every export with config.json.
 TOKENIZER_FILES = (

@@ -1,6 +1,8 @@
-"""Native learner checkpoint validation and rank-local random-state recovery."""
+"""Native learner checkpoints: writing, validating, restoring, and RNG state."""
 
 import random
+import shutil
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -82,3 +84,33 @@ def load_native_model_state(policy, state):
         policy.model.load_state_dict(state, strict=True)
     else:
         raise ValueError("Checkpoint keys differ from the native policy architecture")
+
+
+def save_checkpoint(
+    path, policy, optimizer, step, config, *, scheduler=None, trainer_state=None
+):
+    """Atomic native snapshot, optionally with collective trainer resume state.
+
+    ``NativeGRPOTrainer.save_training_checkpoint`` supplies all-rank RNG and
+    the data cursor. Legacy callers retain their CPU-only RNG snapshot.
+    """
+    path = Path(path)
+    temporary = path.with_suffix(".tmp")
+    snapshot = {
+        "model": policy.checkpoint_state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "step": step,
+        "config": config.to_dict(),
+        "torch_rng_state": torch.get_rng_state(),
+    }
+    if scheduler is not None:
+        snapshot["scheduler"] = scheduler.state_dict()
+    if trainer_state is not None:
+        snapshot["trainer_state"] = trainer_state
+    torch.save(snapshot, temporary)
+    temporary.replace(path)
+    # Native .pth permits direct ESPnet inference and exporter reuse.
+    native = path.with_name(path.stem + ".native.pth")
+    torch.save(snapshot["model"], native)
+    if config.train_config:
+        shutil.copyfile(config.train_config, path.parent / "espnet_train_config.yaml")

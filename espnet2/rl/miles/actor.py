@@ -17,7 +17,7 @@ from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 
 from ..config import ESPnetRLConfig
 from .failure import preserve_preupdate_failure
-from ..rollout import CheckpointRollout
+from ..rollout.local import CheckpointRollout
 from ..scoring import score_native_batch
 from ..trainer import NativeGRPOTrainer
 from ..utils import build_policy
@@ -351,7 +351,7 @@ class ESPnetTrainRayActor(TrainRayActor):
     def publish_async_weights(self, actors):
         if self._rank != 0:
             return None
-        from ..weight_transport import EngineClient, MilesWeightPublisher
+        from ..rollout.weights import EngineClient, MilesWeightPublisher
 
         if self.exporter.publisher is None:
             self.exporter.publisher = MilesWeightPublisher(

@@ -327,7 +327,7 @@ def test_async_cannot_enter_synchronous_driver():
 
 
 def test_replica_merge_keeps_groups_and_rejects_partial_or_duplicate_results():
-    from espnet2.rl.rollout import merge_generations
+    from espnet2.rl.rollout.local import merge_generations
 
     sources = [{"id": f"p{i}"} for i in range(32)]
     results = [

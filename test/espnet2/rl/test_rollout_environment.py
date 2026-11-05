@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from espnet2.rl.rollout import CheckpointRollout
+from espnet2.rl.rollout.local import CheckpointRollout
 
 TRAIN_IDENTITY = {
     "RANK": "0",

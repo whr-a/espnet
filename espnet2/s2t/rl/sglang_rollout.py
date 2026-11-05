@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 
-from espnet2.rl.engine import SGLangRolloutEngine
+from espnet2.rl.rollout.engine import SGLangRolloutEngine
 from espnet2.s2t.rl.policy import owsm_symbol_id
 
 

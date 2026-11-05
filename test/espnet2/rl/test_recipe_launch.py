@@ -497,7 +497,7 @@ def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
 )
 def test_every_shipped_recipe_names_an_existing_engine_and_reward(path):
     from espnet2.rl.rewards import get_reward
-    from espnet2.rl.rollout_worker import engine_class
+    from espnet2.rl.rollout.engine import engine_class
 
     config = ESPnetRLConfig.load(path)
     engine_class(config)
