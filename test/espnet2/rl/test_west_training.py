@@ -288,6 +288,30 @@ def test_bfloat16_checkpoint_restores_master_weights_lr_rng_and_cursor(tmp_path)
         )
 
 
+@pytest.mark.parametrize(
+    "train, rollout, accepted",
+    [("5", "5", True), ("5", "6", False), ("5", "5,6", False)],
+)
+def test_one_rank_resume_may_move_to_other_gpus(tmp_path, train, rollout, accepted):
+    """A one-rank learner trains on its train_gpus GPU, so resuming it on other
+    cards changes those ids; the replica count and card sharing stay fixed."""
+    cfg = config(tmp_path)
+    original = NativeGRPOTrainer(TinyPolicy(), cfg)
+    original.source_count = 8
+    path = tmp_path / "step-000000.pt"
+    original.save_training_checkpoint(path, 0)
+    moved = copy.deepcopy(cfg)
+    moved.output_dir, moved.resume_checkpoint = str(tmp_path / "resumed"), str(path)
+    moved.train_gpus, moved.rollout_gpus = train, rollout
+    restored = NativeGRPOTrainer(TinyPolicy(), moved)
+    restored.source_count = 8
+    if accepted:
+        restored.load_training_checkpoint(path)
+    else:
+        with pytest.raises(ValueError, match="frozen configuration: train_gpus"):
+            restored.load_training_checkpoint(path)
+
+
 def test_cpu_master_weights_retain_updates_below_bfloat16_resolution():
     parameter = nn.Parameter(torch.ones(1, dtype=torch.bfloat16))
     original = CPUOffloadedAdamW([parameter], lr=1e-4)

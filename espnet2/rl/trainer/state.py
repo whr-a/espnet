@@ -29,6 +29,13 @@ def restore_rng_state(state, device):
         torch.cuda.set_rng_state(state["torch_cuda"], device)
 
 
+def _role_layout(train_gpus, rollout_gpus):
+    """How many learner ranks and rollout replicas, and whether they share GPUs."""
+    train = [item for item in str(train_gpus).split(",") if item]
+    rollout = [item for item in str(rollout_gpus).split(",") if item]
+    return len(train), len(rollout), bool(set(train) & set(rollout))
+
+
 def validate_resume_checkpoint(checkpoint, config, world_size, source_count=None):
     """Reject a changed objective, horizon, sampler, architecture or rank count."""
     state = checkpoint.get("trainer_state", {})
@@ -70,6 +77,14 @@ def validate_resume_checkpoint(checkpoint, config, world_size, source_count=None
     allowed_changes = {"output_dir", "resume_checkpoint", "device", "reference_device"}
     current = config.to_dict()
     original = checkpoint.get("config", {})
+    layout = _role_layout(original.get("train_gpus"), original.get("rollout_gpus"))
+    if layout[0] == 1 and layout == _role_layout(
+        config.train_gpus, config.rollout_gpus
+    ):
+        # A one-rank local learner trains on the GPU train_gpus names, so moving
+        # it to other cards moves those ids with its device; the number of
+        # replicas and whether the roles share a card stay fixed.
+        allowed_changes |= {"train_gpus", "rollout_gpus"}
     for name, value in current.items():
         if name not in allowed_changes and original.get(name) != value:
             raise ValueError(f"Resume changes frozen configuration: {name}")
