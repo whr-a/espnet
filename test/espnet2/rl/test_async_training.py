@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
+from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.trainer.algorithms import compute_policy_loss_vanilla, kl_penalty
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores

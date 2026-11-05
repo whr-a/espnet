@@ -52,9 +52,10 @@ def test_exact_fp32_rope_phases_and_forward_leave_bf16_parameters_unchanged(wrap
     requires_grad = {
         name: value.requires_grad for name, value in core.named_parameters()
     }
-    assert move_native_model(
-        model, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True
-    ) is model
+    assert (
+        move_native_model(model, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True)
+        is model
+    )
     assert parameter_ids == {
         name: id(value) for name, value in model.named_parameters()
     }
@@ -95,15 +96,11 @@ def test_default_retains_legacy_conversion_and_rounded_buffers_cannot_be_recover
     assert core.model.rotary_emb.inv_freq.dtype == torch.bfloat16
     assert not torch.equal(original, core.model.rotary_emb.inv_freq.float())
     with pytest.raises(ValueError, match="before casting"):
-        move_native_model(
-            core, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True
-        )
+        move_native_model(core, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True)
 
 
 def test_opt_in_requires_a_decoder_frequency_buffer():
     core = nn.Module()
     core.model = nn.Linear(4, 4)
     with pytest.raises(ValueError, match="no original RoPE"):
-        move_native_model(
-            core, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True
-        )
+        move_native_model(core, "cpu", torch.bfloat16, preserve_decoder_rope_fp32=True)

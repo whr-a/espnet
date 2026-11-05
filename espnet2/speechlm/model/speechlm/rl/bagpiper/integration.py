@@ -19,7 +19,6 @@ import json
 from pathlib import Path
 
 
-
 def _speechlm_waveform(source, target_rate):
     """Follow native SpeechLM first-channel and torchaudio resampling rules."""
     import numpy as np

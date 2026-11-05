@@ -152,7 +152,9 @@ def prepare_longform_manifest(
             f"lower the floor deliberately."
         )
     for record in records:
-        record.update(reward_task="longform_wer", min_reference_words=min_reference_words)
+        record.update(
+            reward_task="longform_wer", min_reference_words=min_reference_words
+        )
     return write_manifest(
         output,
         records,

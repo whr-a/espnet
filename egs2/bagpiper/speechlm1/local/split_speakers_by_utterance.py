@@ -46,7 +46,9 @@ def main():
         utterances = sorted(by_speaker[speaker])
         generator = random.Random(f"{args.seed}:{speaker}")
         generator.shuffle(utterances)
-        count = max(args.min_heldout_per_speaker, round(len(utterances) * args.heldout_fraction))
+        count = max(
+            args.min_heldout_per_speaker, round(len(utterances) * args.heldout_fraction)
+        )
         if len(utterances) - count < args.min_train_per_speaker:
             raise ValueError(
                 f"Speaker {speaker} has only {len(utterances)} utterances; a "
@@ -55,7 +57,11 @@ def main():
         held, trained = utterances[:count], utterances[count:]
         split["heldout"].extend(held)
         split["train"].extend(trained)
-        per_speaker[speaker] = {"total": len(utterances), "train": len(trained), "heldout": len(held)}
+        per_speaker[speaker] = {
+            "total": len(utterances),
+            "train": len(trained),
+            "heldout": len(held),
+        }
 
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -65,7 +71,11 @@ def main():
         for name, table in (("wav.scp", waves), ("utt2spk", speakers)):
             path = output / f"{role}.{name}"
             path.write_text("".join(f"{utt} {table[utt]}\n" for utt in utterances))
-            written[f"{role}.{name}"] = {"path": str(path), "sha256": sha256(path), "rows": len(utterances)}
+            written[f"{role}.{name}"] = {
+                "path": str(path),
+                "sha256": sha256(path),
+                "rows": len(utterances),
+            }
 
     overlap = set(split["train"]) & set(split["heldout"])
     train_speakers = {speakers[u] for u in split["train"]}
@@ -90,10 +100,24 @@ def main():
     if overlap:
         raise ValueError(f"{len(overlap)} utterances landed in both splits")
     if train_speakers != heldout_speakers:
-        raise ValueError("A closed-set split must carry the same speakers on both sides")
+        raise ValueError(
+            "A closed-set split must carry the same speakers on both sides"
+        )
     (output / "split_audit.json").write_text(json.dumps(audit, indent=2) + "\n")
-    print(json.dumps({k: audit[k] for k in (
-        "utterance_overlap", "speakers_total", "speakers_shared", "counts")}, indent=2))
+    print(
+        json.dumps(
+            {
+                k: audit[k]
+                for k in (
+                    "utterance_overlap",
+                    "speakers_total",
+                    "speakers_shared",
+                    "counts",
+                )
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

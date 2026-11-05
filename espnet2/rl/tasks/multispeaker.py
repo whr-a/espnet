@@ -89,9 +89,7 @@ def prepare_multispeaker_manifest(
     import soundfile as sf
 
     speakers = read_kaldi(utt2spk)
-    base = materialize_kaldi_audio(
-        wav_scp, text, audio_directory(output), sample_rate
-    )
+    base = materialize_kaldi_audio(wav_scp, text, audio_directory(output), sample_rate)
     by_speaker = {}
     for record in base:
         by_speaker.setdefault(speakers[record["id"]], []).append(record)
@@ -116,7 +114,9 @@ def prepare_multispeaker_manifest(
         waves = [sf.read(item["audio"], dtype="float32")[0] for item in (first, second)]
         mixture, delay = mix_two_speakers(*waves, overlap, sample_rate)
         identity = f"mix{index:04d}-{first['id']}-{second['id']}"
-        target = directory / (hashlib.sha256(identity.encode()).hexdigest()[:20] + ".wav")
+        target = directory / (
+            hashlib.sha256(identity.encode()).hexdigest()[:20] + ".wav"
+        )
         sf.write(str(target), mixture, sample_rate, subtype="FLOAT")
         records.append(
             {

@@ -16,11 +16,11 @@ from miles.utils import object_store
 from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 
 from ..config import ESPnetRLConfig
-from .failure import preserve_preupdate_failure
 from ..rollout.local import CheckpointRollout
-from ..trainer.scoring import score_native_batch
 from ..trainer.learner import NativeGRPOTrainer
+from ..trainer.scoring import score_native_batch
 from ..utils import build_policy
+from .failure import preserve_preupdate_failure
 
 
 class BehaviorSnapshot:

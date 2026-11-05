@@ -110,12 +110,13 @@ def _validate_speaker_id(records):
         return
     lists = {}
     for record in records:
-        lists.setdefault(record["speaker"], set()).add(
-            tuple(record["speaker_choices"])
-        )
+        lists.setdefault(record["speaker"], set()).add(tuple(record["speaker_choices"]))
     constant = [name for name, seen in lists.items() if len(seen) == 1]
-    repeated = [name for name in constant if sum(
-        1 for record in records if record["speaker"] == name) > 1]
+    repeated = [
+        name
+        for name in constant
+        if sum(1 for record in records if record["speaker"] == name) > 1
+    ]
     # One speaker cannot be leaked: with a single label there is nothing for
     # the list to distinguish.
     if len(lists) > 1 and repeated and len(repeated) == len(lists):
@@ -123,9 +124,9 @@ def _validate_speaker_id(records):
             f"Every utterance of each of the {len(repeated)} speakers is offered "
             f"the same candidate list, so the list identifies the answer and a "
             f"model can score without listening. Regenerate with "
-            f"espnet2.rl.tasks.speaker's default choice_key=\"utterance\", or, if a "
+            f'espnet2.rl.tasks.speaker\'s default choice_key="utterance", or, if a '
             f"per-speaker draw is intended, say so by stamping "
-            f"choice_key=\"speaker\" (or choice_draw={{\"keyed_on\": \"speaker\"}}) "
+            f'choice_key="speaker" (or choice_draw={{"keyed_on": "speaker"}}) '
             f"into the records."
         )
 
@@ -280,7 +281,8 @@ def _leak_free_corpus(records):
         for speaker in speakers(record):
             same, total = per_speaker.get(speaker, (0, 0))
             per_speaker[speaker] = (
-                same + (str(record.get("verdict")) == "same"), total + 1
+                same + (str(record.get("verdict")) == "same"),
+                total + 1,
             )
     priors = {
         speaker: same / total
@@ -314,7 +316,8 @@ def _leak_free_corpus(records):
                 continue
             same, total = groups.get(record[field], (0, 0))
             groups[record[field]] = (
-                same + (str(record.get("verdict")) == "same"), total + 1
+                same + (str(record.get("verdict")) == "same"),
+                total + 1,
             )
         for value, (same, total) in groups.items():
             if total >= 10 and abs(same / total - share) > LABEL_LEAK_TOLERANCE:

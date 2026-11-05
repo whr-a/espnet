@@ -130,9 +130,7 @@ def test_task_recipes_do_not_change_the_existing_profiles():
     """
     unchanged = {
         "egs2/owsm_v4/s2t1/conf/rl_miles_wer_1gpu.yaml": None,
-        "egs2/libritts/speechlm1/conf/rl_opuslm_librispeech_2gpu_async.yaml": (
-            "wer"
-        ),
+        "egs2/libritts/speechlm1/conf/rl_opuslm_librispeech_2gpu_async.yaml": ("wer"),
         "egs2/libritts/speechlm1/conf/rl_opuslm_dialogue_librispeech_1gpu.yaml": (
             "wer"
         ),

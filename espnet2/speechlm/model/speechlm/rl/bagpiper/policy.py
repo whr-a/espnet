@@ -115,9 +115,7 @@ def move_native_model(model, device, dtype, *, preserve_decoder_rope_fp32=False)
     if preserve_decoder_rope_fp32:
         decoder = getattr(getattr(model, "corelm", model), "model", None)
         if decoder is None:
-            raise ValueError(
-                "FP32 decoder RoPE preservation requires a native decoder"
-            )
+            raise ValueError("FP32 decoder RoPE preservation requires a native decoder")
         for module in decoder.modules():
             if not hasattr(module, "inv_freq"):
                 continue
@@ -135,7 +133,9 @@ def move_native_model(model, device, dtype, *, preserve_decoder_rope_fp32=False)
                     )
                 frequencies.append((module, name, value.detach().clone()))
         if not frequencies:
-            raise ValueError("Native decoder exposes no original RoPE frequency buffers")
+            raise ValueError(
+                "Native decoder exposes no original RoPE frequency buffers"
+            )
     model = model.to(device=device, dtype=dtype)
     for module, name, original in frequencies:
         setattr(module, name, original.to(device=getattr(module, name).device))

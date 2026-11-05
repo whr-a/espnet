@@ -15,7 +15,6 @@ import torch
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.rollout.engine import SGLangRolloutEngine
 from espnet2.rl.rollout.local import CheckpointRollout
-from espnet2.rl.rollout.worker import RolloutServer
 from espnet2.rl.rollout.weights import (
     CODEC,
     HASH_KIND,
@@ -25,6 +24,7 @@ from espnet2.rl.rollout.weights import (
     tensor_digest,
     verify_weights,
 )
+from espnet2.rl.rollout.worker import RolloutServer
 
 
 def sealed(weights, step=3):

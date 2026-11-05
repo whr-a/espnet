@@ -37,8 +37,10 @@ from torch.nn import functional as F
 from transformers import LlamaConfig, Olmo2Config
 
 from espnet2.speechlm.rl.multistream import active_streams
+from espnet2.speechlm.rl.sglang_model import _backbone_config
 from espnet2.speechlm.rl.sglang_model import _CompleteLoad as _TextCompleteLoad
-from espnet2.speechlm.rl.sglang_model import _backbone_config, _native_fp32_norms
+from espnet2.speechlm.rl.sglang_model import _native_fp32_norms
+
 
 class _CompleteLoad(_TextCompleteLoad):
     """The text model's complete-load check, which also drops the prompt
@@ -152,9 +154,11 @@ class _OpusMultiStream:
     def _embed_frames(self, frames):
         """Native ARDelay embedding: zero every pad entry, then sum streams."""
         rows = self.model.embed_tokens(frames)
-        return rows.float().masked_fill(
-            (frames == self.geometry["pad_token_id"])[..., None], 0
-        ).sum(-2)
+        return (
+            rows.float()
+            .masked_fill((frames == self.geometry["pad_token_id"])[..., None], 0)
+            .sum(-2)
+        )
 
     def _extend(self, input_ids, batch):
         """Nine-stream prompt embeddings of new requests; reset their state."""
@@ -219,9 +223,9 @@ class _OpusMultiStream:
                 logits = logits / self.temperature
                 choice = torch.multinomial(logits.softmax(-1), 1)[:, 0]
             ids[rows, stream - 1] = choice
-            scores[rows, stream - 1] = (
-                logits.log_softmax(-1).gather(-1, choice[:, None])[:, 0]
-            )
+            scores[rows, stream - 1] = logits.log_softmax(-1).gather(
+                -1, choice[:, None]
+            )[:, 0]
         return ids, scores
 
     def _head(self, hidden, slots):
@@ -299,7 +303,9 @@ class _OpusMultiStream:
         mode = forward_batch.forward_mode
         if mode == ForwardMode.IDLE:
             return LogitsProcessorOutput(
-                next_token_logits=input_ids.new_empty((0, self.vocab), dtype=torch.float)
+                next_token_logits=input_ids.new_empty(
+                    (0, self.vocab), dtype=torch.float
+                )
             )
         if input_embeds is not None or get_embedding:
             raise ValueError("OpusLM builds its own native input embeddings")

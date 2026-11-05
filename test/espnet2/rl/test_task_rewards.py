@@ -5,10 +5,12 @@ import json
 import pytest
 
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.tasks.manifest import read_manifest
 from espnet2.rl.rewards import REWARDS, get_reward, outcome_rewards
-from espnet2.rl.rewards.asr import longform_wer_reward, repeated_word_fraction
-from espnet2.rl.rewards.asr import word_error_reward
+from espnet2.rl.rewards.asr import (
+    longform_wer_reward,
+    repeated_word_fraction,
+    word_error_reward,
+)
 from espnet2.rl.rewards.cpwer import (
     MAX_CPWER_SPEAKERS,
     concatenated_wer,
@@ -21,6 +23,7 @@ from espnet2.rl.rewards.speaker import (
     speaker_id_reward,
     speaker_verification_reward,
 )
+from espnet2.rl.tasks.manifest import read_manifest
 
 CHOICES = ["1263", "374", "8842", "2277"]
 
@@ -107,7 +110,9 @@ def test_speaker_reward_scores_accuracy_plus_a_terminal_format_bonus():
 
 def test_speaker_reward_rejects_a_label_outside_its_own_choice_set():
     with pytest.raises(ValueError, match="not exactly one of its speaker_choices"):
-        speaker_id_reward(speaker_source(speaker="9999"), {"text": "<answer>374</answer>"})
+        speaker_id_reward(
+            speaker_source(speaker="9999"), {"text": "<answer>374</answer>"}
+        )
 
 
 def test_speaker_reward_rejects_a_rollout_that_did_not_emit_text():
@@ -121,9 +126,7 @@ def test_speaker_manifest_without_supervision_is_rejected_before_training(tmp_pa
     with pytest.raises(ValueError, match="speaker_id requires speaker"):
         read_manifest(
             path,
-            config=type(
-                "C", (), {"reward_function": "speaker_id"}
-            )(),
+            config=type("C", (), {"reward_function": "speaker_id"})(),
         )
 
 
@@ -318,7 +321,9 @@ def test_an_unbalanced_label_distribution_is_rejected():
     speakers = ("a", "b", "c", "d")
     for index in range(2):
         for speaker in speakers:
-            rows.append(verification_pair(f"bal{index}{speaker}", "same", speaker, speaker))
+            rows.append(
+                verification_pair(f"bal{index}{speaker}", "same", speaker, speaker)
+            )
     with pytest.raises(ValueError, match="further than"):
         speaker_verification_reward.validate_sources(rows)
 
@@ -370,8 +375,11 @@ def test_longform_reward_separates_early_stopping_from_looping():
     assert (stopped["truncated"], stopped["repeat_rate"]) == (0.0, 0.0)
 
     looped = longform_wer_reward(
-        source, {"text": " ".join(["w0 w1 w2 w3 w4 w5 w6 w7 w8"] * 30),
-                 "finish_reason": {"type": "length"}}
+        source,
+        {
+            "text": " ".join(["w0 w1 w2 w3 w4 w5 w6 w7 w8"] * 30),
+            "finish_reason": {"type": "length"},
+        },
     )
     assert looped["truncated"] == 1.0
     assert looped["repeat_rate"] > 0.9
@@ -388,9 +396,7 @@ def test_repeat_rate_is_zero_for_a_response_shorter_than_its_window():
 
 
 def test_longform_contract_refuses_to_relabel_short_utterances(tmp_path):
-    config = type(
-        "C", (), {"reward_function": "longform_wer"}
-    )()
+    config = type("C", (), {"reward_function": "longform_wer"})()
     short = tmp_path / "short.jsonl"
     short.write_text(
         '{"id": "lf-1", "reference": "the cat sat", "min_reference_words": 200}\n'
@@ -418,9 +424,7 @@ def test_longform_contract_rejects_audio_past_its_declared_window(tmp_path):
     truncating, so a manifest packed by utterance count can die on every
     sample at the first read. This catches it on CPU instead.
     """
-    config = type(
-        "C", (), {"reward_function": "longform_wer"}
-    )()
+    config = type("C", (), {"reward_function": "longform_wer"})()
     reference = " ".join(f"w{index}" for index in range(200))
     path = tmp_path / "over.jsonl"
     path.write_text(
@@ -457,9 +461,7 @@ def test_longform_contract_rejects_audio_past_its_declared_window(tmp_path):
     # in-flight run is not broken by this check; it only fails at first read.
     legacy = tmp_path / "legacy.jsonl"
     legacy.write_text(
-        json.dumps(
-            {"id": "lf-1", "reference": reference, "min_reference_words": 200}
-        )
+        json.dumps({"id": "lf-1", "reference": reference, "min_reference_words": 200})
         + "\n"
     )
     assert len(read_manifest(legacy, config=config)) == 1
@@ -614,7 +616,10 @@ def test_a_mixed_manifest_may_name_a_reward_outside_the_builtin_tasks():
     assert get_reward(task) is batched_component
     batched_component.calls.clear()
     rows = mixed_task_reward(
-        [speaker_source(id="a", reward_task=task), speaker_source(id="b", reward_task=task)],
+        [
+            speaker_source(id="a", reward_task=task),
+            speaker_source(id="b", reward_task=task),
+        ],
         [{"text": "abc"}, {"text": "de"}],
     )
     # A batched component still sees its whole subset in one call.
@@ -635,15 +640,11 @@ def test_every_registered_reward_resolves_and_no_name_is_the_default_wer():
     for name in REWARDS:
         assert callable(get_reward(name)), name
     assert get_reward(None) is get_reward("wer") is word_error_reward
-    assert get_reward("espnet2.rl.rewards.asr:asr_wer_reward") is get_reward(
-        "asr_wer"
-    )
+    assert get_reward("espnet2.rl.rewards.asr:asr_wer_reward") is get_reward("asr_wer")
 
 
 def test_mixed_contract_delegates_to_each_component_before_training(tmp_path):
-    config = type(
-        "C", (), {"reward_function": "mixed"}
-    )()
+    config = type("C", (), {"reward_function": "mixed"})()
     path = tmp_path / "manifest.jsonl"
     path.write_text(
         '{"id": "a", "reward_task": "speaker_id", "speaker": "1263",'
@@ -680,9 +681,7 @@ def test_mixed_rewards_reach_the_trainer_through_outcome_rewards():
         for source, text in zip(sources, texts, strict=True)
     ]
     batch = collate_rollouts(sources, generations, 1)
-    rewards, token_rewards, metrics = outcome_rewards(
-        batch, "mixed"
-    )
+    rewards, token_rewards, metrics = outcome_rewards(batch, "mixed")
     assert rewards.tolist() == [pytest.approx(1.1), pytest.approx(-0.5)]
     # The reward lands on each candidate's last sampled action.
     assert token_rewards[0].tolist() == [0.0, pytest.approx(1.1)]
@@ -697,9 +696,7 @@ def test_speaker_contract_rejects_a_candidate_list_that_leaks_the_label(tmp_path
     label whenever training and heldout share one speaker inventory, which is
     the only closed-set split a disjoint-speaker corpus allows.
     """
-    config = type(
-        "C", (), {"reward_function": "speaker_id"}
-    )()
+    config = type("C", (), {"reward_function": "speaker_id"})()
 
     def manifest(name, records):
         path = tmp_path / name
@@ -740,9 +737,7 @@ def test_speaker_contract_rejects_a_candidate_list_that_leaks_the_label(tmp_path
 
 def test_a_single_speaker_manifest_is_not_a_leak(tmp_path):
     """With one label there is nothing for the candidate list to distinguish."""
-    config = type(
-        "C", (), {"reward_function": "speaker_id"}
-    )()
+    config = type("C", (), {"reward_function": "speaker_id"})()
     path = tmp_path / "one.jsonl"
     path.write_text(
         "".join(
@@ -770,9 +765,7 @@ def test_a_preparer_that_declares_its_draw_as_choice_draw_is_understood(tmp_path
     ``choice_key`` would let a deliberate per-speaker draw be rejected for
     not declaring itself, while it had.
     """
-    config = type(
-        "C", (), {"reward_function": "speaker_id"}
-    )()
+    config = type("C", (), {"reward_function": "speaker_id"})()
 
     def manifest(name, records):
         path = tmp_path / name
@@ -832,9 +825,7 @@ def test_a_choice_draw_that_is_not_a_mapping_does_not_crash_the_check(tmp_path):
     """The field is read off records this code did not write, so its shape is
     not guaranteed. A string there must not turn a data check into a
     TypeError at manifest-read time."""
-    config = type(
-        "C", (), {"reward_function": "speaker_id"}
-    )()
+    config = type("C", (), {"reward_function": "speaker_id"})()
     path = tmp_path / "weird.jsonl"
     path.write_text(
         "".join(

@@ -47,6 +47,7 @@ class BagpiperEngine(SGLangRolloutEngine):
             dtype=self.config.dtype,
             attention_backend="triton" if float32 else "fa3",
         )
+
     frozen = (
         "skip_tokenizer_init",
         "disable_cuda_graph",

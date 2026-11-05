@@ -9,8 +9,8 @@ import pytest
 import torch
 
 import espnet2.rl.trainer.algorithms as miles_library
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
+from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.trainer.algorithms import (
     compute_grpo_outcome_advantage,
     compute_policy_loss_vanilla,

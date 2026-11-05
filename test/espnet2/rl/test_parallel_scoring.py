@@ -13,8 +13,8 @@ import torch.multiprocessing as multiprocessing
 from torch import nn
 
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
+from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.types import TokenScores
 
 

@@ -354,9 +354,7 @@ def evaluate_sampled(
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     policy = OWSMPolicy.from_config(config, config.device).eval()
-    selected = select_subset(
-        read_manifest(manifest), subset_stride, subset_limit
-    )
+    selected = select_subset(read_manifest(manifest), subset_stride, subset_limit)
     processor = detokenizer(config)
     generations = sampled_decode(
         policy,

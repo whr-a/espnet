@@ -134,9 +134,10 @@ def test_speaker_manifest_can_key_its_choices_per_utterance(tmp_path):
     )
     audit = json.loads((tmp_path / "by_utt.jsonl.audit.json").read_text())
     assert audit["choice_key"] == "utterance"
-    assert json.loads((tmp_path / "by_speaker.jsonl.audit.json").read_text())[
-        "choice_key"
-    ] == "speaker"
+    assert (
+        json.loads((tmp_path / "by_speaker.jsonl.audit.json").read_text())["choice_key"]
+        == "speaker"
+    )
 
 
 def test_speaker_manifest_rejects_an_unknown_choice_key(tmp_path):
@@ -147,7 +148,9 @@ def test_speaker_manifest_rejects_an_unknown_choice_key(tmp_path):
         )
 
 
-def test_speaker_manifest_carries_its_own_prompt_and_passes_the_reward_contract(tmp_path):
+def test_speaker_manifest_carries_its_own_prompt_and_passes_the_reward_contract(
+    tmp_path,
+):
     wav, _, utt2spk = corpus(tmp_path)
     records = prepare_speaker_id_manifest(
         wav, utt2spk, tmp_path / "spk.jsonl", choices=3, seed=42
@@ -405,12 +408,8 @@ def test_the_verbatim_instruction_names_each_tag_on_its_own(tmp_path):
         )
         assert "{" not in record["prompt"]
     # The mixtures themselves do not depend on the instruction.
-    plain = prepare_multispeaker_manifest(
-        wav, text, utt2spk, tmp_path / "plain.jsonl"
-    )
-    assert [r["audio_sha256"] for r in plain] == [
-        r["audio_sha256"] for r in records
-    ]
+    plain = prepare_multispeaker_manifest(wav, text, utt2spk, tmp_path / "plain.jsonl")
+    assert [r["audio_sha256"] for r in plain] == [r["audio_sha256"] for r in records]
 
 
 def test_the_cli_offers_exactly_the_named_instructions(tmp_path, monkeypatch):
@@ -683,7 +682,11 @@ def test_the_default_candidate_draw_does_not_leak_the_answer(tmp_path):
 def test_the_leaky_mode_is_still_reachable_but_must_be_asked_for(tmp_path):
     wav, _, utt2spk = corpus(tmp_path, per_speaker=4)
     records = prepare_speaker_id_manifest(
-        wav, utt2spk, tmp_path / "legacy.jsonl", choices=4, seed=42,
+        wav,
+        utt2spk,
+        tmp_path / "legacy.jsonl",
+        choices=4,
+        seed=42,
         choice_key="speaker",
     )
     by_speaker = {}
@@ -693,9 +696,10 @@ def test_the_leaky_mode_is_still_reachable_but_must_be_asked_for(tmp_path):
         )
     # The old behaviour: one list per speaker, order included.
     assert all(len(lists) == 1 for lists in by_speaker.values())
-    assert json.loads(
-        (tmp_path / "legacy.jsonl.audit.json").read_text()
-    )["choice_key"] == "speaker"
+    assert (
+        json.loads((tmp_path / "legacy.jsonl.audit.json").read_text())["choice_key"]
+        == "speaker"
+    )
 
 
 def test_every_registered_task_has_its_own_command():

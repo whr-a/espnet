@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from espnet2.rl.tasks import manifest as data
 from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.tasks import manifest as data
 from espnet2.speechlm.model.speechlm.rl.bagpiper.data import qa_prompt, qa_system_prompt
 
 REWARD = "espnet2.speechlm.model.speechlm.rl.bagpiper.rewards:qa_bagpiper_v2_reward"
@@ -91,9 +91,7 @@ def test_native_passes_and_the_default_reward_keeps_its_contract(tmp_path):
     west["prompt"] = qa_prompt(west["question"], west["choices"])
     path = manifest(tmp_path, [west])
     config = SimpleNamespace(
-        reward_function=REWARD.replace(
-            "qa_bagpiper_v2_reward", "qa_v1_reward"
-        )
+        reward_function=REWARD.replace("qa_bagpiper_v2_reward", "qa_v1_reward")
     )
     assert data.read_manifest(path, config=config) == [west]
 
@@ -119,8 +117,8 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
     tmp_path, monkeypatch, mode, validate_only
 ):
     from espnet2.bin import rl_train as shared_cli
-    from espnet2.rl.trainer import algorithms as miles_library
     from espnet2.rl.rollout import engine as rollout_engine
+    from espnet2.rl.trainer import algorithms as miles_library
 
     worker = None if mode == "sync" else "ray"
     path = manifest(tmp_path, [{**native_source(), "qa_template": "default"}])
@@ -149,8 +147,8 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
 @pytest.mark.parametrize("mode", ["sync", "disagg_async"])
 def test_validate_only_accepts_native_sources_without_ray(tmp_path, monkeypatch, mode):
     from espnet2.bin import rl_train as shared_cli
-    from espnet2.rl.trainer import algorithms as miles_library
     from espnet2.rl.rollout import engine as rollout_engine
+    from espnet2.rl.trainer import algorithms as miles_library
 
     worker = None if mode == "sync" else "ray"
     path = manifest(tmp_path, [native_source(), {**native_source(), "id": "qa-2"}])

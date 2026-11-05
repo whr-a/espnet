@@ -6,8 +6,8 @@ import pytest
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.trainer.timing import learner_timing
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
+from espnet2.rl.trainer.timing import learner_timing
 
 
 def test_common_window_excludes_initialization_and_includes_outside_call_wait():

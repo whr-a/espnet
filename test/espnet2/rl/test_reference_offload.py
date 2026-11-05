@@ -10,11 +10,11 @@ from contextlib import contextmanager
 import pytest
 import torch
 
-from espnet2.rl.trainer import learner as trainer_module
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.trainer.scoring import score_native_batch
+from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.trainer import learner as trainer_module
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
+from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.types import TokenScores
 
 
@@ -123,7 +123,10 @@ def test_reference_returns_to_cpu_after_scoring_or_transfer_failure(failure):
         Policy(), configuration(reference_cpu_offload=True), reference=reference
     )
     reference.failure = failure
-    with torch.no_grad(), pytest.raises(RuntimeError, match=f"reference {failure} failed"):
+    with (
+        torch.no_grad(),
+        pytest.raises(RuntimeError, match=f"reference {failure} failed"),
+    ):
         trainer._score_chunks(reference, batch())
     assert reference.location == "cpu"
     assert reference.moves[-2:] == ["cuda:7", "cpu"]

@@ -130,8 +130,9 @@ def test_unit_temperature_is_reproducible_and_seed_dependent():
     assert sampled_decode(policy, sources, None, seed=7, **draw) == first
     assert sampled_decode(policy, sources, None, seed=8, **draw) != first
     # A spread distribution must actually leave the greedy mode somewhere.
-    assert first != sampled_decode(policy, sources, None, temperature=0.0, samples=4,
-                                   max_tokens=8)
+    assert first != sampled_decode(
+        policy, sources, None, temperature=0.0, samples=4, max_tokens=8
+    )
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, 5, 64])
@@ -140,13 +141,25 @@ def test_sampling_does_not_depend_on_the_batch_shape(batch_size):
     policy = SpreadPolicy()
     sources = utterances((5, 7, 4, 6, 5))
     reference = sampled_decode(
-        policy, sources, None, max_tokens=8, batch_size=16, temperature=1.0,
-        samples=2, seed=3,
+        policy,
+        sources,
+        None,
+        max_tokens=8,
+        batch_size=16,
+        temperature=1.0,
+        samples=2,
+        seed=3,
     )
     assert (
         sampled_decode(
-            policy, sources, None, max_tokens=8, batch_size=batch_size,
-            temperature=1.0, samples=2, seed=3,
+            policy,
+            sources,
+            None,
+            max_tokens=8,
+            batch_size=batch_size,
+            temperature=1.0,
+            samples=2,
+            seed=3,
         )
         == reference
     )
@@ -180,8 +193,14 @@ def test_top_k_one_collapses_sampling_onto_the_mode():
     )
     assert (
         sampled_decode(
-            policy, sources, None, max_tokens=8, temperature=1.0, samples=2,
-            seed=5, top_k=1,
+            policy,
+            sources,
+            None,
+            max_tokens=8,
+            temperature=1.0,
+            samples=2,
+            seed=5,
+            top_k=1,
         )
         == greedy
     )
@@ -207,8 +226,13 @@ def test_sampled_draws_follow_the_decoder_distribution():
     policy = SpreadPolicy()
     # Length 9 exceeds the budget, so no row stops and token 1 is never EOS.
     rows = sampled_decode(
-        policy, utterances((9,)) * 50, None, max_tokens=1, temperature=1.0,
-        samples=20, seed=11,
+        policy,
+        utterances((9,)) * 50,
+        None,
+        max_tokens=1,
+        temperature=1.0,
+        samples=20,
+        seed=11,
     )
     first = [row[0] for row in rows]
     total = math.exp(2) + math.exp(1) + 8

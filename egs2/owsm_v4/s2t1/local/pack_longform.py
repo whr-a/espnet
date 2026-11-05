@@ -188,7 +188,11 @@ def main():
     Path(str(output) + ".audit.json").write_text(
         json.dumps(audit, indent=2, ensure_ascii=False) + "\n"
     )
-    summary = {k: v for k, v in audit.items() if k not in ("reference_words_per_id", "rejected_examples")}
+    summary = {
+        k: v
+        for k, v in audit.items()
+        if k not in ("reference_words_per_id", "rejected_examples")
+    }
     print(json.dumps(summary, indent=2))
 
 

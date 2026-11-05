@@ -82,8 +82,8 @@ def launch_command(args, *, python=sys.executable, config=None):
 
 
 def validate_inputs(config, args):
-    from espnet2.rl.tasks.manifest import read_manifest, verify_data_admission
     from espnet2.rl.rollout.engine import engine_class
+    from espnet2.rl.tasks.manifest import read_manifest, verify_data_admission
 
     sources = read_manifest(config.manifest, config=config)
     engine_class(config)

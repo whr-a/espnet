@@ -432,6 +432,7 @@ class OpusLMMultiStreamEngine(_OpusEngine):
             attention_backend="triton",
             dtype=self.config.dtype,
         )
+
     frozen = (
         "skip_tokenizer_init",
         "disable_cuda_graph",

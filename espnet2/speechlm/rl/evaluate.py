@@ -9,12 +9,12 @@ from pathlib import Path
 
 import torch
 
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.tasks.manifest import read_manifest
-from espnet2.rl.rollout.engine import fit_context
+from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.rewards.text import edit_distance, words
+from espnet2.rl.rollout.engine import fit_context
 from espnet2.rl.rollout.local import CheckpointRollout
+from espnet2.rl.tasks.manifest import read_manifest
 from espnet2.rl.types import drift_gate
 from espnet2.rl.utils import build_policy, sha256, validate_export_files
 

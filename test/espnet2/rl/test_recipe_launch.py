@@ -200,9 +200,7 @@ def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
 def test_owsm_recipe_route_keeps_template_step_budget(tmp_path):
     command_python = mock_python(tmp_path)
     config = async_config(tmp_path)
-    for index, relative in enumerate(
-        ("egs2/owsm_v4/s2t1/rl.sh",)
-    ):
+    for index, relative in enumerate(("egs2/owsm_v4/s2t1/rl.sh",)):
         log = tmp_path / f"route{index}.jsonl"
         env = {
             **os.environ,

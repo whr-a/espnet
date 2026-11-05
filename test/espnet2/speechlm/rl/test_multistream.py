@@ -113,7 +113,9 @@ def delayed_block(length, codes=None):
         frames[audio][0] = METADATA["ssl_token_start"] + audio % 10
         for stream in range(1, NQ):
             value = (
-                codes[stream - 1][audio] if codes is not None else (audio + stream) % SIZE
+                codes[stream - 1][audio]
+                if codes is not None
+                else (audio + stream) % SIZE
             )
             frames[audio + stream][stream] = base + (stream - 1) * SIZE + value
     frames[length][0] = METADATA["codec_ssl_start_end_token_id"]
@@ -121,7 +123,9 @@ def delayed_block(length, codes=None):
 
 
 def test_deinterleave_recovers_the_codes_the_delay_hid():
-    codes = [[(audio * 3 + stream) % SIZE for audio in range(6)] for stream in range(NQ - 1)]
+    codes = [
+        [(audio * 3 + stream) % SIZE for audio in range(6)] for stream in range(NQ - 1)
+    ]
     recovered, status = deinterleave_codec(delayed_block(6, codes), METADATA)
     assert status == "ok"
     assert recovered.shape == (NQ - 1, 6)
@@ -154,7 +158,7 @@ def test_a_complete_block_uses_the_length_its_close_marker_declares():
 
 
 def test_a_block_shorter_than_the_ramp_has_no_audio():
-    assert deinterleave_codec(delayed_block(6)[:NQ - 2], METADATA)[1] == "no_audio"
+    assert deinterleave_codec(delayed_block(6)[: NQ - 2], METADATA)[1] == "no_audio"
 
 
 def test_a_code_outside_its_own_layer_is_never_clamped():
@@ -183,9 +187,7 @@ def test_an_inactive_stream_scores_exactly_zero_whatever_its_logits():
 def test_a_fully_forced_frame_does_not_poison_the_other_frames():
     # Every stream masked out: no NaN, no exception, all zero.
     logits = torch.randn(1, 2, VOCAB, generator=torch.Generator().manual_seed(1))
-    logits = logits.masked_fill(
-        ~torch.zeros(VOCAB, dtype=torch.bool), -torch.inf
-    )
+    logits = logits.masked_fill(~torch.zeros(VOCAB, dtype=torch.bool), -torch.inf)
     labels = torch.zeros(1, 2, dtype=torch.long)
     mask = torch.zeros(1, 2, dtype=torch.bool)
     logp, entropy = selected_log_probs(logits, labels, mask)
@@ -242,9 +244,7 @@ def test_collate_accepts_the_engine_record_and_keeps_every_stream():
     stream_mask = batch.batch["response_stream_mask"]
     assert stream_mask.shape == responses.shape
     # collate's own invariant, restated: an active frame is one with a stream.
-    assert torch.equal(
-        batch.batch["response_mask"].bool(), stream_mask.bool().any(-1)
-    )
+    assert torch.equal(batch.batch["response_mask"].bool(), stream_mask.bool().any(-1))
     # The per-frame behaviour probability is the sum over streams.
     expected = torch.tensor(generations[0]["log_probs"])
     assert torch.allclose(
@@ -288,9 +288,7 @@ class TinyCore(nn.Module):
         self.head_emb = nn.Embedding(12, hidden)
         for parameter in self.parameters():
             with torch.no_grad():
-                parameter.copy_(
-                    torch.randn(parameter.shape, generator=generator) * 0.3
-                )
+                parameter.copy_(torch.randn(parameter.shape, generator=generator) * 0.3)
         self.decoders = nn.Module()
         self.decoders.model_type = "huggingface"
         self.decoders.model = _Causal(hidden, generator)
@@ -308,7 +306,9 @@ class _Causal(nn.Module):
         super().__init__()
         self.mix = nn.Linear(hidden, hidden, bias=False)
         with torch.no_grad():
-            self.mix.weight.copy_(torch.randn(hidden, hidden, generator=generator) * 0.3)
+            self.mix.weight.copy_(
+                torch.randn(hidden, hidden, generator=generator) * 0.3
+            )
 
     def forward(self, inputs_embeds=None, use_cache=False, **kwargs):
         cumulative = inputs_embeds.cumsum(1)
@@ -394,9 +394,9 @@ def test_the_secondary_stream_gradient_matches_a_finite_difference():
         core.emb.weight.copy_(saved)
     numeric = (plus - minus) / (2 * epsilon)
     assert analytic != 0.0
-    assert math.isclose(analytic, numeric, rel_tol=2e-3, abs_tol=1e-5), (
-        f"analytic {analytic} vs finite difference {numeric}"
-    )
+    assert math.isclose(
+        analytic, numeric, rel_tol=2e-3, abs_tol=1e-5
+    ), f"analytic {analytic} vs finite difference {numeric}"
 
 
 def test_pad_positions_contribute_no_gradient_to_the_primary_score():
@@ -449,8 +449,11 @@ def test_an_action_outside_the_declared_support_is_refused():
     supports = codec_supports(METADATA)
     # Stream 1 holding one of stream 2's ids.
     frames = torch.tensor(
-        [[METADATA["ssl_token_start"] + 1] + [METADATA["codec_token_start"] + SIZE]
-         + [0] * (NQ - 2)]
+        [
+            [METADATA["ssl_token_start"] + 1]
+            + [METADATA["codec_token_start"] + SIZE]
+            + [0] * (NQ - 2)
+        ]
     )
     active = torch.tensor([[True, True] + [False] * (NQ - 2)])[None]
     sequence = torch.cat((torch.tensor(prompt), frames))[None]

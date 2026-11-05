@@ -17,11 +17,11 @@ import torch.multiprocessing as multiprocessing
 from torch import nn
 from torch.nn import functional as F
 
-from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
+from espnet2.rl.config import ESPnetRLConfig
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.trainer.optim import CPUOffloadedAdamW
 from espnet2.rl.trainer.state import save_checkpoint
-from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 
 
