@@ -76,6 +76,7 @@ class OWSMEngine(SGLangRolloutEngine):
         "disable_radix_cache",
         "chunked_prefill_size",
     )
+    family_name = "OWSM"
     sources_file = "sources.json"
     # Each sampled token's log probability at the sampling temperature.
     original_logprob = False
@@ -111,21 +112,13 @@ class OWSMEngine(SGLangRolloutEngine):
                         frequency_penalty=0.0,
                     )
                 )
-        outputs = self.engine.generate(
+        outputs = self.request(
+            rids,
             input_ids=inputs,
             sampling_params=sampling,
-            rid=rids,
-            return_logprob=True,
             logprob_start_len=[len(row) - 1 for row in inputs],
             top_logprobs_num=0,
         )
-        if isinstance(outputs, dict):
-            outputs = [outputs]
-        if len(outputs) != len(inputs) or any(
-            output["meta_info"]["id"] != rid
-            for output, rid in zip(outputs, rids, strict=True)
-        ):
-            raise RuntimeError("SGLang returned incomplete OWSM prompt groups")
         generations = []
         for index, output in enumerate(outputs):
             source_index = index // self.config.group_size

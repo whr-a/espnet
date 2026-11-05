@@ -140,6 +140,8 @@ class SGLangRolloutEngine(RolloutEngine):
     # float32 attention at the drift gate, so it computes in IEEE float32
     # and accepts only an attention backend that does.
     triton_fp32 = False
+    # How errors name the family.
+    family_name = "SGLang"
 
     def __init__(self, config, model_path, *, directory, replica=0):
         if self.original_logprob is not None:
@@ -170,7 +172,7 @@ class SGLangRolloutEngine(RolloutEngine):
         if self.triton_fp32 and self.config.dtype == "float32":
             if settings["attention_backend"] not in ("triton", "torch_native"):
                 raise ValueError(
-                    f"float32 {type(self).__name__} needs triton or "
+                    f"float32 {self.family_name} needs triton or "
                     "torch_native attention"
                 )
         if self.sources_file is not None:
@@ -178,6 +180,18 @@ class SGLangRolloutEngine(RolloutEngine):
             overrides["espnet_rollout_sources"] = str(self.sources_path.resolve())
             settings["json_model_override_args"] = json.dumps(overrides)
         return settings
+
+    def request(self, rids, **request):
+        """Submit one request per id and return the answers in request
+        order, refusing any batch whose answers are not exactly those."""
+        outputs = self.engine.generate(rid=rids, return_logprob=True, **request)
+        if isinstance(outputs, dict):
+            outputs = [outputs]
+        if [output["meta_info"]["id"] for output in outputs] != list(rids):
+            raise RuntimeError(
+                f"SGLang returned incomplete {self.family_name} prompt groups"
+            )
+        return outputs
 
     def check_kv_pool(self):
         """Fail unless SGLang can never retract a running request.

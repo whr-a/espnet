@@ -200,6 +200,7 @@ class OpusLMEngine(SGLangRolloutEngine):
     # input_embeds requests reach the scheduler with placeholder token IDs, so
     # a radix cache would share KV between different prompts. The engine never
     # tokenizes, and CUDA graphs are not validated for the text-support mask.
+    family_name = "OpusLM"
     frozen = ("skip_tokenizer_init", "disable_cuda_graph", "disable_radix_cache")
 
     @property
@@ -286,16 +287,7 @@ class OpusLMEngine(SGLangRolloutEngine):
                         ),
                     )
                 )
-        outputs = self.engine.generate(
-            input_embeds=inputs, sampling_params=sampling, rid=rids, return_logprob=True
-        )
-        if isinstance(outputs, dict):
-            outputs = [outputs]
-        if len(outputs) != len(rids) or any(
-            output["meta_info"]["id"] != rid
-            for output, rid in zip(outputs, rids, strict=True)
-        ):
-            raise RuntimeError("SGLang returned incomplete OpusLM prompt groups")
+        outputs = self.request(rids, input_embeds=inputs, sampling_params=sampling)
         start, end = metadata["text_token_start"], metadata["text_token_end"]
         active = [True] + [False] * (nq - 1)
         spec = {
@@ -416,6 +408,7 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
     primary ids alone, without its secondary streams.
     """
 
+    family_name = "OpusLM"
     sources_file = "sources.pt"
     original_logprob = True
     triton_fp32 = True
@@ -525,22 +518,17 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
                         frequency_penalty=0.0,
                     )
                 )
-        outputs = self.engine.generate(
+        outputs = self.request(
+            rids,
             input_ids=[
                 [frame[0] for frame in prompts[index]]
                 for index in range(len(sources))
                 for _ in range(group)
             ],
             sampling_params=parameters,
-            rid=rids,
-            return_logprob=True,
             logprob_start_len=-1,
             top_logprobs_num=0,
         )
-        if isinstance(outputs, dict):
-            outputs = [outputs]
-        if [output["meta_info"]["id"] for output in outputs] != rids:
-            raise RuntimeError("SGLang returned incomplete OpusLM prompt groups")
         generations = []
         for index, source in enumerate(sources):
             native = prepared_native_metadata(

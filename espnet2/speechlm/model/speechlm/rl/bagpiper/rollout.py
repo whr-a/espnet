@@ -27,6 +27,7 @@ class BagpiperEngine(SGLangRolloutEngine):
     secondary streams.
     """
 
+    family_name = "Bagpiper"
     sources_file = "sources.pt"
     original_logprob = True
     triton_fp32 = True
@@ -181,20 +182,15 @@ class BagpiperEngine(SGLangRolloutEngine):
                         hashlib.sha256(material).digest()[:4], "big"
                     )
                 parameters.append(params)
-        outputs = self.engine.generate(
+        outputs = self.request(
+            rids,
             input_ids=[
                 [frame[0] for frame in p] for p in prefixes for _ in range(group)
             ],
             sampling_params=parameters,
-            rid=rids,
-            return_logprob=True,
             logprob_start_len=-1,
             top_logprobs_num=0,
         )
-        if isinstance(outputs, dict):
-            outputs = [outputs]
-        if [output["meta_info"]["id"] for output in outputs] != rids:
-            raise RuntimeError("SGLang returned incomplete Bagpiper prompt groups")
         generations = []
         for index, (source, prefix) in enumerate(zip(sources, prefixes, strict=True)):
             # Identical for the whole group: hash the native inputs once.
