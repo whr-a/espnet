@@ -510,7 +510,6 @@ def run(args):
     (directory / "protocol.json").write_text(json.dumps(protocol, indent=2) + "\n")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    cuda = torch.device(args.device).type == "cuda"
     caller = None
     try:
         if args.responses:
@@ -540,7 +539,7 @@ def run(args):
         else:
             # The engine runs in this process, which is never a training rank.
             # Its processes and the export worker see only --device's GPU.
-            if cuda:
+            if torch.device(args.device).type == "cuda":
                 gpu = engine_gpu(args.device)
                 # Make --device current, and let torch count GPUs, before the
                 # narrowing below: --device then keeps the caller's numbering in

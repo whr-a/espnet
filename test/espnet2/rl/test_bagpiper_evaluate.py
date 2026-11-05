@@ -547,6 +547,13 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
     saved = str(output / "responses.json")
     again = evaluate.run(arguments("again", responses=saved))
     assert again["v1_correct"] == 1 and len(FakeEngine.calls) == 3
+    # Rescoring QA responses uses no device, so even a malformed --device
+    # passes; decoding records the malformed one as the run's failure.
+    evaluate.run(arguments("rescored", responses=saved, device="cuda1"))
+    with pytest.raises(RuntimeError, match="Invalid device string"):
+        evaluate.run(arguments("malformed", device="cuda1"))
+    completion = json.loads((tmp_path / "malformed" / "completion.json").read_text())
+    assert completion["status"] == "Failed"
     assert again["sampling"] == greedy and again["audio_seconds"] == 1.0
     for index, changes in enumerate(({"max_new_tokens": 1536}, {"audio_seconds": 3})):
         with pytest.raises(ValueError, match="responses were decoded with"):
