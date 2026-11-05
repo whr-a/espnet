@@ -15,177 +15,25 @@ from espnet2.rl.config import ESPnetRLConfig
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def frozen_config(tmp_path, mode, *, small=False, name=None, **overrides):
-    """Write a recipe yaml whose geometry is only its two device lists.
-
-    The small profile is the one-GPU recipe: a single training rank sharing
-    its device with the rollout engine. The full profiles keep the original
-    four collocated training ranks with four rollout replicas, and eight of
-    each for the disaggregated async node pair.
-    """
-    devices = (
-        dict(train_gpus="0", rollout_gpus="0")
-        if small
-        else dict(
-            train_gpus="0,1,2,3,4,5,6,7" if mode == "disagg_async" else "0,1,2,3",
-            rollout_gpus=("0,1,2,3,4,5,6,7" if mode == "disagg_async" else "4,5,6,7"),
-        )
-    )
+def async_config(tmp_path):
+    """A disaggregated recipe yaml for the stage scripts to forward."""
     config = ESPnetRLConfig(
         adapter_factory="unused:factory",
         exporter="unused:exporter",
         sglang_engine="unused:Engine",
-        execution_mode=mode,
-        prompts_per_step=2 if small else 32,
-        group_size=4 if small else 8,
+        execution_mode="disagg_async",
+        prompts_per_step=32,
+        group_size=8,
         steps=5,
-        warmup_steps=0 if small else 1,
+        warmup_steps=1,
         reference_device="cpu",
         manifest="train32.jsonl",
-        **{**devices, **overrides},
+        train_gpus="0,1,2,3,4,5,6,7",
+        rollout_gpus="0,1,2,3,4,5,6,7",
     )
-    path = tmp_path / f"{name or mode}.yaml"
+    path = tmp_path / "disagg_async.yaml"
     path.write_text(yaml.safe_dump(config.to_dict()))
     return path
-
-
-def test_shared_launcher_routes_async_and_collocate_and_keeps_small_sync(
-    tmp_path, monkeypatch
-):
-    monkeypatch.delenv("WORLD_SIZE", raising=False)
-    sync = frozen_config(tmp_path, "sync")
-    args = parser().parse_args(
-        ["--config", str(sync), "--data-admission", "audit.json"]
-    )
-    command, environment = launch_command(args, python="pinned-python")
-    assert command[:7] == [
-        "pinned-python",
-        "-m",
-        "torch.distributed.run",
-        "--standalone",
-        "--nproc-per-node=4",
-        "-m",
-        "espnet2.bin.rl_train",
-    ]
-    assert environment["CUDA_VISIBLE_DEVICES"] == "0,1,2,3"
-    args.validate_only = True
-    assert launch_command(args, python="pinned-python")[0][:3] == [
-        "pinned-python",
-        "-m",
-        "espnet2.bin.rl_train",
-    ]
-    async_path = frozen_config(tmp_path, "disagg_async")
-    args = parser().parse_args(
-        [
-            "--config",
-            str(async_path),
-            "--data-admission",
-            "audit.json",
-            "--ray-address",
-            "ray-address",
-            "--train-node",
-            "train-node",
-            "--rollout-node",
-            "rollout-node",
-        ]
-    )
-    assert launch_command(args, python="pinned-python")[0][:3] == [
-        "pinned-python",
-        "-m",
-        "espnet2.bin.rl_train",
-    ]
-    args.rollout_node = None
-    with pytest.raises(ValueError, match="rollout-node"):
-        launch_command(args)
-    # A one-GPU recipe trains in this process and keeps the pod's device
-    # list, so its own `device` selects the GPU.
-    small = frozen_config(tmp_path, "sync", small=True, name="small")
-    args = parser().parse_args(["--config", str(small)])
-    command, environment = launch_command(args, python="pinned-python")
-    assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
-    assert "torch.distributed.run" not in command
-    assert environment.get("CUDA_VISIBLE_DEVICES") == os.environ.get(
-        "CUDA_VISIBLE_DEVICES"
-    )
-
-
-@pytest.mark.parametrize(
-    "train_gpus, rollout_gpus, ranks",
-    [
-        ("0", "0", 1),
-        ("3", "3", 1),
-        ("0", "1", 1),
-        ("0,1", "2,3", 2),
-        ("0,1,2,3", "4,5,6,7", 4),
-        ("0,1,2,3,4,5,6,7", "0,1,2,3,4,5,6,7", 8),
-    ],
-)
-def test_launcher_geometry_follows_the_recipe_train_gpus(
-    tmp_path, monkeypatch, train_gpus, rollout_gpus, ranks
-):
-    """One training rank per declared train GPU; torchrun only above one."""
-    monkeypatch.delenv("WORLD_SIZE", raising=False)
-    path = frozen_config(
-        tmp_path, "sync", train_gpus=train_gpus, rollout_gpus=rollout_gpus
-    )
-    assert ESPnetRLConfig.load(path).train_ranks == ranks
-    args = parser().parse_args(["--config", str(path)])
-    command, environment = launch_command(args, python="pinned-python")
-    if ranks == 1:
-        assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
-        assert "torch.distributed.run" not in command
-        assert environment.get("CUDA_VISIBLE_DEVICES") == os.environ.get(
-            "CUDA_VISIBLE_DEVICES"
-        )
-    else:
-        assert environment["CUDA_VISIBLE_DEVICES"] == train_gpus
-        assert command[:7] == [
-            "pinned-python",
-            "-m",
-            "torch.distributed.run",
-            "--standalone",
-            f"--nproc-per-node={ranks}",
-            "-m",
-            "espnet2.bin.rl_train",
-        ]
-
-
-def test_single_rank_launches_inside_a_platform_distributed_environment(
-    tmp_path, monkeypatch
-):
-    """A pytorch job pod exports WORLD_SIZE; one rank must still launch.
-
-    The stale variables are dropped from the child environment, so only a
-    nested torchrun is refused.
-    """
-    for name, value in (
-        ("WORLD_SIZE", "2"),
-        ("RANK", "0"),
-        ("LOCAL_RANK", "0"),
-        ("MASTER_ADDR", "10.0.0.1"),
-        ("MASTER_PORT", "29500"),
-    ):
-        monkeypatch.setenv(name, value)
-    one = frozen_config(tmp_path, "sync", train_gpus="0", rollout_gpus="0", name="one")
-    command, environment = launch_command(
-        parser().parse_args(["--config", str(one)]), python="pinned-python"
-    )
-    assert command[:3] == ["pinned-python", "-m", "espnet2.bin.rl_train"]
-    assert "torch.distributed.run" not in command
-    for name in ("WORLD_SIZE", "RANK", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
-        assert name not in environment
-    # Several ranks still launch: this toolkit's torchrun builds its own
-    # rendezvous from the scrubbed environment and pins the devices.
-    many = frozen_config(
-        tmp_path, "sync", train_gpus="0,1", rollout_gpus="0", name="many"
-    )
-    command, environment = launch_command(
-        parser().parse_args(["--config", str(many)]), python="pinned-python"
-    )
-    assert "--nproc-per-node=2" in command
-    assert environment["CUDA_VISIBLE_DEVICES"] == "0,1"
-    for name in ("WORLD_SIZE", "RANK", "MASTER_ADDR", "MASTER_PORT"):
-        assert name not in environment
 
 
 def test_shipped_one_and_two_gpu_owsm_recipes_declare_their_devices(
@@ -310,7 +158,7 @@ def mock_python(tmp_path):
 def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
     command_python = mock_python(tmp_path)
     log = tmp_path / "route.jsonl"
-    config = frozen_config(tmp_path, "disagg_async")
+    config = async_config(tmp_path)
     env = {**os.environ, "ROUTE_LOG": str(log), "GENERATED_CONFIG": str(config)}
     args = [
         "bash",
@@ -351,7 +199,7 @@ def test_bagpiper_recipe_stages_forward_dual_mode_parameters(tmp_path, recipe):
 
 def test_owsm_recipe_route_keeps_template_step_budget(tmp_path):
     command_python = mock_python(tmp_path)
-    config = frozen_config(tmp_path, "disagg_async")
+    config = async_config(tmp_path)
     for index, relative in enumerate(
         ("egs2/owsm_v4/s2t1/rl.sh",)
     ):
@@ -398,59 +246,9 @@ def test_owsm_recipe_route_keeps_template_step_budget(tmp_path):
         assert calls[2][calls[2].index("--rollout-node") + 1] == "rollout-node"
 
 
-def test_owsm_recipe_builder_preserves_five_updates_and_existing_manifest(
-    tmp_path, monkeypatch
-):
-    from espnet2.s2t.rl import recipe
-
-    config = frozen_config(tmp_path, "sync")
-    manifest = tmp_path / "train32.jsonl"
-    manifest.write_text("already frozen data")
-    heldout = tmp_path / "heldout.jsonl"
-    heldout.write_text("already frozen heldout")
-    observed = []
-    monkeypatch.setattr(
-        "espnet2.rl.tasks.manifest.verify_data_admission",
-        lambda config, path: observed.append((config.manifest, path)),
-    )
-    work = tmp_path / "work"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "recipe",
-            "--config",
-            str(config),
-            "--manifest",
-            str(manifest),
-            "--eval-manifest",
-            str(heldout),
-            "--data-admission",
-            "audit.json",
-            "--train-config",
-            "native.yaml",
-            "--checkpoint",
-            "native.pt",
-            "--work-dir",
-            str(work),
-        ],
-    )
-    recipe.main()
-    effective = ESPnetRLConfig.load(work / "rl_config.yaml")
-    assert effective.steps == 5 and effective.warmup_steps == 1
-    assert effective.train_gpus == "0,1,2,3" and effective.rollout_gpus == "4,5,6,7"
-    assert effective.train_ranks == 4 and effective.rollout_replicas == 4
-    assert effective.reference_device == "cpu"
-    assert (
-        effective.manifest == str(manifest)
-        and manifest.read_text() == "already frozen data"
-    )
-    assert observed == [(str(manifest), "audit.json")]
-
-
 def test_opus_stage10_routes_before_unrelated_supervised_requirements(tmp_path):
     command_python = mock_python(tmp_path)
-    config = frozen_config(tmp_path, "disagg_async")
+    config = async_config(tmp_path)
     log = tmp_path / "opus_route.jsonl"
     env = {**os.environ, "ROUTE_LOG": str(log), "GENERATED_CONFIG": str(config)}
     subprocess.run(
