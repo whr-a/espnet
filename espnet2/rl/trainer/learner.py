@@ -810,7 +810,9 @@ class NativeGRPOTrainer:
     ):
         """Finish the native update timing before checkpoint or publication work."""
         if self.device.type != "cpu":
-            get_torch_device().synchronize()
+            # Name the learner's device: a one-rank process keeps device 0 current,
+            # and a bare synchronize() would wait on GPU 0 and create a context there.
+            get_torch_device().synchronize(self.device)
         end, end_wall = time.monotonic(), time.time()
         status = [None]
         if self.rank == 0:

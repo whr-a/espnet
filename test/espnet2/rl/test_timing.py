@@ -97,6 +97,23 @@ class ClockTrainer(NativeGRPOTrainer):
         return {}
 
 
+def test_metrics_boundary_synchronizes_the_learner_device(tmp_path, monkeypatch):
+    import espnet2.rl.trainer.learner as module
+
+    synchronized = []
+
+    class CUDA:
+        def synchronize(self, device=None):
+            synchronized.append(device)
+
+    monkeypatch.setattr(module, "get_torch_device", CUDA)
+    trainer = ClockTrainer(tmp_path, steps=1)
+    trainer.device = torch.device("cuda", 3)
+    trainer.record_metrics({}, 0.0, 1000.0, None)
+    # The learner's own card, not the process's current device.
+    assert synchronized == [torch.device("cuda", 3)]
+
+
 def test_sync_clock_includes_score_reward_update_and_next_wait_includes_save(
     tmp_path, monkeypatch
 ):
