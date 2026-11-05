@@ -6,7 +6,7 @@ Every rank supplies the same full batch and scores only its contiguous shard.
 Results and local errors are gathered once, preserving original candidate order.
 The caller owns behavior-version validation and GRPO normalization on the global
 batch. A behavior snapshot lends its weights to the learner's own module for the
-behavior pass only (espnet2.rl.miles_native_actor.BehaviorSnapshot), so a policy
+behavior pass only (espnet2.rl.miles.actor.BehaviorSnapshot), so a policy
 must not cache tensors derived from its trainable weights across calls.
 """
 

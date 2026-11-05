@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from espnet2.rl.miles_components import NativeTrainerGroup
+from espnet2.rl.miles.components import NativeTrainerGroup
 
 
 @pytest.mark.parametrize("failing_rank", [None, 0, 1])

@@ -456,7 +456,7 @@ def test_disk_publication_phase_clock_includes_save_export_hash_and_ack(
 def test_ray_publication_uses_memory_then_current_disk_export_for_periodic_eval(
     tmp_path,
 ):
-    from espnet2.rl.miles_components import NativeComponents
+    from espnet2.rl.miles.components import NativeComponents
 
     config = ESPnetRLConfig(
         family="bagpiper",

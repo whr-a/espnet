@@ -1,7 +1,6 @@
 """One recipe interface for native ESPnet training with Miles algorithms."""
 
 import argparse
-import asyncio
 import json
 import os
 import subprocess
@@ -77,31 +76,6 @@ def launch_command(args, *, python=sys.executable, config=None):
     return command, environment
 
 
-def resolve_nodes(nodes, train, rollout, *, train_ranks, rollout_replicas):
-    """Resolve exact live Ray nodes with enough GPUs for both roles."""
-
-    def resolve(selector, needed):
-        matches = [
-            node
-            for node in nodes
-            if node["Alive"]
-            and selector in (node["NodeID"], node["NodeManagerAddress"])
-        ]
-        if len(matches) != 1:
-            raise ValueError(f"Expected exactly one live Ray node for {selector}")
-        node = matches[0]
-        if node["Resources"].get("GPU", 0) < needed:
-            raise ValueError(f"Node {selector} exposes fewer than {needed} GPUs")
-        return node
-
-    first, second = resolve(train, train_ranks), resolve(rollout, rollout_replicas)
-    if first["NodeID"] == second["NodeID"] and first["Resources"].get("GPU", 0) < (
-        train_ranks + rollout_replicas
-    ):
-        raise ValueError("A shared node must expose both roles' GPUs at once")
-    return first, second
-
-
 def validate_inputs(config, args):
     from .tasks.manifest import read_manifest, verify_data_admission
     from .rollout_worker import engine_class
@@ -123,58 +97,6 @@ def validate_inputs(config, args):
             f"Training requires at least {config.prompts_per_step} distinct prompts"
         )
     return sources, evidence, admission
-
-
-def run_ray(config, args, sources, admission):
-    import ray
-    from miles.utils.async_utils import with_disposer
-
-    from .miles_async_driver import load_async_loop, orchestration_args
-    from .miles_components import NativeComponents
-
-    output = Path(config.output_dir).resolve()
-    output.mkdir(parents=True, exist_ok=True)
-    config.output_dir = str(output)
-    with (output / "frozen_config.json").open("x") as stream:
-        stream.write(json.dumps(config.to_dict(), indent=2) + "\n")
-    if admission is not None:
-        (output / "data_admission.json").write_text(
-            json.dumps(admission, indent=2) + "\n"
-        )
-    for source in sources:
-        source["reward_config"] = str(output / "frozen_config.json")
-    # Match Miles' trainer default and SGLang's pre-initialization override.
-    # Both ranks must use the same NCCL allocation mode for weight transfer.
-    nccl_cumem = (
-        "1"
-        if config.sglang_engine_kwargs.get("enable_symm_mem", False)
-        else os.environ.get("NCCL_CUMEM_ENABLE", "0")
-    )
-    ray.init(
-        address=args.ray_address,
-        runtime_env={"env_vars": {"NCCL_CUMEM_ENABLE": nccl_cumem}},
-    )
-    try:
-        first, second = resolve_nodes(
-            ray.nodes(),
-            args.train_node,
-            args.rollout_node,
-            train_ranks=config.train_ranks,
-            rollout_replicas=config.rollout_replicas,
-        )
-        (output / "placement.json").write_text(
-            json.dumps({"train": first, "rollout": second}, indent=2) + "\n"
-        )
-        components = NativeComponents(
-            config, sources, first["NodeID"], second["NodeID"]
-        )
-        driver, evidence = load_async_loop(config, components)
-        (output / "miles_library.json").write_text(
-            json.dumps(evidence, indent=2) + "\n"
-        )
-        asyncio.run(with_disposer(driver, orchestration_args(config)))
-    finally:
-        ray.shutdown()
 
 
 def main(argv=None, *, worker=None):
@@ -222,6 +144,8 @@ def main(argv=None, *, worker=None):
             )
         )
     elif backend == "ray":
+        from .miles.driver import run_ray
+
         run_ray(config, args, sources, admission)
     else:
         from .trainer import run

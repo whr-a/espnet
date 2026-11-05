@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.miles_async_driver import load_async_loop, orchestration_args
+from espnet2.rl.miles.driver import load_async_loop, orchestration_args
 
 
 def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
@@ -143,8 +143,8 @@ def test_pinned_async_loop_consumes_restored_native_cursor(
     from miles.utils.async_utils import with_disposer
     from miles.utils.data import RolloutDataPack
 
-    from espnet2.rl import miles_components
-    from espnet2.rl.miles_components import NativeComponents
+    from espnet2.rl.miles import components as miles_components
+    from espnet2.rl.miles.components import NativeComponents
 
     events = []
     node_id = "1" * 56

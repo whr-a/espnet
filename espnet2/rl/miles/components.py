@@ -11,22 +11,22 @@ from types import SimpleNamespace
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from .batch import collate_rollouts
-from .miles_native_actor import ESPnetTrainRayActor
-from .rollout import (
+from ..batch import collate_rollouts
+from .actor import ESPnetTrainRayActor
+from ..rollout import (
     RolloutProcess,
     merge_generations,
     prune_exports,
     record_publication,
 )
-from .utils import resolve_callable
+from ..utils import resolve_callable
 
 
 class RolloutActor:
     """One rollout GPU: a rollout process that holds its engine for the run."""
 
     def __init__(self, config, replica):
-        from .config import ESPnetRLConfig
+        from ..config import ESPnetRLConfig
 
         config = ESPnetRLConfig(**config)
         self.config = config
@@ -208,7 +208,7 @@ class NativeRolloutExecutor:
         self._active_get_task = asyncio.current_task()
         try:
             config = self.components.config
-            from .tasks.manifest import select_training_sources
+            from ..tasks.manifest import select_training_sources
 
             sources = [
                 copy.deepcopy(source)

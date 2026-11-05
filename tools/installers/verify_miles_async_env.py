@@ -79,8 +79,8 @@ def main():
         "miles.utils.data",
         "miles.ray.train_actor",
         "miles.rollout.rm_hub",
-        "espnet2.rl.miles_components",
-        "espnet2.rl.miles_async_driver",
+        "espnet2.rl.miles.components",
+        "espnet2.rl.miles.driver",
     ):
         try:
             module = importlib.import_module(name)

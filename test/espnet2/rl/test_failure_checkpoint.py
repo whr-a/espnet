@@ -14,12 +14,12 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as multiprocessing
 
-import espnet2.rl.miles_native_actor as actor_module
+import espnet2.rl.miles.actor as actor_module
 import espnet2.rl.trainer as trainer_module
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.failure_checkpoint import preserve_preupdate_failure
-from espnet2.rl.miles_components import NativeTrainerGroup
-from espnet2.rl.miles_native_actor import ESPnetTrainRayActor
+from espnet2.rl.miles.failure import preserve_preupdate_failure
+from espnet2.rl.miles.components import NativeTrainerGroup
+from espnet2.rl.miles.actor import ESPnetTrainRayActor
 from espnet2.rl.trainer import NativeGRPOTrainer
 
 ERROR = "Rollout/native max logprob disagreement 2.84811 > 1.5"
@@ -152,7 +152,7 @@ def test_receipt_failure_remains_secondary(tmp_path, monkeypatch):
     def fail_receipt(*args, **kwargs):
         raise OSError("Synthetic receipt write failure")
 
-    monkeypatch.setattr("espnet2.rl.failure_checkpoint.json.dump", fail_receipt)
+    monkeypatch.setattr("espnet2.rl.miles.failure.json.dump", fail_receipt)
     result = preserve_preupdate_failure(actor_for(trainer), 15, ERROR)
     assert result["original_error"] == ERROR
     assert (

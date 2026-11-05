@@ -440,7 +440,7 @@ def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
     pytest.importorskip("miles")
     from miles.utils import object_store
 
-    from espnet2.rl.miles_components import NativeComponents
+    from espnet2.rl.miles.components import NativeComponents
 
     config = ESPnetRLConfig(
         adapter_factory="unused:factory",
@@ -487,7 +487,7 @@ def test_async_rollout_publishes_to_every_actor_and_stamps_its_batch(
 
     killed = []
     monkeypatch.setattr(
-        "espnet2.rl.miles_components.ray.kill",
+        "espnet2.rl.miles.components.ray.kill",
         lambda actor, no_restart: killed.append(actor),
     )
     asyncio.run(run())
@@ -524,7 +524,7 @@ def test_async_publication_keeps_the_newest_exports_after_each_load(
     tmp_path, monkeypatch
 ):
     pytest.importorskip("miles")
-    from espnet2.rl.miles_components import NativeComponents
+    from espnet2.rl.miles.components import NativeComponents
 
     config = ESPnetRLConfig(
         adapter_factory="unused:factory",

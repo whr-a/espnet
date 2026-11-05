@@ -135,7 +135,7 @@ def test_ray_roles_share_nccl_mode_before_actor_creation(
 ):
     import ray
 
-    from espnet2.rl import miles_async_driver
+    from espnet2.rl.miles import driver as miles_async_driver
     from espnet2.rl.rollout import subprocess_environment
 
     if caller_value is None:
@@ -226,7 +226,7 @@ def test_ray_roles_share_nccl_mode_before_actor_creation(
     args = SimpleNamespace(
         ray_address="unused-address", train_node=node_id, rollout_node=node_id
     )
-    cli.run_ray(config, args, [], None)
+    miles_async_driver.run_ray(config, args, [], None)
     assert events == [
         "init",
         ("RolloutActor", {"NCCL_CUMEM_ENABLE": expected}),

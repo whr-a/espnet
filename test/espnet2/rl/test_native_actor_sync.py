@@ -6,7 +6,7 @@ import torch
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.miles_native_actor import ESPnetTrainRayActor
+from espnet2.rl.miles.actor import ESPnetTrainRayActor
 from espnet2.rl.trainer import NativeGRPOTrainer
 
 

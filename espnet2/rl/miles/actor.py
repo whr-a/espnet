@@ -15,12 +15,12 @@ from miles.utils import object_store
 
 from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 
-from .config import ESPnetRLConfig
-from .failure_checkpoint import preserve_preupdate_failure
-from .rollout import CheckpointRollout
-from .scoring import score_native_batch
-from .trainer import NativeGRPOTrainer
-from .utils import build_policy
+from ..config import ESPnetRLConfig
+from .failure import preserve_preupdate_failure
+from ..rollout import CheckpointRollout
+from ..scoring import score_native_batch
+from ..trainer import NativeGRPOTrainer
+from ..utils import build_policy
 
 
 class BehaviorSnapshot:
@@ -351,7 +351,7 @@ class ESPnetTrainRayActor(TrainRayActor):
     def publish_async_weights(self, actors):
         if self._rank != 0:
             return None
-        from .weight_transport import EngineClient, MilesWeightPublisher
+        from ..weight_transport import EngineClient, MilesWeightPublisher
 
         if self.exporter.publisher is None:
             self.exporter.publisher = MilesWeightPublisher(
