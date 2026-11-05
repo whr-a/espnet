@@ -28,7 +28,6 @@ one frame.
 from pathlib import Path
 
 import torch
-from sglang.srt.layers.layernorm import RMSNorm
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.model_executor.forward_batch_info import ForwardMode
 from sglang.srt.models.llama import LlamaForCausalLM
@@ -38,62 +37,15 @@ from torch.nn import functional as F
 from transformers import LlamaConfig, Olmo2Config
 
 from espnet2.speechlm.rl.multistream import active_streams
+from espnet2.speechlm.rl.sglang_model import _CompleteLoad as _TextCompleteLoad
+from espnet2.speechlm.rl.sglang_model import _backbone_config, _native_fp32_norms
 
-# SGLang's fused projections and the export tensors each is loaded from.
-_FUSED = {
-    ".qkv_proj.": (".q_proj.", ".k_proj.", ".v_proj."),
-    ".gate_up_proj.": (".gate_proj.", ".up_proj."),
-}
-
-
-def _backbone_config(config, cls):
-    data = config.to_dict()
-    data.pop("model_type", None)
-    return cls(**data)
-
-
-def _native_fp32_norms(model):
-    # sgl_kernel's RMSNorm has no float32 kernel; SGLang's native norm is the
-    # full-precision reference, as in sglang_model.py.
-    for module in model.modules():
-        if isinstance(module, RMSNorm) and module.weight.dtype == torch.float32:
-            module._forward_method = module.forward_native
-
-
-class _CompleteLoad:
-    """Accept only an export that writes every parameter, every time.
-
-    The engine is built from one export and loads each later one in place. The
-    backbone loaders skip or merely warn about unknown names and never check
-    coverage, so a tensor missing from an update would silently keep the
-    previous policy's weights.
-    """
+class _CompleteLoad(_TextCompleteLoad):
+    """The text model's complete-load check, which also drops the prompt
+    embeddings computed with the previous weights."""
 
     def load_weights(self, weights):
-        names = []
-
-        def recorded():
-            for name, tensor in weights:
-                names.append(name)
-                yield name, tensor
-
-        super().load_weights(recorded())
-        expected = set()
-        for name, _ in self.named_parameters():
-            fused = next((key for key in _FUSED if key in name), None)
-            if fused is None:
-                expected.add(name)
-            else:
-                expected.update(name.replace(fused, part) for part in _FUSED[fused])
-        if self.config.tie_word_embeddings:
-            names = [name for name in names if name != "lm_head.weight"]
-        if len(names) != len(set(names)) or set(names) != expected:
-            raise ValueError(
-                "An OpusLM export must hold each engine parameter exactly once; "
-                f"missing {sorted(expected - set(names))[:4]}, "
-                f"unexpected {sorted(set(names) - expected)[:4]}"
-            )
-        # Prompt embeddings computed with the previous weights must not survive.
+        super().load_weights(weights)
         self.batch = None
 
 

@@ -85,3 +85,24 @@ def test_both_architectures_load_through_the_complete_check():
         sglang_model.OpusLMDialogueForConditionalGeneration,
     ):
         assert cls.load_weights is sglang_model._CompleteLoad.load_weights
+
+
+def test_the_multistream_models_share_the_check_and_drop_stale_prompts():
+    from espnet2.speechlm.rl import sglang_multistream
+
+    class Streams(sglang_multistream._CompleteLoad, Backbone):
+        pass
+
+    model = Streams()
+    model.batch = "prompt embeddings of the previous policy"
+    model.load_weights(weights(EXPORT))
+    assert model.batch is None and model.loads == [EXPORT]
+    model.batch = "kept when the load is refused"
+    with pytest.raises(ValueError, match="missing.*head_emb"):
+        model.load_weights(weights(EXPORT[:-1]))
+    assert model.batch == "kept when the load is refused"
+    for cls in (
+        sglang_multistream.OpusLMMultiStreamForConditionalGeneration,
+        sglang_multistream.OpusLMDialogueMultiStreamForConditionalGeneration,
+    ):
+        assert cls.load_weights is sglang_multistream._CompleteLoad.load_weights
