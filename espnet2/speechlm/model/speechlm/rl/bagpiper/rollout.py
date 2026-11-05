@@ -9,9 +9,10 @@ from pathlib import Path
 
 import torch
 
+from espnet2.rl.batch import prepared_native_metadata
 from espnet2.rl.rollout.engine import SGLangRolloutEngine
 
-from .integration import prepared_native_metadata, request_factory
+from .integration import request_factory
 
 
 class BagpiperEngine(SGLangRolloutEngine):

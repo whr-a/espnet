@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 import yaml
 
+from espnet2.rl.batch import prepared_native_metadata
 from espnet2.rl.rollout.engine import SGLangRolloutEngine
 
 # The released text tokenizer, copied into every export with config.json.
@@ -21,22 +22,6 @@ TOKENIZER_FILES = (
     "merges.txt",
     "special_tokens_map.json",
 )
-
-
-def prepared_native_metadata(source):
-    fields = (
-        "native_model_inputs",
-        "prompt_codec_mask",
-        "sampling_extra_args",
-        "mode",
-        "native_preparation",
-    )
-    data = {key: source[key] for key in fields if key in source}
-    value = {"source_id": source["id"], "data": data}
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), allow_nan=False
-    ).encode()
-    return {**value, "sha256": hashlib.sha256(encoded).hexdigest()}
 
 
 def exporter(config, native_checkpoint_path, hf_output_dir):

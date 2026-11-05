@@ -18,28 +18,6 @@ import hashlib
 import json
 from pathlib import Path
 
-from espnet2.rl.batch import prepared_sha256
-
-
-def prepared_native_metadata(source):
-    """Only native conditioning crosses from the inference worker to learner.
-
-    Feature arrays stay numpy arrays, hashed by their bytes; the rollout
-    process writes each to one binary sidecar.
-    """
-    fields = (
-        "native_model_inputs",
-        "prompt_codec_mask",
-        "sampling_extra_args",
-        "mode",
-        "native_preparation",
-    )
-    metadata = {name: source[name] for name in fields if name in source}
-    return {
-        "source_id": source["id"],
-        "data": metadata,
-        "sha256": prepared_sha256(source["id"], metadata),
-    }
 
 
 def _speechlm_waveform(source, target_rate):

@@ -7,7 +7,11 @@ import json
 import numpy as np
 import pytest
 
-from espnet2.rl.batch import collate_rollouts, prepared_sha256
+from espnet2.rl.batch import (
+    collate_rollouts,
+    prepared_native_metadata,
+    prepared_sha256,
+)
 from espnet2.rl.trainer.scoring import _identity_digest
 
 
@@ -70,3 +74,26 @@ def test_identity_digest_reads_lists_and_arrays_by_value():
         "continuous_audio_feats"
     ][0, 0, 0] = 9
     assert _identity_digest(changed) != digest
+
+
+def test_a_prepared_record_keeps_only_native_inputs_and_their_json_digest():
+    source = {
+        "id": "a",
+        "mode": "text_audio",
+        "native_model_inputs": {"tokens": [[1, 2], [3, 4]]},
+        "reference": "supervision stays out",
+    }
+    record = prepared_native_metadata(source)
+    assert record["source_id"] == "a"
+    assert record["data"] == {
+        "mode": "text_audio",
+        "native_model_inputs": {"tokens": [[1, 2], [3, 4]]},
+    }
+    # Without arrays the digest is the plain canonical JSON one OpusLM used.
+    encoded = json.dumps(
+        {"source_id": "a", "data": record["data"]},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    assert record["sha256"] == hashlib.sha256(encoded).hexdigest()

@@ -75,6 +75,30 @@ def prepared_sha256(source_id, data, digests=None):
     return hashlib.sha256(encoded).hexdigest()
 
 
+# The prepared native inputs an inference worker may return to the
+# learner; anything else in a source is identity or supervision.
+PREPARED_FIELDS = (
+    "native_model_inputs",
+    "prompt_codec_mask",
+    "sampling_extra_args",
+    "mode",
+    "native_preparation",
+)
+
+
+def prepared_native_metadata(source):
+    """The record of a source's prepared native inputs that
+    collate_rollouts verifies: those fields, bound to the source by
+    prepared_sha256. Feature arrays stay numpy arrays, hashed by their
+    bytes; the rollout process writes each to one binary sidecar."""
+    data = {name: source[name] for name in PREPARED_FIELDS if name in source}
+    return {
+        "source_id": source["id"],
+        "data": data,
+        "sha256": prepared_sha256(source["id"], data),
+    }
+
+
 def _shared_arrays(value, memo):
     """A deepcopy memo under which copies share the numpy arrays of ``value``.
 
@@ -140,14 +164,7 @@ def collate_rollouts(sources, generations, group_size):
                     "Prepared native source identity differs from the original manifest"
                 )
             payload = prepared["data"]
-            allowed = {
-                "native_model_inputs",
-                "prompt_codec_mask",
-                "sampling_extra_args",
-                "mode",
-                "native_preparation",
-            }
-            if set(payload) - allowed:
+            if set(payload) - set(PREPARED_FIELDS):
                 raise ValueError(
                     "Inference preparation attempted to replace source identity or supervision"
                 )
