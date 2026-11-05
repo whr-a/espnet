@@ -106,6 +106,36 @@ def test_geometry_comes_from_the_declared_devices(
     assert config.collocated is collocated
 
 
+@pytest.mark.parametrize(
+    "device, train, expected",
+    [
+        # A bare cuda, the default on a GPU host, is the one learner's GPU.
+        ("cuda", "3", "cuda:3"),
+        ("cuda:3", "3", "cuda:3"),
+        ("cpu", "3", "cpu"),
+        # Torchrun ranks take cuda:LOCAL_RANK, so the device names no GPU.
+        ("cuda", "0,1", "cuda"),
+    ],
+)
+def test_one_learner_device_follows_train_gpus(device, train, expected):
+    config = configuration(device=device, train_gpus=train, rollout_gpus=train)
+    config.validate()
+    assert config.device == expected
+    config.validate()  # idempotent
+    assert config.device == expected
+
+
+def test_one_learner_device_must_name_the_train_gpu():
+    for device in ("cuda:0", "cuda:x"):
+        config = configuration(device=device, train_gpus="3", rollout_gpus="3")
+        with pytest.raises(ValueError, match="name different GPUs"):
+            config.validate()
+    # Ray chooses the cards of disaggregated roles, so their index is free.
+    configuration(
+        execution_mode="disagg_async", device="cuda:0", train_gpus="3", rollout_gpus="4"
+    ).validate()
+
+
 @pytest.mark.parametrize("name", ["train_gpus", "rollout_gpus"])
 def test_repeated_or_empty_device_lists_are_rejected(name):
     for value in ("0,0", ""):

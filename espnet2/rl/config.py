@@ -47,6 +47,9 @@ class ESPnetRLConfig:
     manifest: str = ""
     output_dir: str = "outputs/espnet-grpo"
     model_version: str | None = "v4"
+    # A one-rank synchronous learner trains on the GPU train_gpus names, so
+    # validate() writes that index into a bare "cuda" (the default on a GPU
+    # host) and rejects a device that names another GPU.
     device: str = field(default_factory=get_device_name)
     reference_device: str | None = None
     # Score the frozen reference on its GPU, then keep its weights on CPU
@@ -220,6 +223,26 @@ class ESPnetRLConfig:
             devices = self._devices(value)
             if not devices or len(set(devices)) != len(devices):
                 raise ValueError(f"{name} must list distinct physical GPU ids")
+        kind, _, index = str(self.device).partition(":")
+        gpu = self.train_device_ids[0]
+        if (
+            self.execution_mode == "sync"
+            and self.train_ranks == 1
+            and kind == "cuda"
+            and gpu.isdigit()
+        ):
+            # Torchrun ranks take cuda:LOCAL_RANK and Ray actors their one
+            # visible GPU; this learner runs where the recipe says, in the
+            # same physical numbering as the rollout's CUDA_VISIBLE_DEVICES.
+            if not index:
+                self.device = f"cuda:{gpu}"
+            elif not index.isdigit() or int(index) != int(gpu):
+                raise ValueError(
+                    f"device {self.device} and train_gpus {self.train_gpus!r} name "
+                    "different GPUs; a one-rank synchronous run trains on the GPU "
+                    f"train_gpus names, so set device: cuda:{gpu} (both are "
+                    "physical ids, with CUDA_VISIBLE_DEVICES unset)"
+                )
         if self.rollout_backend == "vllm" and (
             len(self.rollout_device_ids) != self.vllm_tensor_parallel_size
         ):

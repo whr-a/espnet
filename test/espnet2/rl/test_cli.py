@@ -105,7 +105,7 @@ def test_external_torchrun_enters_worker_without_nested_launch(tmp_path, monkeyp
     assert observed == ["0,1"]
 
 
-def run_until_frozen_config(tmp_path, monkeypatch, device):
+def run_until_frozen_config(tmp_path, monkeypatch, device, train_gpus="0"):
     """Run the trainer up to its frozen-config check and return set_device calls."""
     from espnet2.rl.trainer import local as trainer
 
@@ -134,28 +134,35 @@ def run_until_frozen_config(tmp_path, monkeypatch, device):
         manifest="unused.jsonl",
         output_dir=str(tmp_path),
         device=device,
+        train_gpus=train_gpus,
+        rollout_gpus=train_gpus,
     )
     with pytest.raises(FileExistsError, match="fresh output_dir"):
         trainer.run(config)
     return calls, config
 
 
+# A bare "cuda" is the GPU train_gpus names, as validate() resolves it.
 @pytest.mark.parametrize(
-    "device,selected",
-    [("cuda:3", [torch.device("cuda", 3)]), ("cuda", []), ("cpu", [])],
+    "device,train_gpus,selected",
+    [
+        ("cuda:3", "3", [torch.device("cuda", 3)]),
+        ("cuda", "3", [torch.device("cuda", 3)]),
+        ("cpu", "0", []),
+    ],
 )
 def test_single_rank_makes_its_configured_gpu_current(
-    tmp_path, monkeypatch, device, selected
+    tmp_path, monkeypatch, device, train_gpus, selected
 ):
     monkeypatch.delenv("WORLD_SIZE", raising=False)
-    calls, _ = run_until_frozen_config(tmp_path, monkeypatch, device)
+    calls, _ = run_until_frozen_config(tmp_path, monkeypatch, device, train_gpus)
     assert calls == selected
 
 
 def test_each_torchrun_rank_still_takes_its_local_rank(tmp_path, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "2")
     monkeypatch.setenv("LOCAL_RANK", "1")
-    calls, config = run_until_frozen_config(tmp_path, monkeypatch, "cuda:0")
+    calls, config = run_until_frozen_config(tmp_path, monkeypatch, "cuda:0", "0,1")
     assert calls == [1]
     assert config.device == "cuda:1"
 

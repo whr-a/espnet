@@ -101,10 +101,12 @@ batch. Increase `steps` deliberately and provide enough distinct source records.
 | Bagpiper QA: `egs2/bagpiper/speechlm1` | `conf/rl.yaml` | `conf/rl_disagg_async.yaml` | `bagpiper_qa_v1`: accuracy and format, equal weights |
 | Bagpiper TTS: `egs2/bagpiper_tts/speechlm1` | `conf/rl.yaml` | `conf/rl_disagg_async.yaml` | Generated audio → frozen ASR → negative WER |
 
-One-GPU `sync` alternates learning and rollout on the same device. Two-GPU
-`disagg_async` uses disjoint learner/rollout devices and overlaps one batch,
-with at most one version of policy lag. Persistent engines load each published
-policy in place. Neither mode creates a cluster allocation or serving group.
+One-GPU `sync` alternates learning and rollout on the same device. Its
+`device` names the GPU in `train_gpus` (a bare `cuda` means that GPU), and
+validation rejects any other. Two-GPU `disagg_async` uses disjoint
+learner/rollout devices and overlaps one batch, with at most one version of
+policy lag. Persistent engines load each published policy in place. Neither
+mode creates a cluster allocation or serving group.
 
 Each recipe README states how far its profiles have been validated. Large
 models also need substantial host RAM; see
