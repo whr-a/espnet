@@ -197,6 +197,135 @@ def speaker_verification_reward(source, generation):
     }
 
 
+# How far a conditioning variable may shift P(same) before it counts as a
+# channel through which the label can be predicted without comparing voices.
+LABEL_LEAK_TOLERANCE = 0.10
+LABEL_BALANCE_TOLERANCE = 0.05
+# Speakers seen fewer times than this carry too much sampling noise to judge.
+MIN_SPEAKER_APPEARANCES = 3
+
+
+def _leak_free_corpus(records):
+    """Reject a verification corpus whose CONSTRUCTION gives away the label.
+
+    Record-local validity is not enough for this task. A pair corpus can have
+    every field right and still be solvable without listening, and the closed-set
+    round showed that happens in practice: there the candidate list was drawn per
+    speaker, so the list identified the answer and a model could score 100% from
+    the prompt alone. The analogous channels here are structural, so they are
+    checked over the whole corpus rather than per record.
+
+    Each check below corresponds to one closure in the pair preparer and to
+    one measured line in its ``.audit.json``.
+    They are asserted here so the property survives a refactor of the preparer:
+    a reader of this function can see what the corpus is required to guarantee
+    without reading the generator.
+
+    1. A same-speaker pair never takes both segments from one recording. If it
+       did, "did the channel change mid-file" would separate the classes.
+    2. Every speaker that appears in a different-speaker pair also appears in a
+       same-speaker pair. Otherwise recognizing that speaker is a free point,
+       because it can only ever occur on one side.
+    3. Every speaker's own P(same | this speaker appears) is the SAME, so which
+       speakers are present carries no differential signal. Note it is
+       UNIFORMITY that matters, not agreement with the label share: a
+       same-speaker pair spends one speaker slot and a different-speaker pair
+       spends two, so with equal item counts every speaker sits at 1/3 while
+       the labels are at 1/2. Comparing each speaker against the label share
+       would reject a correctly built corpus.
+    4. The labels are near balanced, so "always answer the majority" cannot
+       beat chance.
+    5. No prompt string and no total duration predicts the label. These are the
+       two non-acoustic fields the model can read; the preparer holds them
+       constant, but the requirement is the weaker and more general one that
+       they carry no label information.
+    """
+    positives = [r for r in records if str(r.get("verdict")) == "same"]
+    negatives = [r for r in records if str(r.get("verdict")) == "different"]
+    if not positives or not negatives:
+        raise ValueError(
+            "A verification corpus needs both same-speaker and different-speaker "
+            f"pairs; saw {len(positives)} same and {len(negatives)} different"
+        )
+
+    def chapters(record):
+        return [s.get("chapter") for s in record.get("segments", [])]
+
+    def speakers(record):
+        return {s.get("speaker") for s in record.get("segments", [])}
+
+    # 1. same-speaker pairs must be cross-recording
+    within = [r for r in positives if len(set(chapters(r))) < 2]
+    if within:
+        raise ValueError(
+            f"{len(within)} same-speaker pairs take both segments from one "
+            f"recording (e.g. {within[0].get('id')!r}). Draw them across "
+            "different recordings, or the channel alone separates the classes."
+        )
+
+    # 2. both arms must draw from one speaker pool
+    positive_speakers = {s for r in positives for s in speakers(r)}
+    negative_only = {s for r in negatives for s in speakers(r)} - positive_speakers
+    if negative_only:
+        raise ValueError(
+            f"{len(negative_only)} speakers appear only in different-speaker "
+            f"pairs (e.g. {sorted(negative_only)[:3]}). Recognizing them is a "
+            "free point; restrict both arms to one speaker pool."
+        )
+
+    # 3. every speaker must carry the SAME label prior (uniformity, not 1/2)
+    share = len(positives) / len(records)
+    per_speaker = {}
+    for record in records:
+        for speaker in speakers(record):
+            same, total = per_speaker.get(speaker, (0, 0))
+            per_speaker[speaker] = (
+                same + (str(record.get("verdict")) == "same"), total + 1
+            )
+    priors = {
+        speaker: same / total
+        for speaker, (same, total) in per_speaker.items()
+        if total >= MIN_SPEAKER_APPEARANCES
+    }
+    if priors and max(priors.values()) - min(priors.values()) > LABEL_LEAK_TOLERANCE:
+        low = min(priors, key=priors.get)
+        high = max(priors, key=priors.get)
+        raise ValueError(
+            f"P(same | speaker appears) ranges from {priors[low]:.3f} ({low!r}) "
+            f"to {priors[high]:.3f} ({high!r}), a spread above "
+            f"{LABEL_LEAK_TOLERANCE}. Recognizing the high-prior speakers then "
+            "predicts the label; give every speaker the same ratio of "
+            "same-speaker to different-speaker appearances."
+        )
+
+    # 4. labels near balanced
+    if abs(share - 0.5) > LABEL_BALANCE_TOLERANCE:
+        raise ValueError(
+            f"Labels are {share:.3f} same, further than "
+            f"{LABEL_BALANCE_TOLERANCE} from balanced; a constant answer would "
+            "then beat chance."
+        )
+
+    # 5. no readable non-acoustic field may predict the label
+    for field in ("prompt", "total_seconds"):
+        groups = {}
+        for record in records:
+            if field not in record:
+                continue
+            same, total = groups.get(record[field], (0, 0))
+            groups[record[field]] = (
+                same + (str(record.get("verdict")) == "same"), total + 1
+            )
+        for value, (same, total) in groups.items():
+            if total >= 10 and abs(same / total - share) > LABEL_LEAK_TOLERANCE:
+                raise ValueError(
+                    f"{field} value {str(value)[:60]!r} carries label "
+                    f"information: P(same) is {same / total:.3f} over {total} "
+                    f"records against the corpus share {share:.3f}. The model "
+                    "reads this field without listening."
+                )
+
+
 def _validate_speaker_verification(records):
     """Reject a manifest that cannot supervise verification, before any GPU."""
     require_fields(records, "speaker_verification", ("verdict", "verdict_choices"))
@@ -212,6 +341,22 @@ def _validate_speaker_verification(records):
                 f"Record {record.get('id')!r} verdict {record['verdict']!r} is not "
                 f"one of its own choices"
             )
+        # The corpus gates below read speaker and chapter per segment; a record
+        # without them cannot be audited, so it is rejected rather than skipped.
+        segments = record.get("segments")
+        if not isinstance(segments, list) or len(segments) != 2:
+            raise ValueError(
+                f"Record {record.get('id')!r} must carry exactly two segments; "
+                "regenerate the manifest with a pair preparer that records each "
+                "segment's speaker and chapter."
+            )
+        for segment in segments:
+            if not segment.get("speaker") or not segment.get("chapter"):
+                raise ValueError(
+                    f"Record {record.get('id')!r} has a segment without a speaker "
+                    "or chapter, so its construction cannot be audited."
+                )
+    _leak_free_corpus(records)
 
 
 speaker_verification_reward.validate_sources = _validate_speaker_verification

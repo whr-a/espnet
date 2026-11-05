@@ -227,17 +227,133 @@ def test_verification_contract_rejects_choices_that_are_not_the_two_labels():
         speaker_verification_reward.validate_sources(rows)
 
 
-def test_verification_contract_accepts_the_real_manifest_shape():
-    speaker_verification_reward.validate_sources(
-        [verification_source("same", "a__b__4s"),
-         verification_source("different", "c__d__4s")]
-    )
+def test_verification_contract_rejects_a_record_without_auditable_segments():
+    # The corpus gates read speaker/chapter per segment, so a record that
+    # cannot be audited is rejected rather than quietly skipped.
+    with pytest.raises(ValueError, match="exactly two segments"):
+        speaker_verification_reward.validate_sources(
+            [
+                verification_source("same", "a__b__4s"),
+                verification_source("different", "c__d__4s"),
+            ]
+        )
 
 
 def test_a_verdict_outside_its_own_choices_is_rejected_at_scoring_time():
     bad = {**verification_source(), "verdict": "maybe"}
     with pytest.raises(ValueError, match="not exactly one of"):
         speaker_verification_reward(bad, {"text": "<answer>same</answer>"})
+
+
+# --------------------------------------------------------- corpus leak gates
+#
+# These assert the five construction properties that make a verification corpus
+# unsolvable without listening. They are here, not only in the preparer's
+# comments, so that refactoring the preparer cannot silently drop one: each
+# test crafts a corpus violating exactly one property and requires a rejection.
+
+
+def verification_pair(identity, verdict, left, right, chapters=("c1", "c2"), **extra):
+    return {
+        "id": identity,
+        "verdict": verdict,
+        "verdict_choices": ["same", "different"],
+        "reward_task": "speaker_verification",
+        "prompt": "P",
+        "total_seconds": 8.4,
+        "segments": [
+            {"speaker": left, "chapter": chapters[0]},
+            {"speaker": right, "chapter": chapters[1]},
+        ],
+        **extra,
+    }
+
+
+def verification_corpus(speakers=("a", "b", "c", "d"), per=3):
+    """Balanced, pool-symmetric, cross-chapter: must pass every gate."""
+    rows, index = [], 0
+    for _ in range(per):
+        for speaker in speakers:
+            rows.append(verification_pair(f"p{index}", "same", speaker, speaker))
+            index += 1
+        for left, right in zip(speakers, speakers[1:] + speakers[:1]):
+            rows.append(verification_pair(f"n{index}", "different", left, right))
+            index += 1
+    return rows
+
+
+def test_a_clean_corpus_passes_every_gate():
+    speaker_verification_reward.validate_sources(verification_corpus())
+
+
+def test_a_same_speaker_pair_from_one_recording_is_rejected():
+    rows = verification_corpus()
+    rows[0]["segments"][1]["chapter"] = rows[0]["segments"][0]["chapter"]
+    with pytest.raises(ValueError, match="one \nrecording|one recording"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_a_speaker_that_only_ever_appears_in_negatives_is_rejected():
+    rows = verification_corpus()
+    # "z" occurs only on the different-speaker side: recognizing it is free.
+    rows.append(verification_pair("extra", "different", "a", "z"))
+    with pytest.raises(ValueError, match="only in different-speaker"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_a_speaker_with_a_skewed_label_prior_is_rejected():
+    rows = verification_corpus()
+    # Give "a" many extra same-speaker pairs so its own P(same) jumps.
+    for index in range(12):
+        rows.append(verification_pair(f"skew{index}", "same", "a", "a"))
+    with pytest.raises(ValueError, match="P\\(same \\| speaker appears\\) ranges"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_an_unbalanced_label_distribution_is_rejected():
+    # Add extra same-speaker pairs for EVERY speaker equally, so the per-speaker
+    # priors stay uniform and this test exercises the balance gate rather than
+    # tripping the speaker-prior gate first.
+    rows = verification_corpus()
+    speakers = ("a", "b", "c", "d")
+    for index in range(2):
+        for speaker in speakers:
+            rows.append(verification_pair(f"bal{index}{speaker}", "same", speaker, speaker))
+    with pytest.raises(ValueError, match="further than"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_a_prompt_that_predicts_the_label_is_rejected():
+    rows = verification_corpus(per=4)
+    for row in rows:
+        row["prompt"] = "SAME-PROMPT" if row["verdict"] == "same" else "DIFF-PROMPT"
+    with pytest.raises(ValueError, match="prompt value .* carries label"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_a_duration_that_predicts_the_label_is_rejected():
+    rows = verification_corpus(per=4)
+    for row in rows:
+        row["total_seconds"] = 8.4 if row["verdict"] == "same" else 16.4
+    with pytest.raises(ValueError, match="total_seconds value .* carries label"):
+        speaker_verification_reward.validate_sources(rows)
+
+
+def test_several_durations_are_fine_when_each_tier_is_label_balanced():
+    # The gradient manifest renders the same pairs at 2/4/8 s; several distinct
+    # durations are allowed, what is forbidden is a duration predicting a label.
+    rows = []
+    for tier, seconds in enumerate((4.4, 8.4, 16.4)):
+        for row in verification_corpus():
+            rows.append({**row, "id": f"t{tier}-{row['id']}", "total_seconds": seconds})
+    speaker_verification_reward.validate_sources(rows)
+
+
+def test_a_corpus_with_only_one_label_is_rejected():
+    with pytest.raises(ValueError, match="needs both"):
+        speaker_verification_reward.validate_sources(
+            [r for r in verification_corpus() if r["verdict"] == "same"]
+        )
 
 
 # ---------------------------------------------------------------- long-form
