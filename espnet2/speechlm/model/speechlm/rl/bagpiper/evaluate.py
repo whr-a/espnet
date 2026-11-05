@@ -36,8 +36,12 @@ from espnet2.rl.types import (
     support_mismatch_rate,
     validate_token_scores,
 )
-from espnet2.rl.utils import build_policy, resolve_callable, sha256
-from espnet2.speechlm.rl.evaluate import validate_export_files
+from espnet2.rl.utils import (
+    build_policy,
+    resolve_callable,
+    sha256,
+    validate_export_files,
+)
 
 from .qa_contract import (
     BAGPIPER_QA_SYSTEM_PROMPT,

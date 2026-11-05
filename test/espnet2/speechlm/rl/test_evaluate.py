@@ -6,13 +6,9 @@ import pytest
 import torch
 
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.utils import sha256
+from espnet2.rl.utils import sha256, validate_export_files
 from espnet2.rl.types import TokenScores
-from espnet2.speechlm.rl.evaluate import (
-    summarize_wer,
-    validate_export_files,
-    verify_log_probs,
-)
+from espnet2.speechlm.rl.evaluate import summarize_wer, verify_log_probs
 
 
 def generation(source_id, text):

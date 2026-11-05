@@ -16,7 +16,7 @@ from espnet2.rl.rollout.engine import fit_context
 from espnet2.rl.rewards.text import edit_distance, words
 from espnet2.rl.rollout.local import CheckpointRollout
 from espnet2.rl.types import drift_gate
-from espnet2.rl.utils import build_policy, sha256
+from espnet2.rl.utils import build_policy, sha256, validate_export_files
 
 
 def summarize_wer(sources, generations, group_size):
@@ -98,54 +98,6 @@ def verify_log_probs(policy, batch, config):
         "the evaluated checkpoint must have generated these responses",
     )
     return errors, drift
-
-
-def validate_export_files(directory, recorded):
-    """Require a complete hash list of regular files contained in this export."""
-    root = Path(directory).resolve(strict=True)
-    if not root.is_dir() or not isinstance(recorded, dict) or not recorded:
-        raise ValueError("Existing inference export has no recorded files")
-    paths = {}
-    for relative, expected in recorded.items():
-        if (
-            not isinstance(relative, str)
-            or not relative
-            or Path(relative).is_absolute()
-            or ".." in Path(relative).parts
-            or Path(relative).as_posix() != relative
-            or not isinstance(expected, str)
-            or len(expected) != 64
-            or any(character not in "0123456789abcdef" for character in expected)
-        ):
-            raise ValueError(f"Invalid recorded inference export path/hash: {relative}")
-        path = root / relative
-        if any(
-            parent.is_symlink()
-            for parent in (path, *path.parents)
-            if parent != root and parent.is_relative_to(root)
-        ):
-            raise ValueError(f"Inference export contains a symlink: {relative}")
-        resolved = path.resolve(strict=True)
-        if not resolved.is_relative_to(root) or not resolved.is_file():
-            raise ValueError(
-                f"Inference export file is outside its directory: {relative}"
-            )
-        paths[relative] = resolved
-    actual = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError(
-                f"Inference export contains a symlink: {path.relative_to(root)}"
-            )
-        if path.is_file():
-            actual.add(path.relative_to(root).as_posix())
-    if set(paths) != actual:
-        raise ValueError(
-            "Recorded inference export files differ from its complete file set"
-        )
-    for relative, path in paths.items():
-        if sha256(path) != recorded[relative]:
-            raise ValueError(f"Existing inference export file changed: {relative}")
 
 
 def export_checkpoint(rollout, checkpoint, step, existing_export=None):
