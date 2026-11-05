@@ -17,7 +17,6 @@ from espnet2.speechlm.model.speechlm.rl.bagpiper.rewards import (
     qa_reward,
     qa_think_reward,
     qa_v1_reward,
-    qa_west_default_reward,
 )
 
 
@@ -78,14 +77,12 @@ def test_strict_west_reward(prediction, accuracy, answer_format):
         ("", 0, 0),
     ],
 )
-def test_west_default_original_scale(prediction, accuracy, answer_format):
+def test_qa_components_match_west(prediction, accuracy, answer_format):
     # Expected components checked against WEST rewards.py and train_grpo.py
     # at b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb, including regex edge cases.
-    assert qa_west_default_reward({"reference": "Car"}, {"text": prediction}) == {
-        "reward": accuracy + answer_format,
-        "acc": accuracy,
-        "format": answer_format,
-    }
+    components = qa_reward({"reference": "Car"}, {"text": prediction})
+    assert (components["acc"], components["format"]) == (accuracy, answer_format)
+    assert components["reward"] == (accuracy + answer_format) / 2
 
 
 @pytest.mark.parametrize(

@@ -79,7 +79,7 @@ def test_native_reward_rejects_mismatched_source_without_rewriting(tmp_path, upd
     assert path.read_bytes() == before
 
 
-def test_native_passes_and_west_reward_keeps_its_existing_contract(tmp_path):
+def test_native_passes_and_the_default_reward_keeps_its_contract(tmp_path):
     record = native_source()
     path = manifest(tmp_path, [record])
     assert data.read_manifest(path, config=SimpleNamespace(reward_function=REWARD)) == [
@@ -92,7 +92,7 @@ def test_native_passes_and_west_reward_keeps_its_existing_contract(tmp_path):
     path = manifest(tmp_path, [west])
     config = SimpleNamespace(
         reward_function=REWARD.replace(
-            "qa_bagpiper_v2_reward", "qa_west_default_reward"
+            "qa_bagpiper_v2_reward", "qa_v1_reward"
         )
     )
     assert data.read_manifest(path, config=config) == [west]

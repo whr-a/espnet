@@ -98,18 +98,6 @@ def qa_reward(source, generation):
     }
 
 
-def qa_west_default_reward(source, generation):
-    """WEST's default accuracy-plus-format reward, with its original scale.
-
-    Matches west/utils/rewards.py and west/bin/train_grpo.py at upstream
-    b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb: exact, case-sensitive answer
-    accuracy plus the whole-completion answer-format check, each weighted 1.
-    Keep ``qa_reward`` unchanged for runs frozen with its historical scale.
-    """
-    components = qa_reward(source, generation)
-    return {**components, "reward": components["acc"] + components["format"]}
-
-
 def qa_v1_reward(source, generation):
     """Protocol qa_west_bagpiper_v1: WEST's equal accuracy and format weights
     with an answer Bagpiper's free-form responses can earn.
