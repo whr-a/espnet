@@ -72,6 +72,31 @@ def test_worker_marker_prevents_recursive_launch(tmp_path, monkeypatch):
     assert calls == ["original.jsonl"]
 
 
+def test_local_validation_rejects_a_device_off_train_gpus(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli, "validate_inputs", lambda *args: pytest.fail("Unexpected input access")
+    )
+    path = config_file(tmp_path, device="cuda:0", train_gpus="3", rollout_gpus="3")
+    with pytest.raises(ValueError, match="set device: cuda:3"):
+        cli.main(["--config", path, "--validate-only"])
+
+
+def test_ray_validation_takes_train_gpus_as_role_labels(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "validate_inputs", lambda *args: ([], {}, None))
+    path = config_file(
+        tmp_path,
+        family="bagpiper",
+        training_objective="west_grpo",
+        loss_agg_mode="seq-mean-token-mean",
+        top_k=50,
+        device="cuda:0",
+        train_gpus="1",
+        rollout_gpus="0",
+    )
+    selectors = ["--ray-address", "a", "--train-node", "n", "--rollout-node", "n"]
+    cli.main(["--config", path, *selectors, "--validate-only"])
+
+
 def test_incompatible_worker_fails_before_input_or_runtime_access(
     tmp_path, monkeypatch
 ):

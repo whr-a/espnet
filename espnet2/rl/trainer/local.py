@@ -72,6 +72,7 @@ def run(config):
             get_torch_device().set_device(int(os.environ["LOCAL_RANK"]))
             config.device = f"{device_type}:{os.environ['LOCAL_RANK']}"
     else:
+        config.resolve_local_learner_device()
         device = torch.device(config.device)
         if device.type == "cuda" and device.index is not None:
             # One rank keeps every GPU visible, so its current device would stay

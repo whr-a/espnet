@@ -172,10 +172,6 @@ def run(args):
     config.output_dir = str(Path(args.output_dir).resolve())
     if args.device:
         config.device = args.device
-        device = torch.device(args.device)
-        if device.type == "cuda" and device.index is not None:
-            # Native scoring takes the learner's role here, on --device's GPU.
-            config.train_gpus = str(device.index)
     if args.rollout_gpus:
         config.rollout_gpus = args.rollout_gpus
     if args.group_size is not None:

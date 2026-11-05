@@ -108,6 +108,8 @@ def main(argv=None, *, worker=None):
     args = parser().parse_args(argv)
     config = effective_config(args)
     backend = execution_backend(config, args)
+    if backend == "local":
+        config.resolve_local_learner_device()
     worker = worker or args.worker
     if worker is None and os.environ.get("TORCHELASTIC_RUN_ID"):
         # Preserve the old direct torchrun entry without mistaking a platform

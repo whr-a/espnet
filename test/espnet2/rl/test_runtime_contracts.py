@@ -117,23 +117,38 @@ def test_geometry_comes_from_the_declared_devices(
         ("cuda", "0,1", "cuda"),
     ],
 )
-def test_one_learner_device_follows_train_gpus(device, train, expected):
+def test_one_local_learner_device_follows_train_gpus(device, train, expected):
     config = configuration(device=device, train_gpus=train, rollout_gpus=train)
     config.validate()
+    config.resolve_local_learner_device()
     assert config.device == expected
-    config.validate()  # idempotent
+    config.resolve_local_learner_device()  # idempotent
     assert config.device == expected
 
 
-def test_one_learner_device_must_name_the_train_gpu():
+def test_one_local_learner_device_must_name_the_train_gpu():
     for device in ("cuda:0", "cuda:x"):
         config = configuration(device=device, train_gpus="3", rollout_gpus="3")
         with pytest.raises(ValueError, match="name different GPUs"):
-            config.validate()
-    # Ray chooses the cards of disaggregated roles, so their index is free.
-    configuration(
-        execution_mode="disagg_async", device="cuda:0", train_gpus="3", rollout_gpus="4"
-    ).validate()
+            config.resolve_local_learner_device()
+
+
+def test_validation_leaves_ray_learner_devices_alone():
+    # Under Ray, train_gpus labels a role; its actor's one GPU is cuda:0, and
+    # the trainer validates the configuration again after setting that.
+    config = configuration(
+        family="bagpiper",
+        training_objective="west_grpo",
+        loss_agg_mode="seq-mean-token-mean",
+        top_k=50,
+        train_gpus="1",
+        rollout_gpus="0",
+        device="cuda",
+    )
+    config.validate()
+    assert config.device == "cuda"
+    config.device = "cuda:0"
+    config.validate()
 
 
 @pytest.mark.parametrize("name", ["train_gpus", "rollout_gpus"])

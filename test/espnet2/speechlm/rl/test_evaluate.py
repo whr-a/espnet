@@ -1,7 +1,5 @@
 """WER denominators and completeness for independent OpusLM evaluation."""
 
-import json
-from argparse import Namespace
 from types import SimpleNamespace
 
 import pytest
@@ -131,46 +129,3 @@ def test_export_rejects_symlink_escape_even_with_matching_hash(tmp_path):
     (root / "model.safetensors").symlink_to(outside)
     with pytest.raises(ValueError, match="symlink"):
         validate_export_files(root, {"model.safetensors": sha256(outside)})
-
-
-def test_evaluation_device_takes_the_training_role(tmp_path):
-    """--device on another GPU than the training run's is no configuration
-    conflict: native scoring takes the learner's role, so train_gpus follows."""
-    from espnet2.rl.config import ESPnetRLConfig
-    from espnet2.speechlm.rl import evaluate
-
-    train, heldout = tmp_path / "train.jsonl", tmp_path / "heldout.jsonl"
-    train.write_text(json.dumps({"id": "train"}) + "\n")
-    heldout.write_text(json.dumps({"id": "heldout"}) + "\n")
-    checkpoint = tmp_path / "native.pth"
-    checkpoint.write_bytes(b"")
-    config = tmp_path / "config.json"
-    config.write_text(
-        json.dumps(
-            ESPnetRLConfig(
-                family="opuslm_dialogue",
-                device="cuda:0",
-                manifest=str(train),
-                adapter_factory="unused:factory",
-                exporter="unused:exporter",
-                sglang_engine="unused:Engine",
-            ).to_dict()
-        )
-    )
-    # An existing output directory stops the run right after validation.
-    output = tmp_path / "evaluation"
-    output.mkdir()
-    args = Namespace(
-        config=str(config),
-        manifest=str(heldout),
-        checkpoint=str(checkpoint),
-        output_dir=str(output),
-        device="cuda:2",
-        rollout_gpus="2",
-        group_size=None,
-        policy_step=0,
-        export_dir=None,
-        responses=None,
-    )
-    with pytest.raises(FileExistsError):
-        evaluate.run(args)
