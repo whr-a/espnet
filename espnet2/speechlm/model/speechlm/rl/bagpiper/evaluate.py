@@ -27,7 +27,7 @@ import torch
 from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.rewards.text import ANSWER, edit_distance, words
-from espnet2.rl.rollout.engine import fit_context
+from espnet2.rl.rollout.engine import engine_defaults, fit_context
 from espnet2.rl.rollout.process import read_json, subprocess_environment, write_json
 from espnet2.rl.tasks.manifest import read_manifest
 from espnet2.rl.types import (
@@ -460,7 +460,7 @@ def run(args):
     cfg.adapter_options = {**cfg.adapter_options, "reward_device": args.device}
     # Longer responses than the recipe's extend its context by as many tokens
     # on its KV budget: fewer requests run at once.
-    defaults = getattr(resolve_callable(cfg.sglang_engine), "defaults", {})
+    defaults = engine_defaults(resolve_callable(cfg.sglang_engine), cfg)
     context = {**defaults, **cfg.sglang_engine_kwargs}.get("context_length")
     if context is not None:
         fit_context(cfg, defaults, context + args.max_new_tokens - cfg.max_tokens)

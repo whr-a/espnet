@@ -283,6 +283,12 @@ class FakeEngine:
 
     calls = []
 
+    @property
+    def defaults(self):
+        # Computed from the configuration, as BagpiperEngine's are; the
+        # evaluator reads them before any engine exists.
+        return {"context_length": 2048, "dtype": self.config.dtype}
+
     def __init__(self, config, model_path, *, directory, replica=0):
         assert (model_path / "model.safetensors.index.json").is_file()
         assert directory.is_dir() and replica == 0
@@ -312,6 +318,26 @@ class FakeEngine:
 
     def close(self):
         FakeEngine.calls.append("closed")
+
+
+@pytest.mark.parametrize(
+    "dtype,attention", [("float32", "triton"), ("bfloat16", "fa3")]
+)
+def test_engine_defaults_are_read_for_a_config_without_an_engine(dtype, attention):
+    from espnet2.rl.config import ESPnetRLConfig
+    from espnet2.rl.rollout.engine import engine_defaults
+    from espnet2.speechlm.model.speechlm.rl.bagpiper.rollout import BagpiperEngine
+
+    config = ESPnetRLConfig(
+        family="bagpiper",
+        dtype=dtype,
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+    )
+    defaults = engine_defaults(BagpiperEngine, config)
+    assert (defaults["context_length"], defaults["max_running_requests"]) == (2048, 32)
+    assert (defaults["dtype"], defaults["attention_backend"]) == (dtype, attention)
 
 
 @pytest.mark.parametrize("temperature", [1.0, 0.7])

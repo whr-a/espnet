@@ -90,6 +90,18 @@ def fit_context(config, defaults, width):
     }
 
 
+def engine_defaults(engine_class, config):
+    """``engine_class``'s own settings for ``config``, without starting it.
+
+    A family may compute them from the configuration (Bagpiper and OpusLM take
+    the engine's dtype from it), so they are read from an instance that holds
+    only ``config``.
+    """
+    engine = object.__new__(engine_class)
+    engine.config = config
+    return dict(getattr(engine, "defaults", {}))
+
+
 class RolloutEngine:
     """An architecture's inference engine, alive for a whole run.
 
