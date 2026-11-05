@@ -1,10 +1,9 @@
-"""`python -m espnet2.rl.cli` must run, not import-and-exit.
+"""`python -m espnet2.bin.rl_train` must run, not import-and-exit.
 
-The module held `main()` but no `__main__` guard, so running it as a module
-imported it and exited 0 without parsing arguments, validating anything or
-training. `--validate-only` returned 0 the same way, which reads as
-"validation passed" — the worst possible failure for a gate. Only
-`espnet2.bin.rl_train` carried the guard.
+A module that holds `main()` but no `__main__` guard imports and exits 0
+without parsing arguments, validating anything or training.
+`--validate-only` returns 0 the same way, which reads as "validation
+passed" — the worst possible failure for a gate.
 """
 
 import runpy
@@ -17,14 +16,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def test_both_module_entries_expose_the_same_main():
-    from espnet2.bin import rl_train
-    from espnet2.rl import cli
-
-    assert rl_train.main is cli.main
-
-
-@pytest.mark.parametrize("module", ["espnet2.rl.cli", "espnet2.bin.rl_train"])
+@pytest.mark.parametrize("module", ["espnet2.bin.rl_train"])
 def test_running_either_module_reaches_argument_parsing(module, monkeypatch):
     """A missing config must be reported, not silently succeed."""
     monkeypatch.setattr(sys, "argv", [module])
@@ -35,7 +27,7 @@ def test_running_either_module_reaches_argument_parsing(module, monkeypatch):
     assert exit_info.value.code == 2, f"{module} exited {exit_info.value.code}"
 
 
-@pytest.mark.parametrize("module", ["espnet2.rl.cli", "espnet2.bin.rl_train"])
+@pytest.mark.parametrize("module", ["espnet2.bin.rl_train"])
 def test_a_nonexistent_config_is_never_a_silent_success(module):
     """End to end, in a real subprocess: exit 0 here would be a false green."""
     done = subprocess.run(

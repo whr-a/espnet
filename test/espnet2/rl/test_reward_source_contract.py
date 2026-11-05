@@ -118,7 +118,7 @@ def config_for(path, mode):
 def test_cli_rejects_native_mismatch_before_engines_or_ray(
     tmp_path, monkeypatch, mode, validate_only
 ):
-    from espnet2.rl import cli as shared_cli
+    from espnet2.bin import rl_train as shared_cli
     from espnet2.rl.trainer import algorithms as miles_library
     from espnet2.rl.rollout import engine as rollout_engine
 
@@ -148,7 +148,7 @@ def test_cli_rejects_native_mismatch_before_engines_or_ray(
 
 @pytest.mark.parametrize("mode", ["sync", "disagg_async"])
 def test_validate_only_accepts_native_sources_without_ray(tmp_path, monkeypatch, mode):
-    from espnet2.rl import cli as shared_cli
+    from espnet2.bin import rl_train as shared_cli
     from espnet2.rl.trainer import algorithms as miles_library
     from espnet2.rl.rollout import engine as rollout_engine
 

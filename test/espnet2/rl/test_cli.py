@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from espnet2.rl import cli
+from espnet2.bin import rl_train as cli
 from espnet2.rl.config import ESPnetRLConfig
 
 

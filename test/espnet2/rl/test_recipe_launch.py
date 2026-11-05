@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from espnet2.rl.cli import launch_command, parser
+from espnet2.bin.rl_train import launch_command, parser
 from espnet2.rl.config import ESPnetRLConfig
 
 ROOT = Path(__file__).resolve().parents[3]

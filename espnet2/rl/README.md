@@ -17,8 +17,8 @@ supervised recipe stages retain their behavior.
 
 ```text
 egs2/<model>/<task>/             recipe stages and model/task configuration
-espnet2/bin/rl_train.py          public command
-espnet2/rl/cli.py                configuration, validation and execution selection
+espnet2/bin/rl_train.py          public command: configuration, validation and
+                                 execution selection
 espnet2/rl/                      native trainer and Miles/rollout adapters
 espnet2/s2t/rl/                 OWSM policy, exporter, rollout and WER evaluation
 espnet2/speechlm/rl/            OpusLM policy, exporter and ASR evaluation
