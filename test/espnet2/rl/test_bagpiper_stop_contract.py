@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.speechlm.model.speechlm.rl.bagpiper.integration import (
     prepared_native_metadata,
 )

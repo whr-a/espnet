@@ -9,7 +9,7 @@ a dict holding it as ``"reward"`` next to the numbers it was made of
 (accuracy, format, WER, ...); every candidate reports the same ones, and
 their batch means are logged as ``reward/<name>``. A reward may also expose
 ``reward.validate_sources(records)``, which
-:func:`espnet2.rl.data.read_manifest` calls before any model, GPU or Ray
+:func:`espnet2.rl.tasks.manifest.read_manifest` calls before any model, GPU or Ray
 actor starts.
 
 A recipe names its reward in ``reward_function`` either by a name in

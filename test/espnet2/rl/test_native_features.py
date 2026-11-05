@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from espnet2.rl.data import collate_rollouts, prepared_sha256
+from espnet2.rl.batch import collate_rollouts, prepared_sha256
 from espnet2.rl.scoring import _identity_digest
 
 

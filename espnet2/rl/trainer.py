@@ -29,7 +29,8 @@ from torch.nn.parallel import DistributedDataParallel
 
 from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 
-from .data import collate_rollouts, read_manifest
+from .batch import collate_rollouts
+from .tasks.manifest import read_manifest
 from .miles_library import (
     agg_loss,
     compute_grpo_outcome_advantage,
@@ -46,9 +47,9 @@ from .rollout import CheckpointRollout, save_checkpoint
 from .rollout_worker import engine_class
 from .scoring import score_native_batch
 from .timing import PhaseProfiler, learner_timing, profile_phase
+from .tasks.manifest import select_training_sources
 from .training_objectives import (
     build_lr_scheduler,
-    select_training_sources,
     west_group_advantages,
     west_policy_loss,
 )

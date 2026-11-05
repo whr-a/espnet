@@ -410,7 +410,7 @@ def test_owsm_recipe_builder_preserves_five_updates_and_existing_manifest(
     heldout.write_text("already frozen heldout")
     observed = []
     monkeypatch.setattr(
-        "espnet2.rl.data.verify_data_admission",
+        "espnet2.rl.tasks.manifest.verify_data_admission",
         lambda config, path: observed.append((config.manifest, path)),
     )
     work = tmp_path / "work"

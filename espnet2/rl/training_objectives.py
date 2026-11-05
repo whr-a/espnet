@@ -1,4 +1,4 @@
-"""Explicit WEST GRPO compatibility and reproducible training cursors.
+"""Explicit WEST GRPO compatibility and the learning-rate schedule.
 
 The WEST formulas follow wenet-e2e/west b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb.
 They intentionally remain separate from Miles' versioned PPO/IcePop default.
@@ -60,25 +60,3 @@ def build_lr_scheduler(optimizer, config):
         )
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
-
-
-def select_training_sources(sources, update_index, config):
-    """Read a deterministic absolute prompt cursor, including epoch crossings."""
-    if len({source["id"] for source in sources}) < config.prompts_per_step:
-        raise ValueError("The prompt batch requires distinct source records")
-    start = update_index * config.prompts_per_step
-    permutations = {}
-    result = []
-    for absolute_index in range(start, start + config.prompts_per_step):
-        epoch, offset = divmod(absolute_index, len(sources))
-        if epoch not in permutations:
-            order = list(range(len(sources)))
-            if config.shuffle_train_data:
-                generator = torch.Generator(device="cpu")
-                generator.manual_seed(config.data_seed + epoch)
-                order = torch.randperm(len(sources), generator=generator).tolist()
-            permutations[epoch] = order
-        result.append(sources[permutations[epoch][offset]])
-    if len({source["id"] for source in result}) != config.prompts_per_step:
-        raise ValueError("An epoch boundary produced duplicate prompts in one batch")
-    return result

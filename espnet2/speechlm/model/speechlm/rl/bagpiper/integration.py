@@ -18,7 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from espnet2.rl.data import prepared_sha256
+from espnet2.rl.batch import prepared_sha256
 
 
 def prepared_native_metadata(source):

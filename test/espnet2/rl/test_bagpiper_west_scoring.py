@@ -243,7 +243,7 @@ class DomainOracle(nn.Module):
 
 
 def test_distributed_preparation_keeps_raw_reference_separate():
-    from espnet2.rl.data import collate_rollouts
+    from espnet2.rl.batch import collate_rollouts
 
     sources = [{"id": "q"}]
     generations = [

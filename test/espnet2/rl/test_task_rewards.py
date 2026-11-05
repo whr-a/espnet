@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from espnet2.rl.data import collate_rollouts, read_manifest
+from espnet2.rl.batch import collate_rollouts
+from espnet2.rl.tasks.manifest import read_manifest
 from espnet2.rl.rewards import REWARDS, get_reward, outcome_rewards
 from espnet2.rl.rewards.asr import longform_wer_reward, repeated_word_fraction
 from espnet2.rl.rewards.asr import word_error_reward

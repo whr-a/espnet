@@ -23,7 +23,7 @@ from torch import nn
 from transformers import Qwen3Config
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import support_counts, support_mismatch_rate
 from espnet2.speechlm.model.speechlm.rl.bagpiper import rollout as rollout_module

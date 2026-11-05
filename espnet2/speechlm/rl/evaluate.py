@@ -10,7 +10,8 @@ from pathlib import Path
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.data import collate_rollouts, read_manifest
+from espnet2.rl.batch import collate_rollouts
+from espnet2.rl.tasks.manifest import read_manifest
 from espnet2.rl.engine import fit_context
 from espnet2.rl.rewards.text import edit_distance, words
 from espnet2.rl.rollout import CheckpointRollout

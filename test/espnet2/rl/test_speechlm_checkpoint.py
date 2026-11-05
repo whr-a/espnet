@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from transformers import Qwen3Config, Qwen3Model
 
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import (
     NativeSpeechLMPolicy,
     checkpoint_native_layers,

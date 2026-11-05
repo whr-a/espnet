@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.miles_library import compute_policy_loss_vanilla, kl_penalty
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores

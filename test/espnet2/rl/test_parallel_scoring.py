@@ -12,7 +12,7 @@ import torch.distributed as distributed
 import torch.multiprocessing as multiprocessing
 from torch import nn
 
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.scoring import score_native_batch
 from espnet2.rl.trainer import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores

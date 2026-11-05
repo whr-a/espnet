@@ -103,7 +103,7 @@ def resolve_nodes(nodes, train, rollout, *, train_ranks, rollout_replicas):
 
 
 def validate_inputs(config, args):
-    from .data import read_manifest, verify_data_admission
+    from .tasks.manifest import read_manifest, verify_data_admission
     from .rollout_worker import engine_class
 
     sources = read_manifest(config.manifest, config=config)
@@ -202,7 +202,7 @@ def main(argv=None, *, worker=None):
     if worker is not None and worker != backend:
         raise ValueError("Worker backend differs from the effective configuration")
     if worker is None and not args.validate_only:
-        from .data import read_manifest
+        from .tasks.manifest import read_manifest
 
         # Reject incompatible reward/prompt contracts before spawning any ranks.
         read_manifest(config.manifest, config=config)

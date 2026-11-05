@@ -27,7 +27,7 @@ from sglang.srt.utils.common import get_bool_env_var  # noqa: E402
 
 from espnet2.asr.decoder.transformer_decoder import TransformerDecoder  # noqa: E402
 from espnet2.rl.config import ESPnetRLConfig  # noqa: E402
-from espnet2.rl.data import collate_rollouts  # noqa: E402
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.trainer import NativeGRPOTrainer  # noqa: E402
 from espnet2.s2t.rl import sglang_rollout  # noqa: E402
 from espnet2.s2t.rl.policy import OWSMPolicy  # noqa: E402

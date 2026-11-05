@@ -13,12 +13,12 @@ from torch import nn
 from torch.nn import functional as F
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.parallel_optimizer import CPUOffloadedAdamW
 from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.tasks.manifest import select_training_sources
 from espnet2.rl.training_objectives import (
     build_lr_scheduler,
-    select_training_sources,
     west_group_advantages,
     west_policy_loss,
 )

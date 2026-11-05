@@ -13,7 +13,7 @@ import soundfile as sf
 import torch
 from safetensors.torch import save_file
 
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.types import TokenScores
 from espnet2.speechlm.model.speechlm.rl.bagpiper import evaluate
 from espnet2.speechlm.model.speechlm.rl.bagpiper.evaluate import (

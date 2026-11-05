@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import ray
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
-from .data import collate_rollouts
+from .batch import collate_rollouts
 from .miles_native_actor import ESPnetTrainRayActor
 from .rollout import (
     RolloutProcess,
@@ -208,7 +208,7 @@ class NativeRolloutExecutor:
         self._active_get_task = asyncio.current_task()
         try:
             config = self.components.config
-            from .training_objectives import select_training_sources
+            from .tasks.manifest import select_training_sources
 
             sources = [
                 copy.deepcopy(source)

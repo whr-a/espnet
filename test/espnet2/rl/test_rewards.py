@@ -2,7 +2,7 @@
 
 import pytest
 
-from espnet2.rl.data import collate_rollouts
+from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.rewards import outcome_rewards
 from espnet2.rl.rewards.asr import word_error_reward
 from espnet2.rl.rewards.text import word_error_rate, words

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from espnet2.rl import data
+from espnet2.rl.tasks import manifest as data
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.speechlm.model.speechlm.rl.bagpiper.data import qa_prompt, qa_system_prompt
 

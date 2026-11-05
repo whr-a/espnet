@@ -75,7 +75,7 @@ def main():
     native = ESPnetRLConfig(**config)
     native.validate()
     if args.data_admission:
-        from espnet2.rl.data import verify_data_admission
+        from espnet2.rl.tasks.manifest import verify_data_admission
 
         verify_data_admission(native, args.data_admission)
     path = work / "rl_config.yaml"
