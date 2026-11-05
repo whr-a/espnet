@@ -133,6 +133,30 @@ def test_one_local_learner_device_must_name_the_train_gpu():
             config.resolve_local_learner_device()
 
 
+@pytest.mark.parametrize(
+    "reference, expected",
+    [("cuda", "cuda:3"), ("cuda:3", "cuda:3"), ("cpu", "cpu"), (None, None)],
+)
+def test_one_local_learner_reference_stays_on_its_gpu(reference, expected):
+    config = configuration(
+        device="cuda:3", reference_device=reference, train_gpus="3", rollout_gpus="3"
+    )
+    config.resolve_local_learner_device()
+    assert config.reference_device == expected
+
+
+def test_one_local_learner_reference_must_not_name_another_gpu():
+    config = configuration(
+        device="cuda:3", reference_device="cuda:0", train_gpus="3", rollout_gpus="3"
+    )
+    with pytest.raises(ValueError, match="set reference_device: cuda:3 or cpu"):
+        config.resolve_local_learner_device()
+    # A CPU learner's GPU reference is left as it was.
+    configuration(
+        device="cpu", reference_device="cuda:7"
+    ).resolve_local_learner_device()
+
+
 def test_validation_leaves_ray_learner_devices_alone():
     # Under Ray, train_gpus labels a role; its actor's one GPU is cuda:0, and
     # the trainer validates the configuration again after setting that.

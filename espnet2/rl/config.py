@@ -369,13 +369,15 @@ class ESPnetRLConfig:
             raise ValueError("keep_exports must be a positive integer")
 
     def resolve_local_learner_device(self):
-        """Put a one-rank local learner on the GPU train_gpus names.
+        """Put a one-rank local learner, and its reference, on the GPU train_gpus
+        names.
 
         Only the local backend reads train_gpus as physical ids, the same ones
         its rollout gets as CUDA_VISIBLE_DEVICES: a bare "cuda" (the default on
-        a GPU host) becomes that GPU, and a device that names another GPU is an
-        error. Torchrun ranks take cuda:LOCAL_RANK and Ray actors their one
-        visible GPU, so validate(), which they also run, does not check this.
+        a GPU host) becomes that GPU, and a device or CUDA reference_device that
+        names another GPU is an error. Torchrun ranks take cuda:LOCAL_RANK and
+        Ray actors their one visible GPU, so validate(), which they also run,
+        does not check this.
         """
         kind, _, index = str(self.device).partition(":")
         gpu = self.train_device_ids[0]
@@ -389,6 +391,18 @@ class ESPnetRLConfig:
                 "different GPUs; a one-rank local run trains on the GPU train_gpus "
                 f"names, so set device: cuda:{gpu} (both are physical ids, with "
                 "CUDA_VISIBLE_DEVICES unset)"
+            )
+        kind, _, index = str(self.reference_device).partition(":")
+        if kind != "cuda":
+            return
+        if not index:
+            self.reference_device = f"cuda:{gpu}"
+        elif not index.isdigit() or int(index) != int(gpu):
+            raise ValueError(
+                f"reference_device {self.reference_device} and train_gpus "
+                f"{self.train_gpus!r} name different GPUs; a one-rank local run "
+                "keeps its reference on the learner's GPU or on the CPU, so set "
+                f"reference_device: cuda:{gpu} or cpu"
             )
 
     @classmethod
