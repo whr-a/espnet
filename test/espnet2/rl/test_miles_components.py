@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from espnet2.rl.miles.components import NativeTrainerGroup
+pytest.importorskip("ray")
+pytest.importorskip("miles")
+
+from espnet2.rl.miles.components import NativeTrainerGroup  # noqa: E402
 
 
 @pytest.mark.parametrize("failing_rank", [None, 0, 1])

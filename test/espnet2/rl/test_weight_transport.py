@@ -84,6 +84,7 @@ def test_receiver_rejects_invalid_identity(tmp_path, change):
 def test_original_miles_nccl_helper_transfers_one_complete_policy(
     tmp_path, monkeypatch
 ):
+    pytest.importorskip("miles")
     from miles.backends.training_utils.weight_update.protocols import broadcast
 
     # The network/GPU collective is replaced; Miles' real metadata dispatch,
@@ -261,6 +262,7 @@ def test_memory_tag_failure_never_advertises_a_usable_policy(tmp_path, phase):
 def test_original_miles_ipc_serializer_and_storage_lifetime(
     tmp_path, monkeypatch, fail
 ):
+    pytest.importorskip("miles")
     from miles.backends.training_utils.weight_update.protocols import cuda_ipc
 
     events, receipt = [], tmp_path / "receipt.json"
@@ -340,6 +342,7 @@ def test_original_miles_ipc_serializer_and_storage_lifetime(
 
 def test_shared_memory_policy_reaches_an_independent_interpreter(tmp_path):
     """Real Miles helper, real Gloo gather and real named shared-memory receive."""
+    pytest.importorskip("miles")
     previous = torch.multiprocessing.get_sharing_strategy()
     receipt = tmp_path / "sources.weights.json"
     receiver = """
@@ -456,6 +459,7 @@ def test_disk_publication_phase_clock_includes_save_export_hash_and_ack(
 def test_ray_publication_uses_memory_then_current_disk_export_for_periodic_eval(
     tmp_path,
 ):
+    pytest.importorskip("ray")
     from espnet2.rl.miles.components import NativeComponents
 
     config = ESPnetRLConfig(

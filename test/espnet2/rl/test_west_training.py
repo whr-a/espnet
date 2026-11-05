@@ -130,6 +130,7 @@ def oracle_update(policy, batch, optimizer, step, cfg):
 
 
 def test_west_advantages_match_grouped_formula_including_constant_decimal_groups():
+    pytest.importorskip("miles")
     mask = torch.tensor(
         [[1, 1, 0], [1, 0, 0], [1, 1, 1], [1, 1, 0]], dtype=torch.float32
     )
@@ -147,6 +148,7 @@ def test_west_advantages_match_grouped_formula_including_constant_decimal_groups
 
 
 def test_answer_reduction_weights_short_and_long_answers_equally():
+    pytest.importorskip("miles")
     current = torch.tensor([[-0.3, 0, 0], [-0.7, -0.5, -0.4]], requires_grad=True)
     mask = torch.tensor([[1, 0, 0], [1, 1, 1]], dtype=torch.float32)
     advantages = torch.tensor([[1, 0, 0], [-1, -1, -1]], dtype=torch.float32)
@@ -161,6 +163,8 @@ def test_answer_reduction_weights_short_and_long_answers_equally():
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
 @pytest.mark.parametrize("parts", [[list(range(4))], [[0], [1, 2], [3]]])
 def test_west_miles_primitive_preserves_exact_values_and_gradients(dtype, parts):
+    if dtype == torch.float32:
+        pytest.importorskip("miles")
     current = torch.tensor(
         [
             [-0.1, -20.0, -0.4],
@@ -205,6 +209,7 @@ def test_west_miles_primitive_preserves_exact_values_and_gradients(dtype, parts)
 def test_real_trainer_matches_literal_west_formula_and_raw_gradient(
     tmp_path, micro_batch_size
 ):
+    pytest.importorskip("miles")
     torch.set_num_threads(1)
     cfg = config(tmp_path, micro_batch_size)
     trainer = NativeGRPOTrainer(TinyPolicy(), cfg)
@@ -235,6 +240,7 @@ def test_real_trainer_matches_literal_west_formula_and_raw_gradient(
 
 
 def test_bfloat16_checkpoint_restores_master_weights_lr_rng_and_cursor(tmp_path):
+    pytest.importorskip("miles")
     torch.set_num_threads(1)
     cfg = config(tmp_path, dtype="bfloat16")
     original = NativeGRPOTrainer(TinyPolicy(torch.bfloat16), cfg)
@@ -375,6 +381,7 @@ def _distributed_worker(rank, root, strategy):
 def test_multirank_microbatch_weighting_matches_independent_west_oracle(
     tmp_path, strategy
 ):
+    pytest.importorskip("miles")
     torch.set_num_threads(1)
     multiprocessing.start_processes(
         _distributed_worker,
@@ -423,6 +430,7 @@ def shared_step_reward(source, generation):
 @pytest.mark.parametrize("objective", ["miles_ppo", "west_grpo"])
 def test_shared_step_matches_explicit_scoring_reward_and_optimizer(tmp_path, objective):
     """Transport consolidation preserves real parameters, moments and fixed reference."""
+    pytest.importorskip("miles")
     from espnet2.rl.trainer.scoring import score_native_batch
 
     cfg = config(tmp_path)

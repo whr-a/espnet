@@ -27,6 +27,7 @@ def test_running_either_module_reaches_argument_parsing(module, monkeypatch):
     assert exit_info.value.code == 2, f"{module} exited {exit_info.value.code}"
 
 
+@pytest.mark.execution_timeout(20)
 @pytest.mark.parametrize("module", ["espnet2.bin.rl_train"])
 def test_a_nonexistent_config_is_never_a_silent_success(module):
     """End to end, in a real subprocess: exit 0 here would be a false green."""

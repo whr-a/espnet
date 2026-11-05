@@ -14,12 +14,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from sglang.srt.layers import sampler as sglang_sampler
-from sglang.srt.layers.logits_processor import LogitsProcessorOutput
-from sglang.srt.layers.logprob_processor import OutputLogprobProcessor
-from sglang.srt.model_executor.forward_batch_info import ForwardMode
-from sglang.srt.sampling.sampling_params import TOP_K_ALL, SamplingParams
-from sglang.srt.utils.common import get_bool_env_var
 from torch import nn
 from transformers import Qwen3Config
 
@@ -29,9 +23,6 @@ from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import support_counts, support_mismatch_rate
 from espnet2.speechlm.model.speechlm.rl.bagpiper import rollout as rollout_module
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import NativeSpeechLMPolicy
-from espnet2.speechlm.model.speechlm.rl.bagpiper.sglang_model import (
-    ESPnetBagpiperForCausalLM,
-)
 from espnet2.speechlm.model.speechlm.rl.bagpiper.tokens import (
     ASSISTANT,
     CODEC,
@@ -43,6 +34,19 @@ from espnet2.speechlm.model.speechlm.rl.bagpiper.tokens import (
     TEXT,
     frame_supports,
     support_masks,
+)
+
+pytest.importorskip("sglang")
+
+from sglang.srt.layers import sampler as sglang_sampler  # noqa: E402
+from sglang.srt.layers.logits_processor import LogitsProcessorOutput  # noqa: E402
+from sglang.srt.layers.logprob_processor import OutputLogprobProcessor  # noqa: E402
+from sglang.srt.model_executor.forward_batch_info import ForwardMode  # noqa: E402
+from sglang.srt.sampling.sampling_params import TOP_K_ALL, SamplingParams  # noqa: E402
+from sglang.srt.utils.common import get_bool_env_var  # noqa: E402
+
+from espnet2.speechlm.model.speechlm.rl.bagpiper.sglang_model import (  # noqa: E402
+    ESPnetBagpiperForCausalLM,
 )
 
 VOCAB, LAYER, BASE = 80, 8, 48

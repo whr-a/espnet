@@ -5,6 +5,7 @@ runtime intentionally omits pytest. Tests use Gloo and never initialize CUDA.
 """
 
 import copy
+import importlib
 import json
 import tempfile
 import unittest
@@ -23,6 +24,23 @@ from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.trainer.optim import CPUOffloadedAdamW
 from espnet2.rl.trainer.state import save_checkpoint
 from espnet2.rl.types import TokenScores
+
+try:  # upstream CI's per-test time limit; the module also runs without pytest
+    from pytest import mark
+except ImportError:
+    mark = None
+
+
+def _time_limit(seconds):
+    return mark.execution_timeout(seconds) if mark else (lambda test: test)
+
+
+def _needs(module):
+    """Skip the calling test when an optional runtime package is missing."""
+    try:
+        importlib.import_module(module)
+    except ImportError as error:
+        raise unittest.SkipTest(f"needs {module}: {error}") from error
 
 
 class TinyNativePolicy(nn.Module):
@@ -220,6 +238,7 @@ def _owner_error_worker(rank, world_size, root):
 
 
 class TestCPUOffloadDDP(unittest.TestCase):
+    @_time_limit(30)
     def test_owner_failure_is_reported_to_every_rank_without_stepping(self):
         with tempfile.TemporaryDirectory() as directory:
             multiprocessing.start_processes(
@@ -231,9 +250,11 @@ class TestCPUOffloadDDP(unittest.TestCase):
             )
 
     def test_eight_ranks_match_serial_global_masked_grpo_and_checkpoint(self):
+        _needs("miles")
         self._verify_strategy("ddp")
 
     def test_eight_native_allreduce_ranks_match_global_grpo_without_ddp_buckets(self):
+        _needs("miles")
         self._verify_strategy("native_allreduce")
 
     def _verify_strategy(self, strategy):

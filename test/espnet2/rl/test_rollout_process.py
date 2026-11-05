@@ -106,6 +106,7 @@ def events(directory):
     return [json.loads(line) for line in lines]
 
 
+@pytest.mark.execution_timeout(20)
 def test_one_engine_serves_every_load_and_generation(config, tmp_path):
     directory = tmp_path / "run" / "replica-0"
     process = RolloutProcess(config, "6", directory, 0)
@@ -142,6 +143,7 @@ def test_one_engine_serves_every_load_and_generation(config, tmp_path):
     process.close()  # Closing twice is harmless.
 
 
+@pytest.mark.execution_timeout(20)
 def test_arrays_travel_once_each_as_binary_sidecars(config, tmp_path):
     directory = tmp_path / "replica-0"
     process = RolloutProcess(config, "0", directory, 0)
@@ -165,6 +167,7 @@ def test_arrays_travel_once_each_as_binary_sidecars(config, tmp_path):
         read_json(directory / "responses-000004.json")
 
 
+@pytest.mark.execution_timeout(20)
 def test_engine_errors_reach_the_client_and_the_worker_keeps_serving(config, tmp_path):
     process = RolloutProcess(config, "0", tmp_path / "replica-0", 0)
     try:
@@ -250,6 +253,7 @@ def test_release_hands_back_weights_only_with_the_memory_saver(
         ]
 
 
+@pytest.mark.execution_timeout(20)
 def test_a_dead_worker_is_reported_with_its_log(config, tmp_path):
     process = RolloutProcess(config, "0", tmp_path / "replica-0", 0)
     try:
@@ -285,6 +289,7 @@ def alive(pid):
         return False
 
 
+@pytest.mark.execution_timeout(30)
 def test_a_worker_dies_with_its_client(config, tmp_path):
     """A client killed mid-batch takes its worker's whole session along."""
     directory = tmp_path / "replica-0"
@@ -311,6 +316,7 @@ def test_a_worker_dies_with_its_client(config, tmp_path):
             os.killpg(worker, signal.SIGKILL)
 
 
+@pytest.mark.execution_timeout(20)
 def test_checkpoint_rollout_shards_sources_and_merges_complete_groups(config):
     config.train_gpus, config.rollout_gpus = "7", "0,1,2"
     rollout = CheckpointRollout(config)
@@ -355,6 +361,7 @@ def test_keep_exports_is_a_positive_integer(config, keep):
         config.validate()
 
 
+@pytest.mark.execution_timeout(20)
 def test_sync_keeps_the_newest_exports_once_every_engine_loaded_one(config):
     config.train_gpus, config.rollout_gpus = "7", "0,1"
     rollout = CheckpointRollout(config)

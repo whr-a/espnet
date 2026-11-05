@@ -137,6 +137,7 @@ def test_external_torchrun_rejects_wrong_geometry(
 def test_ray_roles_share_nccl_mode_before_actor_creation(
     tmp_path, monkeypatch, caller_value, symmetric_memory, expected
 ):
+    pytest.importorskip("ray")
     import ray
 
     from espnet2.rl.miles import driver as miles_async_driver

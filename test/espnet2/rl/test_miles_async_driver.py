@@ -8,6 +8,8 @@ import pytest
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.miles.driver import load_async_loop, orchestration_args
 
+pytest.importorskip("miles")
+
 
 def test_pinned_loop_overlaps_train_and_rollout_and_publishes_at_safe_points():
     from miles.utils import object_store

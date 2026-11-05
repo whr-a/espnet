@@ -476,6 +476,7 @@ def test_greedy_mmau_evaluation_through_the_rollout_engine(
 
 
 def test_the_engine_process_must_import_the_recipe_sglang(tmp_path):
+    pytest.importorskip("sglang")
     import sglang
 
     config = SimpleNamespace(rollout_python=sys.executable, sglang_source="")

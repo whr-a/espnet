@@ -17,6 +17,15 @@ from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.types import TokenScores
 
+try:  # upstream CI's per-test time limit; the module also runs without pytest
+    from pytest import mark
+except ImportError:
+    mark = None
+
+
+def _time_limit(seconds):
+    return mark.execution_timeout(seconds) if mark else (lambda test: test)
+
 
 class NativeScoringOracle(nn.Module):
     def __init__(self, offset=0.0):
@@ -170,6 +179,7 @@ def _eight_rank_scoring_worker(rank, root):
 
 
 class TestParallelScoring(unittest.TestCase):
+    @_time_limit(20)
     def test_eight_rank_scores_masks_identity_and_error_propagation(self):
         with tempfile.TemporaryDirectory() as root:
             multiprocessing.start_processes(

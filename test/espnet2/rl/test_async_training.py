@@ -88,6 +88,7 @@ def test_icepop_bounds_hold_in_sync_too(change):
 
 
 def test_icepop_loss_gradient_and_independent_kl_with_forced_frames():
+    pytest.importorskip("miles")
     mask = torch.tensor([[1.0, 0.0, 1.0], [1.0, 1.0, 0.0]])
     old = torch.zeros_like(mask, requires_grad=True)
     behavior = -torch.tensor([[1.5, 999.0, 0.4], [2.1, 0.75, 999.0]]).log()
@@ -130,6 +131,7 @@ def test_icepop_loss_gradient_and_independent_kl_with_forced_frames():
 
 
 def test_async_global_denominator_survives_microbatches():
+    pytest.importorskip("miles")
     mask = torch.tensor([[1.0, 0.0], [1.0, 1.0]])
     old = torch.zeros_like(mask)
     behavior = -torch.tensor([[1.5, 1.0], [0.75, 1.0]]).log()
@@ -197,6 +199,7 @@ def async_batch(config):
 
 @pytest.mark.parametrize("mode", ["sync", "disagg_async"])
 def test_drift_gate_statistics_and_the_mean_gate_on_an_offset(mode):
+    pytest.importorskip("miles")
     config = configuration(execution_mode=mode, prompts_per_step=32, group_size=8)
     assert config.score_mean_tolerance is None
     trainer = NativeGRPOTrainer(Scorer(-0.2), config, reference=Scorer(-0.3))
@@ -232,6 +235,7 @@ def test_drift_gate_statistics_and_the_mean_gate_on_an_offset(mode):
 
 
 def test_synchronous_update_applies_icepop_and_equal_logprobs_weigh_one():
+    pytest.importorskip("miles")
     mask = torch.tensor([[1.0, 1.0, 0.0], [1.0, 0.0, 1.0]])
     old = torch.tensor([[-0.5, -1.2, 0.0], [-0.3, 0.0, -2.0]])
     advantages = torch.tensor([[1.0, 1.0, 0.0], [-2.0, 0.0, -2.0]])
@@ -268,6 +272,7 @@ def test_synchronous_update_applies_icepop_and_equal_logprobs_weigh_one():
 
 
 def test_behavior_numerical_audit_accepts_real_learner_drift():
+    pytest.importorskip("miles")
     config = configuration(
         execution_mode="disagg_async", prompts_per_step=32, group_size=8
     )

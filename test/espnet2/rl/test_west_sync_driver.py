@@ -3,6 +3,8 @@
 import asyncio
 import json
 
+import pytest
+
 from espnet2.bin.rl_train import launch_command, parser
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.miles.driver import load_async_loop, orchestration_args
@@ -46,6 +48,7 @@ def test_sync_ray_launch_routes_to_native_actor_driver(tmp_path):
 
 
 def test_sync_driver_has_no_stale_overlap_and_saves_before_evaluation_on_resume():
+    pytest.importorskip("miles")
     from miles.utils import object_store
     from miles.utils.async_utils import with_disposer
     from miles.utils.data import RolloutDataPack

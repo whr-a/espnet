@@ -18,6 +18,15 @@ from espnet2.rl.trainer.parallel import (
     synchronize_native_model,
 )
 
+try:  # upstream CI's per-test time limit; the module also runs without pytest
+    from pytest import mark
+except ImportError:
+    mark = None
+
+
+def _time_limit(seconds):
+    return mark.execution_timeout(seconds) if mark else (lambda test: test)
+
 
 class StridedPolicy(nn.Module):
     def __init__(self, rank):
@@ -187,6 +196,7 @@ class NativeStridedCollectives(unittest.TestCase):
         with self.assertRaises(ValueError):
             list(_chunks(torch.ones(3), 0))
 
+    @_time_limit(30)
     def test_two_rank_sync_gradient_and_real_adam_oracles(self):
         with tempfile.TemporaryDirectory() as root:
             multiprocessing.spawn(strided_worker, args=(2, root), nprocs=2, join=True)

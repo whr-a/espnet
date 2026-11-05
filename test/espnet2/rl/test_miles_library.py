@@ -133,6 +133,7 @@ def test_frozen_json_configuration_retains_scientific_numeric_types(tmp_path):
 
 
 def test_group_baselines_and_forced_padding():
+    pytest.importorskip("miles")
     rewards = torch.tensor(
         [[0.0, 1.0, 0.0], [0.0, 3.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
     )
@@ -150,6 +151,7 @@ def test_group_baselines_and_forced_padding():
 
 
 def test_ppo_clipping_and_gradient_against_analytical_oracle():
+    pytest.importorskip("miles")
     current = torch.tensor(
         [[np.log(1.4), np.log(0.6)]], dtype=torch.float32, requires_grad=True
     )
@@ -187,6 +189,7 @@ def test_ppo_clipping_and_gradient_against_analytical_oracle():
 
 
 def test_kl_k3_against_formula():
+    pytest.importorskip("miles")
     current = torch.tensor([-0.3, -0.9], requires_grad=True)
     reference = torch.tensor([-0.5, -0.7])
     expected = torch.exp(reference - current) - 1 - (reference - current)
@@ -281,6 +284,7 @@ def test_trainer_rejects_native_scorer_action_identity_drift(changed_mask):
 
 
 def test_clip_fraction_includes_all_microbatches():
+    pytest.importorskip("miles")
     generations = [
         {
             "source_id": "u",

@@ -13,13 +13,17 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as multiprocessing
 
-import espnet2.rl.miles.components as components_module
 import espnet2.rl.trainer.learner as trainer_module
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.miles.actor import ESPnetTrainRayActor
-from espnet2.rl.miles.components import NativeTrainerGroup
 from espnet2.rl.miles.driver import run_synchronous_loop
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
+
+pytest.importorskip("ray")
+pytest.importorskip("miles")
+
+import espnet2.rl.miles.components as components_module  # noqa: E402
+from espnet2.rl.miles.actor import ESPnetTrainRayActor  # noqa: E402
+from espnet2.rl.miles.components import NativeTrainerGroup  # noqa: E402
 
 ERROR = "Synthetic SGLang unsupported finish_reason: length after 2048 frames"
 

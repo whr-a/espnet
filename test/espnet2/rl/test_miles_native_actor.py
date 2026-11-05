@@ -15,19 +15,27 @@ from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as multiprocessing
-from miles.backends.training_utils.types import TrainStepOutcome
-from miles.utils import distributed_utils, object_store
 from torch import nn
 from torch.nn import functional as F
 
-import espnet2.rl.miles.actor as actor_module
 from espnet2.rl.batch import collate_rollouts
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.miles.actor import BehaviorSnapshot, ESPnetTrainRayActor
 from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.trainer.scoring import score_native_batch
 from espnet2.rl.types import TokenScores
 from espnet2.rl.utils import sha256
+
+try:
+    import miles  # noqa: F401
+    import ray  # noqa: F401
+except ImportError as error:  # upstream CI installs none of them
+    raise unittest.SkipTest(f"needs ray and miles: {error}") from error
+
+from miles.backends.training_utils.types import TrainStepOutcome  # noqa: E402
+from miles.utils import distributed_utils, object_store  # noqa: E402
+
+import espnet2.rl.miles.actor as actor_module  # noqa: E402
+from espnet2.rl.miles.actor import BehaviorSnapshot, ESPnetTrainRayActor  # noqa: E402
 
 _REWARD_CALLS = 0
 

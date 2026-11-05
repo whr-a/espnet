@@ -83,6 +83,7 @@ def batch():
 
 
 def test_reference_scores_on_configured_device_and_offloads_before_backward():
+    pytest.importorskip("miles")
     reference = Reference()
     initial = copy.deepcopy(reference.state_dict())
     actor = Policy()
@@ -138,6 +139,7 @@ def test_reference_returns_to_cpu_after_scoring_or_transfer_failure(failure):
 
 
 def test_default_reference_stays_on_its_configured_device():
+    pytest.importorskip("miles")
     config, reference = configuration(), Reference()
     assert config.reference_cpu_offload is False
     trainer = NativeGRPOTrainer(Policy(), config, reference=reference)

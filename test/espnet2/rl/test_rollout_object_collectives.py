@@ -10,6 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as multiprocessing
@@ -197,6 +198,7 @@ def _delayed_training(rank, root):
 
 
 class TestRolloutObjectCollectives(unittest.TestCase):
+    @pytest.mark.execution_timeout(60)
     def test_real_late_group_and_short_broadcast_negative_controls(self):
         for mode, stage in (
             ("late_group", "new_group"),
@@ -219,6 +221,7 @@ class TestRolloutObjectCollectives(unittest.TestCase):
                 print(json.dumps({"control": mode, "receipts": receipts}), flush=True)
 
     def test_eager_group_actual_32x8_update_with_delayed_rollout_and_reward(self):
+        pytest.importorskip("miles")
         with tempfile.TemporaryDirectory() as root:
             multiprocessing.start_processes(
                 _delayed_training,

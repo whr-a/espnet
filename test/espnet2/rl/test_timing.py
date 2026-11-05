@@ -148,6 +148,7 @@ def test_sync_clock_includes_score_reward_update_and_next_wait_includes_save(
 
 def test_full_checkpoints_follow_the_miles_save_cadence(tmp_path, monkeypatch):
     """Every save_interval updates and after the last one, as Miles saves."""
+    pytest.importorskip("miles")
     from miles.utils.misc import should_run_periodic_action
 
     import espnet2.rl.trainer.learner as module

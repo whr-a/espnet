@@ -106,6 +106,7 @@ class RolloutEnvironment(unittest.TestCase):
             self.assertEqual(child["OMP_NUM_THREADS"], "1")
             self.assertEqual(child["TASK_MARKER"], "preserve")
 
+    @pytest.mark.execution_timeout(30)
     def test_actual_cpu_tcpstore_agent_client_fails_but_clean_rank_zero_starts(self):
         with (
             tempfile.TemporaryDirectory() as temporary,

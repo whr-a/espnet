@@ -262,6 +262,7 @@ def test_node_resolution_allows_one_node_that_holds_both_roles():
 
 
 def test_ray_object_store_roundtrip_uses_actual_reference_and_cpu_batch():
+    pytest.importorskip("ray")
     import ray
     import torch
     from miles.utils import object_store

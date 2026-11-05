@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.distributed as distributed
 import torch.multiprocessing as multiprocessing
@@ -77,6 +78,8 @@ class Policy(torch.nn.Module):
 def test_profiled_real_updates_preserve_optimizer_rng_and_byte_budget(
     tmp_path, monkeypatch
 ):
+    pytest.importorskip("miles")
+
     def forbidden(*args, **kwargs):
         raise AssertionError("CPU profiling must not initialize or synchronize CUDA")
 
@@ -208,6 +211,7 @@ def _profile_worker(rank, root):
 def test_two_rank_profile_includes_owner_work_and_reports_equal_global_metrics(
     tmp_path,
 ):
+    pytest.importorskip("miles")
     multiprocessing.spawn(_profile_worker, args=(str(tmp_path),), nprocs=2, join=True)
     profiles = [
         json.loads((tmp_path / f"profile-rank-{rank}.json").read_text())
