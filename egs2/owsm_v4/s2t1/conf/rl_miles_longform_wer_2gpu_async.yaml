@@ -1,31 +1,23 @@
-# Long-form ASR on two H100s: GPU 0 trains while GPU 1 runs the rollout engine. OWSM v4 base is 102M, so the reference policy, Adam state and
-# scoring all stay on the GPU. The task differs from rl_miles_wer_1gpu in its
-# data and reward, not its geometry: references are at least 200 words, so
-# max_tokens rises from 1,536 to 3,072 and the engine runs fewer requests at
-# once. OWSM's prompt is its <lang>/<task>/<notimestamps> control symbols
-# only, which is why this family gets the long-form task and not the
-# instruction-following speaker tasks.
+# Long-form ASR on two H100s: GPU 0 trains while GPU 1 runs the rollout
+# engine. OWSM v4 base is 102M, so the reference policy, Adam state and
+# scoring all stay on the GPU. It uses the devices of rl_miles_wer_2gpu_async with
+# its own data and reward, and smaller microbatches (4, not 16), max_tokens
+# (1024, not 1536) and concurrent requests (64, not 256). OWSM's prompt is its
+# <lang>/<task>/<notimestamps> control symbols only, which is why this family
+# gets the long-form task and not the instruction-following speaker tasks.
 #
-# CORRECTION (2026-11-04, measured): OWSM's frontend takes a FIXED 30-second
-# window -- preprocessor_conf.speech_length: 30 at fs 16000 in its training
-# YAML -- and espnet2/s2t/rl/policy.py's load_audio RAISES on longer audio
-# ("Audio has N samples, exceeding the OWSM window of 480000") instead of
-# truncating, because long inputs need explicit offline segmentation. So
-# --concatenate 8 on LibriSpeech (12.75 s/utterance measured, 114 s packed)
-# makes every sample die at the first read, and a 200-word floor is
-# unreachable: 30 seconds caps a reference at roughly 84 words. Pack by
-# DURATION against the window and set the floor from the result.
-#
-# Prepare the manifest with (the preparer now requires the window and checks
-# every item against it, so this fails in seconds rather than on the GPU):
+# OWSM's frontend takes a fixed 30-second window (preprocessor_conf.speech_length:
+# 30 at fs 16000 in its training YAML), and espnet2/s2t/rl/policy.py's
+# load_audio raises on longer audio instead of truncating it. A reference that
+# fits the window is about 70 words, roughly 120 text tokens, so max_tokens
+# 1024 leaves headroom. Prepare the manifest with the window, which the
+# preparer checks for every item:
 #   python -m espnet2.rl.tasks longform_wer --wav-scp ... --text ... \
 #     --train-config /path/to/owsm/local_config.yaml \
 #     --min-reference-words 50 --concatenate 2 --output data/rl/longform.jsonl
-#
-# A reference that fits a 30-second window is about 70 words, roughly 120 text
-# tokens, so max_tokens 1024 leaves generous headroom; 3072 was sized for the
-# unreachable 200-word target. True long-form RL needs a family without a
-# fixed window (Bagpiper/OpusLM) or explicit segmentation -- see the report.
+# The recipe README gives the measured LibriSpeech limits. True long-form RL
+# needs a family without a fixed window (Bagpiper, OpusLM) or explicit
+# segmentation.
 family: owsm
 model_version: v4
 execution_mode: disagg_async

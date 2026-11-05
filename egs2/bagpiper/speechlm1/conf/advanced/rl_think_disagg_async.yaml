@@ -1,5 +1,6 @@
 # WEST think protocol; prepare the manifest with --qa-template think.
-# Same low-resource geometry as the corresponding default QA template.
+# Not the main template's geometry: bfloat16 with a CPU reference, fa3
+# attention, a 4096-token context and disk weight publication.
 # This exact configuration still needs GPU validation.
 family: bagpiper
 train_config: /path/to/released/train_config.yaml

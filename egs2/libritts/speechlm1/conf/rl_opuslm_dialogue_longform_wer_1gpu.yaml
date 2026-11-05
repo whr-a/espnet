@@ -12,8 +12,11 @@
 # learner's activation peak at the profile's measured level.
 #
 # Prepare the manifest with:
-#   python -m espnet2.rl.tasks longform_wer --wav-scp ... --text ...
-#     --min-reference-words 200 --concatenate 8 --output data/rl/longform.jsonl
+#   python -m espnet2.rl.tasks longform_wer --wav-scp ... --text ... \
+#     --max-audio-seconds S --min-reference-words 200 --concatenate 8 \
+#     --output data/rl/longform.jsonl
+# The preparer requires an audio bound. OpusLM has no fixed window, so S is
+# the longest item it may emit; size it with the context budget above.
 family: opuslm_dialogue
 execution_mode: sync
 rollout_backend: sglang

@@ -273,7 +273,7 @@ IDs depend on that order. When saving a modified configuration with PyYAML, use
 
 ## Training
 
-For post-training audio QA, see the [WEST-aligned four-GPU GRPO profile](WEST_GRPO.md) (32 × eight candidates, 1,000 updates and matched MMAU Mini checks every 100 updates).
+For post-training audio QA, see the [WEST-aligned four-GPU GRPO profile](WEST_GRPO.md) (32 × eight candidates, 1,000 updates, a checkpoint every 100 updates for the ordinary evaluator).
 
 ### Curriculum and recipe defaults
 

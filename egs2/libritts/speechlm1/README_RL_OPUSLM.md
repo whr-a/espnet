@@ -31,8 +31,10 @@ python -m espnet2.speechlm.rl.prepare --family opuslm \
 
 Record the preparation device: CPU/GPU codec quantization can differ. Retain
 native nine-stream conditions, ARDelay padding, released decoder geometry and
-asset hashes. The existing entry covers waveform-to-text WER, not full
-codec-output TTS RL.
+asset hashes. Stage 10 covers waveform-to-text WER.
+`conf/rl_opuslm_dialogue_multistream_tts_1gpu.yaml` samples nine-stream codec
+actions with the shape-only `codec_block` reward; a reward on how the audio
+sounds needs a codec decoder and a frozen ASR and is not provided.
 
 Resolve assets/source paths in the selected YAML, then call
 `python -m espnet2.bin.rl_train --config CONFIG` with the train/dev manifests,
