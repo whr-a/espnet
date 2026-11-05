@@ -187,7 +187,42 @@ def _sampling_seed(seed, rollout_id, source_id, sample):
     return int.from_bytes(digest.digest()[:8], "big") >> 1
 
 
-class OpusLMEngine(SGLangRolloutEngine):
+class _OpusEngine(SGLangRolloutEngine):
+    """What both OpusLM engines do with an export: read its metadata, refuse
+    an update that changes its vocabulary, and reload its tokenizer only
+    when the tokenizer files change. A retracted request would restart
+    without the inputs the engine gave it, so the KV pool is checked."""
+
+    family_name = "OpusLM"
+
+    def __init__(self, config, model_path, *, directory, replica=0):
+        self.metadata = _metadata(model_path)
+        super().__init__(config, model_path, directory=directory, replica=replica)
+        self.check_kv_pool()
+        self.tokenizer_files = self.tokenizer = None
+        self._load_prompt_assets(model_path)
+
+    def update(self, model_path):
+        if _metadata(model_path) != self.metadata:
+            raise ValueError("An update cannot change the exported OpusLM vocabulary")
+        super().update(model_path)
+        self._load_prompt_assets(model_path)
+
+    def _load_prompt_assets(self, model_path):
+        from transformers import AutoTokenizer
+
+        path = Path(model_path)
+        files = {
+            name: (path / name).read_bytes()
+            for name in TOKENIZER_FILES
+            if (path / name).is_file()
+        }
+        if files != self.tokenizer_files:
+            self.tokenizer = AutoTokenizer.from_pretrained(path)
+            self.tokenizer_files = files
+
+
+class OpusLMEngine(_OpusEngine):
     """OpusLM's released backbone inside SGLang: nine-stream prompts, text out.
 
     A prompt reaches the engine as its exact native embedding, the pad-cleared
@@ -200,7 +235,6 @@ class OpusLMEngine(SGLangRolloutEngine):
     # input_embeds requests reach the scheduler with placeholder token IDs, so
     # a radix cache would share KV between different prompts. The engine never
     # tokenizes, and CUDA graphs are not validated for the text-support mask.
-    family_name = "OpusLM"
     frozen = ("skip_tokenizer_init", "disable_cuda_graph", "disable_radix_cache")
 
     @property
@@ -212,35 +246,10 @@ class OpusLMEngine(SGLangRolloutEngine):
             attention_backend="triton",
         )
 
-    def __init__(self, config, model_path, *, directory, replica=0):
-        self.metadata = _metadata(model_path)
-        super().__init__(config, model_path, directory=directory, replica=replica)
-        # A retracted input_embeds request would restart without its output.
-        self.check_kv_pool()
-        self.tokenizer_files = self.tokenizer = self.embedding = None
-        self._load_prompt_assets(model_path)
-
-    def update(self, model_path):
-        if _metadata(model_path) != self.metadata:
-            raise ValueError("An update cannot change the exported OpusLM vocabulary")
-        super().update(model_path)
-        self._load_prompt_assets(model_path)
-
     def _load_prompt_assets(self, model_path):
-        """Read the export's embedding table, which training changes, and its
-        tokenizer when that differs from the one already loaded."""
-        from transformers import AutoTokenizer
-
-        path = Path(model_path)
-        files = {
-            name: (path / name).read_bytes()
-            for name in TOKENIZER_FILES
-            if (path / name).is_file()
-        }
-        if files != self.tokenizer_files:
-            self.tokenizer = AutoTokenizer.from_pretrained(path)
-            self.tokenizer_files = files
-        self.embedding = _embedding_weight(path)
+        """Also re-read the embedding table, which training changes."""
+        super()._load_prompt_assets(model_path)
+        self.embedding = _embedding_weight(Path(model_path))
 
     def generate(self, sources, rollout_id):
         metadata, group = self.metadata, self.config.group_size
@@ -393,7 +402,7 @@ def multistream_exporter(config, native_checkpoint_path, hf_output_dir):
     path.write_text(json.dumps(metadata, indent=2) + "\n")
 
 
-class OpusLMMultiStreamEngine(SGLangRolloutEngine):
+class OpusLMMultiStreamEngine(_OpusEngine):
     """OpusLM sampling real nine-stream codec inside SGLang.
 
     The engine submits the primary stream as ``input_ids`` and writes the
@@ -408,7 +417,6 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
     primary ids alone, without its secondary streams.
     """
 
-    family_name = "OpusLM"
     sources_file = "sources.pt"
     original_logprob = True
     triton_fp32 = True
@@ -433,33 +441,12 @@ class OpusLMMultiStreamEngine(SGLangRolloutEngine):
     )
 
     def __init__(self, config, model_path, *, directory, replica=0):
-        self.metadata = _metadata(model_path)
         super().__init__(config, model_path, directory=directory, replica=replica)
-        self.check_kv_pool()
-        self.model_path = Path(model_path)
-        self.tokenizer_files = self.tokenizer = None
-        self._load_prompt_assets(model_path)
         self.batches = 0
 
-    def update(self, model_path):
-        if _metadata(model_path) != self.metadata:
-            raise ValueError("An update cannot change the exported OpusLM vocabulary")
-        super().update(model_path)
-        self.model_path = Path(model_path)
-        self._load_prompt_assets(model_path)
-
     def _load_prompt_assets(self, model_path):
-        from transformers import AutoTokenizer
-
-        path = Path(model_path)
-        files = {
-            name: (path / name).read_bytes()
-            for name in TOKENIZER_FILES
-            if (path / name).is_file()
-        }
-        if files != self.tokenizer_files:
-            self.tokenizer = AutoTokenizer.from_pretrained(path)
-            self.tokenizer_files = files
+        self.model_path = Path(model_path)
+        super()._load_prompt_assets(model_path)
 
     def _prompt(self, source):
         """The source's nine-stream prompt, or a plain-TTS one from its text."""
