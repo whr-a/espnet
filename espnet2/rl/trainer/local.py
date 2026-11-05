@@ -71,6 +71,12 @@ def run(config):
         if device_type != "cpu":
             get_torch_device().set_device(int(os.environ["LOCAL_RANK"]))
             config.device = f"{device_type}:{os.environ['LOCAL_RANK']}"
+    else:
+        device = torch.device(config.device)
+        if device.type == "cuda" and device.index is not None:
+            # One rank keeps every GPU visible, so its current device would stay
+            # 0; make the configured card current, as each multi-rank worker does.
+            get_torch_device().set_device(device)
     rank = distributed.get_rank() if distributed.is_initialized() else 0
     output = Path(config.output_dir).resolve()
     config.output_dir = str(output)
@@ -92,7 +98,7 @@ def run(config):
     # from the recipe's train_gpus, so one rank is as valid as eight.
     if torch.device(config.device).type != "cpu":
         world_size = distributed.get_world_size() if distributed.is_initialized() else 1
-        # A single rank is not launched by torchrun and owns local device 0.
+        # A single rank is not launched by torchrun, so its local rank is 0.
         local_rank = int(os.environ.get("LOCAL_RANK", "0" if world_size == 1 else "-1"))
         visible = [
             item

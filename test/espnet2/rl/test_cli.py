@@ -6,6 +6,7 @@ import os
 from types import SimpleNamespace
 
 import pytest
+import torch
 import yaml
 
 from espnet2.bin import rl_train as cli
@@ -102,6 +103,42 @@ def test_external_torchrun_enters_worker_without_nested_launch(tmp_path, monkeyp
     )
     cli.main(["--config", config_file(tmp_path, train_gpus="0,1")])
     assert observed == ["0,1"]
+
+
+@pytest.mark.parametrize(
+    "device,selected",
+    [("cuda:3", [torch.device("cuda", 3)]), ("cuda", []), ("cpu", [])],
+)
+def test_single_rank_makes_its_configured_gpu_current(
+    tmp_path, monkeypatch, device, selected
+):
+    from espnet2.rl.trainer import local as trainer
+
+    calls = []
+    monkeypatch.delenv("WORLD_SIZE", raising=False)
+    monkeypatch.setattr(trainer, "read_manifest", lambda path, config: [])
+    monkeypatch.setattr(trainer, "engine_class", lambda config: None)
+    monkeypatch.setattr(trainer, "verify_miles", lambda config: {})
+    monkeypatch.setattr(trainer, "set_all_random_seed", lambda seed: None)
+    monkeypatch.setattr(
+        trainer, "get_torch_device", lambda: SimpleNamespace(set_device=calls.append)
+    )
+    monkeypatch.setattr(
+        torch.backends.cudnn, "allow_tf32", torch.backends.cudnn.allow_tf32
+    )
+    # An existing frozen config stops the run right after device selection.
+    (tmp_path / "frozen_config.json").write_text("{}")
+    config = ESPnetRLConfig(
+        adapter_factory="unused:factory",
+        exporter="unused:exporter",
+        sglang_engine="unused:Engine",
+        manifest="unused.jsonl",
+        output_dir=str(tmp_path),
+        device=device,
+    )
+    with pytest.raises(FileExistsError, match="fresh output_dir"):
+        trainer.run(config)
+    assert calls == selected
 
 
 @pytest.mark.parametrize("train_gpus,world_size", [("0", "2"), ("0,1", "4")])
