@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from types import FunctionType, SimpleNamespace
 
-from ..miles_library import verify_miles
+from ..trainer.algorithms import verify_miles
 
 
 def load_async_loop(config, components):

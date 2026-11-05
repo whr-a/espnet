@@ -11,13 +11,13 @@ import torch.multiprocessing as multiprocessing
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.timing import PhaseProfiler, profile_phase
-from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.trainer.timing import PhaseProfiler, profile_phase
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 
 
 def test_phase_accounting_memory_samples_and_disabled_cuda(monkeypatch):
-    import espnet2.rl.timing as module
+    import espnet2.rl.trainer.timing as module
 
     clock, calls = [0.0], []
     monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])

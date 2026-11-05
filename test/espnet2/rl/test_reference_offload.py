@@ -10,11 +10,11 @@ from contextlib import contextmanager
 import pytest
 import torch
 
-from espnet2.rl import trainer as trainer_module
+from espnet2.rl.trainer import learner as trainer_module
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.scoring import score_native_batch
-from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.trainer.scoring import score_native_batch
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 
 

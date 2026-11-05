@@ -60,7 +60,7 @@ def test_worker_marker_prevents_recursive_launch(tmp_path, monkeypatch):
     monkeypatch.setattr(
         cli.subprocess, "run", lambda *args, **kwargs: pytest.fail("Recursive launch")
     )
-    from espnet2.rl import trainer
+    from espnet2.rl.trainer import local as trainer
 
     monkeypatch.setattr(trainer, "run", lambda config: calls.append(config.manifest))
     cli.main(["--config", config_file(tmp_path), "--worker", "local"])
@@ -90,7 +90,7 @@ def test_external_torchrun_enters_worker_without_nested_launch(tmp_path, monkeyp
     monkeypatch.setattr(
         cli.subprocess, "run", lambda *args, **kwargs: pytest.fail("Nested torchrun")
     )
-    from espnet2.rl import trainer
+    from espnet2.rl.trainer import local as trainer
 
     observed = []
     monkeypatch.setattr(

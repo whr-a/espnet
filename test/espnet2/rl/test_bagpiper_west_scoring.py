@@ -8,8 +8,8 @@ import torch
 from torch import nn
 
 from espnet2.rl.batch import RolloutBatch
-from espnet2.rl.scoring import score_native_batch
-from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.trainer.scoring import score_native_batch
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 from espnet2.speechlm.model.speechlm.rl.bagpiper import rollout as rollout_module
 from espnet2.speechlm.model.speechlm.rl.bagpiper.policy import NativeSpeechLMPolicy

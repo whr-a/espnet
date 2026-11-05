@@ -14,14 +14,11 @@ from torch.nn import functional as F
 
 from espnet2.rl.config import ESPnetRLConfig
 from espnet2.rl.batch import collate_rollouts
-from espnet2.rl.parallel_optimizer import CPUOffloadedAdamW
-from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.trainer.optim import CPUOffloadedAdamW
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.tasks.manifest import select_training_sources
-from espnet2.rl.training_objectives import (
-    build_lr_scheduler,
-    west_group_advantages,
-    west_policy_loss,
-)
+from espnet2.rl.trainer.algorithms import west_group_advantages, west_policy_loss
+from espnet2.rl.trainer.optim import build_lr_scheduler
 from espnet2.rl.types import TokenScores
 
 
@@ -427,7 +424,7 @@ def shared_step_reward(source, generation):
 @pytest.mark.parametrize("objective", ["miles_ppo", "west_grpo"])
 def test_shared_step_matches_explicit_scoring_reward_and_optimizer(tmp_path, objective):
     """Transport consolidation preserves real parameters, moments and fixed reference."""
-    from espnet2.rl.scoring import score_native_batch
+    from espnet2.rl.trainer.scoring import score_native_batch
 
     cfg = config(tmp_path)
     cfg.training_objective = objective

@@ -17,7 +17,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from espnet2.rl.config import ESPnetRLConfig
-from espnet2.rl.trainer import NativeGRPOTrainer
+from espnet2.rl.trainer.learner import NativeGRPOTrainer
 from espnet2.rl.types import TokenScores
 
 

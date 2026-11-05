@@ -18,8 +18,8 @@ from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 from ..config import ESPnetRLConfig
 from .failure import preserve_preupdate_failure
 from ..rollout.local import CheckpointRollout
-from ..scoring import score_native_batch
-from ..trainer import NativeGRPOTrainer
+from ..trainer.scoring import score_native_batch
+from ..trainer.learner import NativeGRPOTrainer
 from ..utils import build_policy
 
 

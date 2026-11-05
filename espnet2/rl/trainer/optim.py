@@ -197,3 +197,20 @@ class CPUOffloadedAdamW(torch.optim.Optimizer):
             for key in ("lr", "weight_decay", "betas", "eps", "initial_lr"):
                 if key in cpu_group:
                     group[key] = cpu_group[key]
+
+
+def build_lr_scheduler(optimizer, config):
+    """Match HF's constant or linear schedule, indexed by optimizer updates."""
+
+    def factor(completed_updates):
+        if completed_updates < config.lr_warmup_steps:
+            return completed_updates / max(1, config.lr_warmup_steps)
+        if config.lr_scheduler == "constant":
+            return 1.0
+        return max(
+            0.0,
+            (config.steps - completed_updates)
+            / max(1, config.steps - config.lr_warmup_steps),
+        )
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, factor)

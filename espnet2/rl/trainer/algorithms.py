@@ -1,4 +1,4 @@
-"""Call the pinned Miles library for GRPO normalization, returns, PPO and KL.
+"""The pinned Miles GRPO normalization, returns, PPO and KL, and WEST GRPO.
 
 Only tensor layout and native reduction are adapted here. Miles is installed
 as an optional library; no source is copied into ESPnet or patched at runtime.
@@ -181,3 +181,43 @@ def compute_policy_loss_vanilla(
 
 def kl_penalty(current, reference, kind):
     return _algorithms().compute_approx_kl(current, reference, kind)
+
+
+# WEST GRPO, following wenet-e2e/west b9a629d68bf012c9b92a901ba1ed22fbbdc3b3eb.
+# It stays separate from Miles' versioned PPO/IcePop default.
+
+
+def west_group_advantages(rewards, mask, identities):
+    """Normalize each prompt's scalar outcome with sample std plus 1e-4.
+
+    No all-equal special case is added: this preserves WEST's FP32 arithmetic,
+    including a possible tiny centering residual on constant decimal rewards.
+    Miles still expands the resulting outcome to the valid sampled actions.
+    """
+    groups = {}
+    for row, identity in enumerate(identities):
+        groups.setdefault(identity, []).append(row)
+    scalar = rewards.sum(-1)
+    normalized = torch.empty_like(scalar)
+    for indices in groups.values():
+        if len(indices) < 2:
+            raise ValueError("WEST GRPO requires at least two answers per prompt")
+        values = scalar[indices]
+        normalized[indices] = (values - values.mean()) / (values.std() + 1e-4)
+    returns = torch.stack(_algorithms().get_grpo_returns(normalized, list(mask))) * mask
+    return returns, returns.clone()
+
+
+def west_policy_loss(current, advantages, mask, **global_batch_info):
+    """WEST's unit-valued on-policy ratio with a nonzero policy gradient."""
+    # The ratio is exactly one, strictly inside both clip bounds. Miles' PPO
+    # primitive therefore supplies WEST's original value and policy gradient.
+    if current.dtype == torch.float32:
+        values, _ = _algorithms().compute_policy_loss(
+            current.detach() - current, advantages, 0.2, 0.2
+        )
+    else:
+        # Native scores are FP32. Preserve the helper's other dtypes rather
+        # than inherit the Miles primitive's unconditional FP32 conversion.
+        values = -(torch.exp(current - current.detach()) * advantages)
+    return agg_loss(values, mask, "seq-mean-token-mean", **global_batch_info)

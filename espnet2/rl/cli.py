@@ -84,7 +84,7 @@ def validate_inputs(config, args):
     engine_class(config)
     if config.miles_source:
         sys.path.insert(0, config.miles_source)
-    from .miles_library import verify_miles
+    from .trainer.algorithms import verify_miles
 
     evidence = verify_miles(config)
     admission = (
@@ -148,7 +148,7 @@ def main(argv=None, *, worker=None):
 
         run_ray(config, args, sources, admission)
     else:
-        from .trainer import run
+        from .trainer.local import run
 
         if admission is not None and int(os.environ.get("RANK", "0")) == 0:
             output = Path(config.output_dir)

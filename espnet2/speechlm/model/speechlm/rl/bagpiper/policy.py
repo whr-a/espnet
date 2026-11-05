@@ -193,7 +193,7 @@ class NativeSpeechLMPolicy(nn.Module):
         # Frames scored under a recorded support other than the one this
         # policy's own logits give, and all frames scored, in no-grad passes.
         # A scoring pass of the current or behavior policy fails above this
-        # rate (espnet2.rl.scoring); the reference only counts.
+        # rate (espnet2.rl.trainer.scoring); the reference only counts.
         self.support_mismatch_rate = support_mismatch_rate
         self.support_mismatches = self.support_frames = 0
         # Every stream is sampled from softmax(logits / temperature).

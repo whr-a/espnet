@@ -1,7 +1,7 @@
 # Several tasks in one update on one H100 80GB, collocated. Every record
 # declares its own reward_task; mixed_task_reward scores each with that task's
 # reward. Mixing scales is safe because GRPO normalizes inside a prompt group:
-# espnet2/rl/trainer.py passes the per-prompt uid to
+# the trainer passes the per-prompt uid to
 # compute_grpo_outcome_advantage, so two tasks never share a baseline.
 #
 # Geometry is the accepted Dialogue one-GPU profile's. max_tokens is the

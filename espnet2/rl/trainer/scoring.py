@@ -18,8 +18,9 @@ import numpy as np
 import torch
 import torch.distributed as distributed
 
+from espnet2.rl.types import support_mismatch_rate, validate_binary_mask
+
 from .timing import profile_phase
-from .types import support_mismatch_rate, validate_binary_mask
 
 
 def _numbers(value):
