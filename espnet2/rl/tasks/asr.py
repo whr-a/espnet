@@ -4,9 +4,7 @@
 
 from pathlib import Path
 
-from espnet2.rl.utils import sha256
-
-from .kaldi import audio_directory, materialize_kaldi_audio, write_manifest
+from .kaldi import audio_directory, input_files, materialize_kaldi_audio, write_manifest
 
 
 def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
@@ -26,10 +24,7 @@ def prepare_kaldi_manifest(wav_scp, text, output, task="asr_wer", **kwargs):
         {
             "task": task,
             "sample_rate": sample_rate,
-            "wav_scp": str(Path(wav_scp).resolve()),
-            "text": str(Path(text).resolve()),
-            "wav_scp_sha256": sha256(wav_scp),
-            "text_sha256": sha256(text),
+            **input_files(wav_scp=wav_scp, text=text),
         },
     )
 

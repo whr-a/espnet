@@ -22,6 +22,13 @@ def read_kaldi(path):
     return rows
 
 
+def input_files(**paths):
+    """Audit entries for a preparer's inputs: every path, then every SHA256."""
+    entries = {name: str(Path(path).resolve()) for name, path in paths.items()}
+    entries.update({f"{name}_sha256": sha256(path) for name, path in paths.items()})
+    return entries
+
+
 def materialize_kaldi_audio(wav_scp, text, audio_dir, sample_rate=None, channel="mean"):
     """Resolve paths and pipes into auditable waveforms joined by utterance ID.
 

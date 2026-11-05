@@ -8,7 +8,7 @@ from pathlib import Path
 from espnet2.rl.rewards.text import words
 from espnet2.rl.utils import sha256
 
-from .kaldi import audio_directory, materialize_kaldi_audio, write_manifest
+from .kaldi import audio_directory, input_files, materialize_kaldi_audio, write_manifest
 
 
 def audio_window_seconds(train_config):
@@ -162,10 +162,7 @@ def prepare_longform_manifest(
             "concatenate": concatenate,
             "max_audio_seconds": max_audio_seconds,
             "sample_rate": sample_rate,
-            "wav_scp": str(Path(wav_scp).resolve()),
-            "text": str(Path(text).resolve()),
-            "wav_scp_sha256": sha256(wav_scp),
-            "text_sha256": sha256(text),
+            **input_files(wav_scp=wav_scp, text=text),
             "reference_words": {
                 record["id"]: len(words(record["reference"])) for record in records
             },

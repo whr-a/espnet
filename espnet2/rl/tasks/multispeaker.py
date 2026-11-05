@@ -4,11 +4,16 @@
 
 import hashlib
 import random
-from pathlib import Path
 
 from espnet2.rl.utils import sha256
 
-from .kaldi import audio_directory, materialize_kaldi_audio, read_kaldi, write_manifest
+from .kaldi import (
+    audio_directory,
+    input_files,
+    materialize_kaldi_audio,
+    read_kaldi,
+    write_manifest,
+)
 
 MULTISPEAKER_PROMPT = (
     "Two people speak in this audio. Transcribe each speaker separately. "
@@ -146,12 +151,7 @@ def prepare_multispeaker_manifest(
             "sample_rate": sample_rate,
             "tags": list(tags),
             "speakers": len(by_speaker),
-            "wav_scp": str(Path(wav_scp).resolve()),
-            "text": str(Path(text).resolve()),
-            "utt2spk": str(Path(utt2spk).resolve()),
-            "wav_scp_sha256": sha256(wav_scp),
-            "text_sha256": sha256(text),
-            "utt2spk_sha256": sha256(utt2spk),
+            **input_files(wav_scp=wav_scp, text=text, utt2spk=utt2spk),
             "prompt_template": prompt or MULTISPEAKER_PROMPT,
         },
     )

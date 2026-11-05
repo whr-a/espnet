@@ -3,11 +3,14 @@
 """Closed-set speaker identification from Kaldi ``wav.scp`` and ``utt2spk``."""
 
 import random
-from pathlib import Path
 
-from espnet2.rl.utils import sha256
-
-from .kaldi import audio_directory, materialize_kaldi_audio, read_kaldi, write_manifest
+from .kaldi import (
+    audio_directory,
+    input_files,
+    materialize_kaldi_audio,
+    read_kaldi,
+    write_manifest,
+)
 
 SPEAKER_PROMPT = (
     "Listen to the audio and identify who is speaking. "
@@ -108,10 +111,7 @@ def prepare_speaker_id_manifest(
             "seed": seed,
             "sample_rate": sample_rate,
             "speakers": len(inventory),
-            "wav_scp": str(Path(wav_scp).resolve()),
-            "utt2spk": str(Path(utt2spk).resolve()),
-            "wav_scp_sha256": sha256(wav_scp),
-            "utt2spk_sha256": sha256(utt2spk),
+            **input_files(wav_scp=wav_scp, utt2spk=utt2spk),
             "prompt_template": template,
         },
     )
