@@ -23,14 +23,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-
-def session_of(identity):
-    """Same rule as espnet2.rl.tasks.longform.session_of."""
-    return identity.rsplit("-", 1)[0]
-
-
-def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+from espnet2.rl.tasks.longform import session_of
+from espnet2.rl.utils import sha256
 
 
 def pack(records, budget_seconds, min_items, sample_rate):
@@ -124,10 +118,10 @@ def main():
                 "audio": str(target),
                 "reference": reference,
                 "sample_rate": args.sample_rate,
-                "audio_sha256": digest(target),
+                "audio_sha256": sha256(target),
                 "concatenated_ids": [item["id"] for item in chunk],
                 "concatenated_sha256": [
-                    item.get("audio_sha256") or digest(item["audio"]) for item in chunk
+                    item.get("audio_sha256") or sha256(item["audio"]) for item in chunk
                 ],
                 "duration_seconds": len(waveform) / args.sample_rate,
                 "reward_task": "longform_wer",
@@ -154,11 +148,11 @@ def main():
         "min_items": args.min_items,
         "sample_rate": args.sample_rate,
         "source_manifest": str(Path(args.source_manifest).resolve()),
-        "source_manifest_sha256": digest(args.source_manifest),
+        "source_manifest_sha256": sha256(args.source_manifest),
         "wav_scp": str(scp_path),
         "text": str(text_path),
-        "wav_scp_sha256": digest(scp_path),
-        "text_sha256": digest(text_path),
+        "wav_scp_sha256": sha256(scp_path),
+        "text_sha256": sha256(text_path),
         "source_utterances": len(ordered),
         "groups_formed": len(groups),
         "groups_written": len(records),

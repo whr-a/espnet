@@ -13,26 +13,12 @@ manifest because a model can then score it without listening.
 """
 
 import argparse
-import hashlib
 import json
 import random
 from pathlib import Path
 
-
-def kaldi(path):
-    rows = {}
-    for number, line in enumerate(Path(path).read_text().splitlines(), 1):
-        if not line.strip():
-            continue
-        fields = line.split(maxsplit=1)
-        if len(fields) != 2 or fields[0] in rows:
-            raise ValueError(f"Malformed/duplicate row at {path}:{number}")
-        rows[fields[0]] = fields[1]
-    return rows
-
-
-def digest(path):
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+from espnet2.rl.tasks.kaldi import read_kaldi
+from espnet2.rl.utils import sha256
 
 
 def main():
@@ -46,7 +32,7 @@ def main():
     parser.add_argument("--seed", type=int, default=20261104)
     args = parser.parse_args()
 
-    waves, speakers = kaldi(args.wav_scp), kaldi(args.utt2spk)
+    waves, speakers = read_kaldi(args.wav_scp), read_kaldi(args.utt2spk)
     if waves.keys() != speakers.keys():
         raise ValueError("wav.scp and utt2spk must cover the same utterances")
 
@@ -79,16 +65,16 @@ def main():
         for name, table in (("wav.scp", waves), ("utt2spk", speakers)):
             path = output / f"{role}.{name}"
             path.write_text("".join(f"{utt} {table[utt]}\n" for utt in utterances))
-            written[f"{role}.{name}"] = {"path": str(path), "sha256": digest(path), "rows": len(utterances)}
+            written[f"{role}.{name}"] = {"path": str(path), "sha256": sha256(path), "rows": len(utterances)}
 
     overlap = set(split["train"]) & set(split["heldout"])
     train_speakers = {speakers[u] for u in split["train"]}
     heldout_speakers = {speakers[u] for u in split["heldout"]}
     audit = {
         "source_wav_scp": str(Path(args.wav_scp).resolve()),
-        "source_wav_scp_sha256": digest(args.wav_scp),
+        "source_wav_scp_sha256": sha256(args.wav_scp),
         "source_utt2spk": str(Path(args.utt2spk).resolve()),
-        "source_utt2spk_sha256": digest(args.utt2spk),
+        "source_utt2spk_sha256": sha256(args.utt2spk),
         "seed": args.seed,
         "heldout_fraction": args.heldout_fraction,
         "min_heldout_per_speaker": args.min_heldout_per_speaker,
