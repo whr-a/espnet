@@ -255,6 +255,20 @@ class SGLangRolloutEngine(RolloutEngine):
         if not success:
             raise RuntimeError(f"SGLang could not load {model_path}: {message}")
 
+    def _weight_session(self, method):
+        """Open or close SGLang's weight-update session where it has one.
+
+        SGLang v0.5.21 accepts weight updates only between
+        ``begin_weight_update()`` and ``end_weight_update()``; earlier
+        versions have neither call and need nothing here.
+        """
+        call = getattr(self.engine, method, None)
+        if call is None:
+            return
+        success, message = call()
+        if not success:
+            raise RuntimeError(f"SGLang {method} failed: {message}")
+
     def weight_update(self, method, args, kwargs):
         """Expose Miles' existing SGLang control calls to the socket client."""
         from .weights import HASH_KIND
@@ -278,12 +292,14 @@ class SGLangRolloutEngine(RolloutEngine):
                 self.publication_kv_released = True
                 self.released = False
             receipt.unlink(missing_ok=True)
+            self._weight_session("begin_weight_update")
             self.expected_weights = dict(identity)
             return {}
         if method == "finish":
             import json
 
             (identity,) = args
+            self._weight_session("end_weight_update")
             if (
                 identity != self.expected_weights
                 or json.loads(receipt.read_text()) != identity
