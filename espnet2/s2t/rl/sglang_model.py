@@ -29,7 +29,9 @@ class ESPnetOWSMForCausalLM(nn.Module):
         super().__init__()
         if quant_config is not None:
             raise ValueError("Native OWSM RL does not support weight quantization")
-        from sglang.srt.distributed import get_tensor_model_parallel_world_size
+        from sglang.srt.distributed.parallel_state import (
+            get_tensor_model_parallel_world_size,
+        )
 
         from espnet2.tasks.s2t import S2TTask
 

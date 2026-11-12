@@ -54,6 +54,9 @@ def sglang_sample(logits, params):
         need_min_p_sampling=any(r.min_p > 0 for r in requests),
         has_custom_logit_processor=False,
         return_sampling_masks=None,
+        # Fields newer SGLang samplers read; None keeps them off.
+        sampling_mask_batch_indices=None,
+        sampling_support_logprobs_capture_indices=None,
         sampling_seed=None,
         grammars=None,
     )
